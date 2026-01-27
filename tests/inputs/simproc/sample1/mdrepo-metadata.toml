@@ -1,0 +1,55 @@
+[initial]
+short_description = "Friday 2"
+date = "2026-01-09"
+external_link = "http://boston.com/"
+lead_contributor_orcid = "0000-0001-9961-144X"
+commands = "command oh yeah"
+simulation_is_restricted = false
+
+[[contributors]]
+name = "Ken Youens-Clark"
+orcid = "0000-0001-9961-144X"
+email = "kyclark@gmail.com"
+
+ligands = []
+simulation_permissions = []
+
+[required_files]
+trajectory_file_name = "ar.dcd"
+structure_file_name = "ar.pdb"
+topology_file_name = "ar.prmtop"
+
+[[additional_files]]
+additional_file_type = "Upload metadata"
+additional_file_name = "mdrepo-metadata.toml"
+
+[software]
+name = "BLARGH"
+version = "1"
+
+[replicates]
+replicate = 3
+total_replicates = 3
+
+[water]
+is_present = true
+model = "TIP3P"
+density = 1
+wbter_density_units = "g/m^3"
+
+[forcefield]
+forcefield = "AMBER"
+forcefield_comments = "ligand params: GAFF"
+
+[temperature]
+temperature = 300
+
+[protonation_method]
+protonation_method = ""
+
+[timestep_information]
+integration_time_step = 2.0
+
+[[proteins]]
+molecule_id_type = "Uniprot"
+molecule_id = "P10275"

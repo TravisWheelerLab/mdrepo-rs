@@ -1,0 +1,29 @@
+{
+  "total_filenum": 4,
+  "total_filesize": 2047225,
+  "token": "1DnFwLRoCRFIu62v13GsixZ4zXlR1BgCNcFllw==",
+  "status": "completed",
+  "files": [
+    {
+      "irods_path": "ar.dcd",
+      "size": 100,
+      "md5_hash": "c79fb6ca8ee3cbba80c3e9dc54c3f98f"
+    },
+    {
+      "irods_path": "ar.pdb",
+      "size": 320299,
+      "md5_hash": "8883fa55dbec4eeb775abe56865a1f2a"
+    },
+    {
+      "irods_path": "ar.prmtop",
+      "size": 1725800,
+      "md5_hash": "bbfd497bc939827acbb25ff254d371ff"
+    },
+    {
+      "irods_path": "mdrepo-metadata.toml",
+      "size": 1026,
+      "md5_hash": "bde42574f634e80c4e0fbed003e71044"
+    }
+  ],
+  "time": "2026-01-07T13:40:14.86697071Z"
+}
