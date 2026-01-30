@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
+use serde_with::NoneAsEmptyString;
 use toml::value::Value as TomlValue;
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
@@ -63,8 +65,11 @@ pub struct Meta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contributors: Option<Vec<Contributor>>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub simulation_permissions: Option<Vec<Permission>>,
+    #[serde(
+        alias = "simulation_permissions",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub permissions: Option<Vec<Permission>>,
 }
 
 impl Meta {
@@ -94,9 +99,7 @@ impl Meta {
                         if let Numlike::TomlVal(n) = val {
                             let new_number = match n {
                                 TomlValue::String(v) => Numlike::Stringy(v.to_string()),
-                                TomlValue::Integer(v) => {
-                                    Numlike::Stringy(v.to_string())
-                                }
+                                TomlValue::Integer(v) => Numlike::Stringy(v.to_string()),
                                 TomlValue::Float(v) => Numlike::Stringy(v.to_string()),
                                 _ => Numlike::Stringy("".to_string()),
                             };
@@ -151,15 +154,19 @@ impl Meta {
     }
 }
 
+#[serde_as]
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Initial {
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde_as(as = "NoneAsEmptyString")]
     short_description: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde_as(as = "NoneAsEmptyString")]
     description: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde_as(as = "NoneAsEmptyString")]
     external_link: Option<String>,
 
     lead_contributor_orcid: String,
@@ -167,6 +174,7 @@ pub struct Initial {
     date: Datelike,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde_as(as = "NoneAsEmptyString")]
     commands: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -179,23 +187,29 @@ pub struct AdditionalFile {
     additional_file_name: String,
 }
 
+#[serde_as]
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Contributor {
     name: String,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde_as(as = "NoneAsEmptyString")]
     orcid: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde_as(as = "NoneAsEmptyString")]
     email: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde_as(as = "NoneAsEmptyString")]
     institution: Option<String>,
 }
 
+#[serde_as]
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Forcefield {
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde_as(as = "NoneAsEmptyString")]
     forcefield: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -219,6 +233,7 @@ pub struct Timestep {
     integration_time_step: Option<f64>,
 }
 
+#[serde_as]
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Paper {
     title: String,
@@ -235,6 +250,7 @@ pub struct Paper {
     year: u32,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde_as(as = "NoneAsEmptyString")]
     pages: Option<String>,
 }
 
@@ -291,7 +307,13 @@ pub struct Protein {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Solvent {
     name: String,
+
+    #[serde(alias = "salt_concentration")]
     ion_concentration: f64,
+
+    #[serde(alias = "solvent_concentration_units")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    concentration_units: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -408,9 +430,8 @@ mod tests {
         assert_eq!(
             ligands[0],
             Ligand {
-                name:
-                    "N-{4-[(3-phenylpropyl)carbamoyl]phenyl}-2H-isoindole-2-carboxamide"
-                        .to_string(),
+                name: "N-{4-[(3-phenylpropyl)carbamoyl]phenyl}-2H-isoindole-2-carboxamide"
+                    .to_string(),
                 smiles: "c1ccc(cc1)CCCNC(=O)c2ccc(cc2)NC(=O)n3cc4ccccc4c3".to_string()
             }
         );

@@ -12,4 +12,5 @@ env_logger = "0.11.8"
 log = "0.4.29"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+serde_with = "3.16.1"
 toml = "0.9.11"
