@@ -1,11 +1,16 @@
 mod constants;
+mod metadata;
 mod types;
 mod validate;
 
 use anyhow::Result;
 use clap::Parser;
+use metadata::Meta;
 //use log::info;
-use std::{fs::File, io::BufWriter};
+use std::{
+    fs::{self, File},
+    io::BufWriter,
+};
 use types::{Cli, Command, LogLevel};
 
 // --------------------------------------------------
@@ -51,6 +56,10 @@ fn run(args: Cli) -> Result<()> {
         }
         Some(Command::MetaCheck(args)) => {
             dbg!(&args);
+            let toml = fs::read_to_string(&args.filename)?;
+            let mut meta: Meta = toml::from_str(&toml)?;
+            meta.fix();
+            dbg!(&meta);
             Ok(())
         }
         Some(Command::Validate(args)) => {
