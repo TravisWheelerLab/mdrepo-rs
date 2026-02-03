@@ -1,6 +1,7 @@
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
-use serde_with::NoneAsEmptyString;
+use serde_with::{serde_as, NoneAsEmptyString};
+use std::{fs, path::PathBuf};
 use toml::value::Value as TomlValue;
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
@@ -73,6 +74,13 @@ pub struct Meta {
 }
 
 impl Meta {
+    pub fn from_file(filename: &PathBuf) -> Result<Self> {
+        let contents = fs::read_to_string(filename)?;
+        let mut toml: Meta = toml::from_str(&contents)?;
+        toml.fix();
+        Ok(toml)
+    }
+
     pub fn fix(&mut self) {
         // Some confusion over dates as quoted strings or unquoted TOML values
         // But there's no JSON "date" format
@@ -99,7 +107,9 @@ impl Meta {
                         if let Numlike::TomlVal(n) = val {
                             let new_number = match n {
                                 TomlValue::String(v) => Numlike::Stringy(v.to_string()),
-                                TomlValue::Integer(v) => Numlike::Stringy(v.to_string()),
+                                TomlValue::Integer(v) => {
+                                    Numlike::Stringy(v.to_string())
+                                }
                                 TomlValue::Float(v) => Numlike::Stringy(v.to_string()),
                                 _ => Numlike::Stringy("".to_string()),
                             };
@@ -250,84 +260,84 @@ pub struct Paper {
     year: u32,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde_as(as = "NoneAsEmptyString")]
+    //[serde_as(as = "NoneAsEmptyString")]
     pages: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Temperature {
-    temperature: Option<u32>,
+    pub temperature: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
 pub struct Ligand {
-    name: String,
-    smiles: String,
+    pub name: String,
+    pub smiles: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RequiredFile {
-    trajectory_file_name: String,
-    structure_file_name: String,
-    topology_file_name: String,
+    pub trajectory_file_name: String,
+    pub structure_file_name: String,
+    pub topology_file_name: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Software {
-    name: String,
+    pub name: String,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    version: Option<String>,
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Replicates {
     #[serde(skip_serializing_if = "Option::is_none")]
-    total_replicates: Option<u32>,
+    pub total_replicates: Option<u32>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    replicate: Option<u32>,
+    pub replicate: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
 pub struct Protein {
     #[serde(skip_serializing_if = "Option::is_none")]
-    molecule_id_type: Option<String>,
+    pub molecule_id_type: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    molecule_id: Option<String>,
+    pub molecule_id: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pdb_id: Option<String>,
+    pub pdb_id: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    uniprot_id: Option<String>,
+    pub uniprot_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Solvent {
-    name: String,
+    pub name: String,
 
     #[serde(alias = "salt_concentration")]
-    ion_concentration: f64,
+    pub ion_concentration: f64,
 
     #[serde(alias = "solvent_concentration_units")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    concentration_units: Option<String>,
+    pub concentration_units: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Water {
-    is_present: bool,
+    pub is_present: bool,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    model: Option<String>,
+    pub model: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    density: Option<f32>,
+    pub density: Option<f32>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    water_density_units: Option<String>,
+    pub water_density_units: Option<String>,
 }
 
 #[cfg(test)]
@@ -430,8 +440,9 @@ mod tests {
         assert_eq!(
             ligands[0],
             Ligand {
-                name: "N-{4-[(3-phenylpropyl)carbamoyl]phenyl}-2H-isoindole-2-carboxamide"
-                    .to_string(),
+                name:
+                    "N-{4-[(3-phenylpropyl)carbamoyl]phenyl}-2H-isoindole-2-carboxamide"
+                        .to_string(),
                 smiles: "c1ccc(cc1)CCCNC(=O)c2ccc(cc2)NC(=O)n3cc4ccccc4c3".to_string()
             }
         );

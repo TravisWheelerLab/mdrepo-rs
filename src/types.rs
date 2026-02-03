@@ -1,5 +1,6 @@
 use clap::{builder::PossibleValue, Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 // --------------------------------------------------
 #[derive(Parser, Debug)]
@@ -47,20 +48,29 @@ pub enum Command {
     MetaCheck(MetaCheckArgs),
 
     /// Process a simulation
-    SimProc(SimProcArgs),
+    Process(ProcessArgs),
 }
 
 // --------------------------------------------------
 #[derive(Debug, Parser)]
 #[command(alias = "pr")]
-pub struct SimProcArgs {
+pub struct ProcessArgs {
     /// Input directory
     #[arg(value_name = "DIR")]
-    pub dirname: String,
+    pub dirname: PathBuf,
+
+    /// Script directory
+    #[arg(
+        short,
+        long,
+        value_name = "DIR",
+        default_value = "/opt/mdrepo/simulation-processing/python/"
+    )]
+    pub script_dir: Option<PathBuf>,
 
     /// Output directory
     #[arg(short, long, value_name = "OUTDIR")]
-    pub outdir: String,
+    pub outdir: Option<PathBuf>,
 }
 
 // --------------------------------------------------
@@ -69,7 +79,7 @@ pub struct SimProcArgs {
 pub struct ValidateArgs {
     /// Input directory
     #[arg(value_name = "DIR")]
-    pub dirname: String,
+    pub dirname: PathBuf,
 }
 
 // --------------------------------------------------
@@ -78,7 +88,7 @@ pub struct ValidateArgs {
 pub struct MetaCheckArgs {
     /// Input file
     #[arg(value_name = "FILE")]
-    pub filename: String,
+    pub filename: PathBuf,
 }
 
 // --------------------------------------------------
@@ -101,3 +111,13 @@ pub struct SubmissionCompleteFile {
     pub size: u64,
     pub md5_hash: String,
 }
+
+// --------------------------------------------------
+//pub struct FullMinFiles {
+//    pub full_gro: PathBuf,
+//    pub full_pdb: PathBuf,
+//    pub full_xtc: PathBuf,
+//    pub min_gro: PathBuf,
+//    pub min_pdb: PathBuf,
+//    pub min_xtc: PathBuf,
+//}

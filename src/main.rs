@@ -1,16 +1,13 @@
 mod constants;
 mod metadata;
+mod process;
 mod types;
 mod validate;
 
 use anyhow::Result;
 use clap::Parser;
 use metadata::Meta;
-//use log::info;
-use std::{
-    fs::{self, File},
-    io::BufWriter,
-};
+use std::{fs::File, io::BufWriter};
 use types::{Cli, Command, LogLevel};
 
 // --------------------------------------------------
@@ -39,31 +36,18 @@ fn run(args: Cli) -> Result<()> {
         .init();
 
     match &args.command {
-        Some(Command::SimProc(args)) => {
-            dbg!(&args);
-            //let mut out_file = open_outfile(&args.outfile)?;
-            //let meta = Meta::example();
-            //write!(
-            //    out_file,
-            //    "{}",
-            //    if args.format == FileFormat::Json {
-            //        meta.to_json()?
-            //    } else {
-            //        meta.to_toml()?
-            //    }
-            //)?;
+        Some(Command::Process(args)) => {
+            validate::validate(&args.dirname)?;
+            process::process(&args)?;
             Ok(())
         }
         Some(Command::MetaCheck(args)) => {
-            dbg!(&args);
-            let toml = fs::read_to_string(&args.filename)?;
-            let mut meta: Meta = toml::from_str(&toml)?;
-            meta.fix();
+            let meta = Meta::from_file(&args.filename)?;
             dbg!(&meta);
             Ok(())
         }
         Some(Command::Validate(args)) => {
-            validate::validate(&args)?;
+            validate::validate(&args.dirname)?;
             Ok(())
         }
         None => unreachable!(),

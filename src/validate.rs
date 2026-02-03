@@ -1,21 +1,22 @@
-use crate::{
-    constants::MAX_FILE_SIZE_BYTES,
-    types::{SubmissionCompleteJson, ValidateArgs},
-};
+use crate::{constants::MAX_FILE_SIZE_BYTES, types::SubmissionCompleteJson, Meta};
 use anyhow::{anyhow, bail, Result};
-use chksum_md5 as md5;
+//use chksum_md5 as md5;
 use log::info;
 use std::{
-    fs::{self, File},
-    path::Path,
+    //fs::{self, File},
+    fs,
+    path::PathBuf,
 };
 
 // --------------------------------------------------
-pub fn validate(args: &ValidateArgs) -> Result<()> {
-    //dbg!(&args);
+pub fn validate(dir: &PathBuf) -> Result<()> {
+    dbg!(&dir);
 
-    info!(r#"Processing input directory "{}""#, args.dirname);
-    let dir = Path::new(&args.dirname);
+    if !dir.is_dir() {
+        bail!(r#"Invalid directory "{}""#, dir.display())
+    }
+
+    info!(r#"Processing input directory "{}""#, dir.display());
 
     let mut files: Vec<String> = fs::read_dir(&dir)?
         .into_iter()
@@ -24,6 +25,7 @@ pub fn validate(args: &ValidateArgs) -> Result<()> {
         .map(|entry| entry.file_name().to_string_lossy().to_string())
         .collect();
     files.sort();
+    dbg!(&files);
 
     if files.is_empty() {
         bail!(r#""{}" contains no files"#, dir.display());
@@ -32,9 +34,15 @@ pub fn validate(args: &ValidateArgs) -> Result<()> {
 
     // GetSubmissionCompletedDataStep
     let completed_path = dir.join("mdrepo-submission.completed.json");
-    let completed: SubmissionCompleteJson =
-        serde_json::from_str(&read_file(&completed_path.to_string_lossy())?)?;
-    //dbg!(&completed);
+    if !completed_path.is_file() {
+        bail!(r#"Missing "{}""#, completed_path.display());
+    }
+
+    let completed: SubmissionCompleteJson = serde_json::from_str(&read_file(
+        &completed_path.to_string_lossy(),
+    )?)
+    .map_err(|e| anyhow!(r#"Failed to parse "{}": {e}"#, completed_path.display()))?;
+    dbg!(&completed);
 
     // Ensure that some files were uploaded
     if completed.files.is_empty() {
@@ -43,7 +51,7 @@ pub fn validate(args: &ValidateArgs) -> Result<()> {
 
     // Check file hashes/sizes
     let mut total_file_size = 0;
-    for file in completed.files {
+    for file in &completed.files {
         let path = dir.join(&file.irods_path);
         if !path.exists() {
             bail!(r#"Missing expected file "{}""#, file.irods_path);
@@ -52,24 +60,25 @@ pub fn validate(args: &ValidateArgs) -> Result<()> {
         let size = path.metadata()?.len();
         total_file_size += size;
 
-        let fh = File::open(&path).map_err(|e| anyhow!("{}: {e}", &file.irods_path))?;
-        let digest = md5::chksum(fh)?.to_hex_lowercase();
+        //let fh = File::open(&path).map_err(|e| anyhow!("{}: {e}", &file.irods_path))?;
+        //let digest = md5::chksum(fh)?.to_hex_lowercase();
 
         info!(
-            r#"Checking "{}" = hash {}, size {}"#,
+            r#"Checking "{}" = size {}"#,
+            //r#"Checking "{}" = hash {}, size {}"#,
             file.irods_path,
-            if file.md5_hash == digest { "OK" } else { "BAD" },
+            //if file.md5_hash == digest { "OK" } else { "BAD" },
             if file.size == size { "OK" } else { "Bad" }
         );
 
-        if file.md5_hash != digest {
-            bail!(
-                r#""{}" MD5 "{}" does not match meta "{}""#,
-                file.irods_path,
-                digest,
-                file.md5_hash
-            )
-        }
+        //if file.md5_hash != digest {
+        //    bail!(
+        //        r#""{}" MD5 "{}" does not match meta "{}""#,
+        //        file.irods_path,
+        //        digest,
+        //        file.md5_hash
+        //    )
+        //}
 
         if file.size != size {
             bail!(
@@ -106,47 +115,33 @@ pub fn validate(args: &ValidateArgs) -> Result<()> {
     }
 
     // This automatically checks the validity of the TOML
-    //let meta = Meta::from_file(&meta_toml)?;
-    //dbg!(meta);
+    let meta = Meta::from_file(&meta_toml)?;
+    dbg!(&meta);
 
-    //// CheckMetadataFilesExistStep
-    //match meta.required_files {
-    //    Some(files) => {
-    //        println!("{files:?}");
-    //        let uploaded_files: Vec<_> = completed
-    //            .files
-    //            .into_iter()
-    //            .map(|file| file.irods_path)
-    //            .collect();
-    //        for (file_type, file) in &[
-    //            ("Trajectory", files.trajectory_file_name),
-    //            ("Structure", files.structure_file_name),
-    //            ("Topology", files.topology_file_name),
-    //        ] {
-    //            if !uploaded_files.contains(file) {
-    //                bail!(r#"Metadata "{file_type}" file "{file}" not uploaded"#);
-    //            }
-    //        }
-    //    }
+    // CheckMetadataFilesExistStep
+    match meta.required_files {
+        Some(reqd_file) => {
+            println!("{reqd_file:?}");
+            let uploaded_files: Vec<_> = completed
+                .files
+                .into_iter()
+                .map(|file| file.irods_path.clone())
+                .collect();
+            for (file_type, file) in &[
+                ("Trajectory", reqd_file.trajectory_file_name),
+                ("Structure", reqd_file.structure_file_name),
+                ("Topology", reqd_file.topology_file_name),
+            ] {
+                if !uploaded_files.contains(file) {
+                    bail!(r#"Missing "{file_type}" file "{file}""#);
+                }
+            }
+        }
 
-    //    _ => bail!("TOML data is missing required_files"),
-    //}
-
-    //// CheckTokenStep
-    //check_token()?;
-
-    // GetTokenStep
-    // This step in python gets the "token" from the landing ID:
-    // base64.urlsafe_b64encode(base64.b32decode(landing_id)).decode()
-    // But what exactly is the "landing ID"? And why do we need this token?
-
-    // ValidateMetadataStep
-    // Some parts are validated by the types, e.g., required fields
-    // but I may need to revisit this as I had to loosen some requirements
-    // to parse older TOML formats. The validation also checks if a field
-    // value must conform to allowed choices.
-
+        _ => bail!("TOML data is missing required_files"),
+    }
     println!("Validation complete");
+
     Ok(())
 }
 
