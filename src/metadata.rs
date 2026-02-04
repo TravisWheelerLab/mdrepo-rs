@@ -27,8 +27,7 @@ pub struct Meta {
 
     pub software: Software,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub required_files: Option<RequiredFile>,
+    pub required_files: RequiredFile,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub additional_files: Option<Vec<AdditionalFile>>,
@@ -189,6 +188,9 @@ pub struct Initial {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     simulation_is_restricted: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duration_ns: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -479,8 +481,8 @@ mod tests {
         assert_eq!(water.density, Some(1000.));
         assert_eq!(water.water_density_units, Some("g/m^3".to_string()));
 
-        assert!(meta.required_files.is_some());
-        let required_files = meta.required_files.unwrap();
+        //assert!(meta.required_files.is_some());
+        let required_files = meta.required_files;
         assert_eq!(required_files.trajectory_file_name, "prodw.xtc".to_string());
         assert_eq!(
             required_files.structure_file_name,

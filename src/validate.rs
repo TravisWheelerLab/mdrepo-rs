@@ -119,26 +119,21 @@ pub fn validate(dir: &PathBuf) -> Result<()> {
     dbg!(&meta);
 
     // CheckMetadataFilesExistStep
-    match meta.required_files {
-        Some(reqd_file) => {
-            println!("{reqd_file:?}");
-            let uploaded_files: Vec<_> = completed
-                .files
-                .into_iter()
-                .map(|file| file.irods_path.clone())
-                .collect();
-            for (file_type, file) in &[
-                ("Trajectory", reqd_file.trajectory_file_name),
-                ("Structure", reqd_file.structure_file_name),
-                ("Topology", reqd_file.topology_file_name),
-            ] {
-                if !uploaded_files.contains(file) {
-                    bail!(r#"Missing "{file_type}" file "{file}""#);
-                }
-            }
+    let reqd_file = meta.required_files;
+    println!("{reqd_file:?}");
+    let uploaded_files: Vec<_> = completed
+        .files
+        .into_iter()
+        .map(|file| file.irods_path.clone())
+        .collect();
+    for (file_type, file) in &[
+        ("Trajectory", reqd_file.trajectory_file_name),
+        ("Structure", reqd_file.structure_file_name),
+        ("Topology", reqd_file.topology_file_name),
+    ] {
+        if !uploaded_files.contains(file) {
+            bail!(r#"Missing "{file_type}" file "{file}""#);
         }
-
-        _ => bail!("TOML data is missing required_files"),
     }
     println!("Validation complete");
 
