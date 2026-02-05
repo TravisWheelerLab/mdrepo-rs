@@ -150,3 +150,78 @@ pub struct Duration {
     pub totaltime_ns: u32,
     pub sampling_frequency_ns: f32,
 }
+
+// --------------------------------------------------
+#[derive(Debug)]
+pub struct UniprotEntry {
+    pub uniprot_id: String,
+    pub name: String,
+    pub sequence: String,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UniprotResponse {
+    #[serde(alias = "proteinDescription")]
+    pub protein_description: UniprotProteinDesc,
+
+    pub sequence: UniprotProteinSequence,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UniprotProteinDesc {
+    #[serde(alias = "recommendedName")]
+    pub recommended_name: Option<UniprotProteinFullName>,
+
+    #[serde(alias = "submissionNames")]
+    pub submission_names: Option<UniprotProteinFullName>,
+}
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UniprotProteinFullName {
+    #[serde(alias = "fullName")]
+    pub full_name: UniprotProteinFullNameValue,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UniprotProteinFullNameValue {
+    pub value: String,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UniprotProteinSequence {
+    pub value: String,
+}
+
+// --------------------------------------------------
+#[derive(Debug)]
+pub struct PdbEntry {
+    pub pdb_id: String,
+    pub title: String,
+    pub classification: String,
+    pub uniprots: Vec<UniprotEntry>,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PdbResponse {
+    #[serde(alias = "struct")]
+    pub struct_: PdbStruct,
+
+    pub struct_keywords: PdbStructKeywords,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PdbStruct {
+    pub title: String,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PdbStructKeywords {
+    pub pdbx_keywords: String,
+}

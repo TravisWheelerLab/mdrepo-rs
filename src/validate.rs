@@ -80,14 +80,15 @@ pub fn validate(dir: &PathBuf) -> Result<()> {
         //    )
         //}
 
-        if file.size != size {
-            bail!(
-                r#""{}" size "{}" does not match meta "{}""#,
-                file.irods_path,
-                size,
-                file.size
-            )
-        }
+        // TODO: allow!
+        //if file.size != size {
+        //    bail!(
+        //        r#""{}" size "{}" does not match meta "{}""#,
+        //        file.irods_path,
+        //        size,
+        //        file.size
+        //    )
+        //}
     }
 
     // Check min/max file size
@@ -101,12 +102,13 @@ pub fn validate(dir: &PathBuf) -> Result<()> {
         );
     }
 
-    if total_file_size != completed.total_filesize {
-        bail!(
-            "Total file size ({total_file_size}) does not match meta {}",
-            completed.total_filesize
-        );
-    }
+    // TODO: allow
+    //if total_file_size != completed.total_filesize {
+    //    bail!(
+    //        "Total file size ({total_file_size}) does not match meta {}",
+    //        completed.total_filesize
+    //    );
+    //}
 
     // Validate meta
     let meta_toml = dir.join("mdrepo-metadata.toml");

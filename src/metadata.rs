@@ -18,6 +18,17 @@ enum Numlike {
     TomlVal(TomlValue),
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub enum MoleculeType {
+    #[serde(alias = "Pdb")]
+    PDB,
+
+    #[serde(alias = "UNIPROT")]
+    Uniprot,
+
+    Other(String),
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Meta {
@@ -32,8 +43,8 @@ pub struct Meta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub additional_files: Option<Vec<AdditionalFile>>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub proteins: Option<Vec<Protein>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub proteins: Vec<Protein>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub replicates: Option<Replicates>,
@@ -128,38 +139,38 @@ impl Meta {
             self.papers = Some(new_papers);
         }
 
+        // TODO: fix
         // Older versions of the TOML had separate fields for PDB/Uniprot
-        if let Some(proteins) = &self.proteins {
-            let new_proteins: Vec<_> = proteins
-                .into_iter()
-                .map(|protein| {
-                    if let Some(pdb_id) = &protein.pdb_id {
-                        Protein {
-                            molecule_id_type: Some("PDB".to_string()),
-                            molecule_id: Some(pdb_id.to_string()),
-                            pdb_id: None,
-                            uniprot_id: None,
-                        }
-                    } else if let Some(uniprot_id) = &protein.uniprot_id {
-                        Protein {
-                            molecule_id_type: Some("Uniprot".to_string()),
-                            molecule_id: Some(uniprot_id.to_string()),
-                            pdb_id: None,
-                            uniprot_id: None,
-                        }
-                    } else {
-                        Protein {
-                            molecule_id_type: protein.molecule_id_type.clone(),
-                            molecule_id: protein.molecule_id.clone(),
-                            pdb_id: None,
-                            uniprot_id: None,
-                        }
-                    }
-                })
-                .collect();
+        //let new_proteins: Vec<_> = self
+        //    .proteins
+        //    .into_iter()
+        //    .map(|protein| {
+        //        if let Some(pdb_id) = &protein.pdb_id {
+        //            Protein {
+        //                molecule_id_type: Some(MoleculeType::PDB),
+        //                molecule_id: Some(pdb_id.to_string()),
+        //                pdb_id: None,
+        //                uniprot_id: None,
+        //            }
+        //        } else if let Some(uniprot_id) = &protein.uniprot_id {
+        //            Protein {
+        //                molecule_id_type: Some(MoleculeType::Uniprot),
+        //                molecule_id: Some(uniprot_id.to_string()),
+        //                pdb_id: None,
+        //                uniprot_id: None,
+        //            }
+        //        } else {
+        //            Protein {
+        //                molecule_id_type: protein.molecule_id_type.clone(),
+        //                molecule_id: protein.molecule_id.clone(),
+        //                pdb_id: None,
+        //                uniprot_id: None,
+        //            }
+        //        }
+        //    })
+        //    .collect();
 
-            self.proteins = Some(new_proteins);
-        }
+        //self.proteins = new_proteins;
     }
 }
 
@@ -304,7 +315,7 @@ pub struct Replicates {
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
 pub struct Protein {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub molecule_id_type: Option<String>,
+    pub molecule_id_type: Option<MoleculeType>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub molecule_id: Option<String>,
@@ -368,7 +379,7 @@ mod tests {
         assert_eq!(
             proteins[0],
             Protein {
-                molecule_id_type: Some("PDB".to_string()),
+                molecule_id_type: Some(MoleculeType::PDB),
                 molecule_id: Some("1U19.A".to_string()),
                 pdb_id: None,
                 uniprot_id: None,
@@ -429,7 +440,7 @@ mod tests {
         assert_eq!(
             proteins[0],
             Protein {
-                molecule_id_type: Some("PDB".to_string()),
+                molecule_id_type: Some(MoleculeType::PDB),
                 molecule_id: Some("5UPE".to_string()),
                 pdb_id: None,
                 uniprot_id: None,

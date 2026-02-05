@@ -1,6 +1,9 @@
 use crate::{
-    metadata::Meta,
-    types::{Duration, FullMinFiles, ProcessArgs, ProteinSequence, RmsdRmsf},
+    metadata::{Meta, MoleculeType},
+    types::{
+        Duration, FullMinFiles, PdbEntry, PdbResponse, ProcessArgs, ProteinSequence,
+        RmsdRmsf, UniprotEntry, UniprotResponse,
+    },
 };
 use anyhow::{anyhow, bail, Result};
 use log::info;
@@ -42,19 +45,37 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
     let sequence = get_sequence(&files.full_pdb, &sequence_file, &script_dir)?;
     dbg!(&sequence);
 
-    let rmsd_rmsf_file = out_dir.join("rmsd_rmsf.json");
-    let rmsd_rmsf =
-        get_rmsd_rmsf(&files.min_pdb, &files.min_xtc, &rmsd_rmsf_file, &script_dir)?;
-    dbg!(&rmsd_rmsf);
+    //let rmsd_rmsf_file = out_dir.join("rmsd_rmsf.json");
+    //let rmsd_rmsf =
+    //    get_rmsd_rmsf(&files.min_pdb, &files.min_xtc, &rmsd_rmsf_file, &script_dir)?;
+    //dbg!(&rmsd_rmsf);
 
-    let meta = Meta::from_file(&files.meta_toml)?;
     let duration_file = out_dir.join("duration.json");
     let duration = get_duration(&files.full_xtc, &duration_file)?;
     dbg!(&duration);
 
+    let meta = Meta::from_file(&files.meta_toml)?;
     let topology = in_dir.join(meta.required_files.topology_file_name);
     let topology_hash = get_topology_hash(&topology)?;
     dbg!(&topology_hash);
+
+    dbg!(&meta.proteins);
+    for protein in &meta.proteins {
+        match (
+            protein.molecule_id_type.clone(),
+            protein.molecule_id.clone(),
+        ) {
+            (Some(MoleculeType::Uniprot), Some(uniprot_id)) => {
+                let uniprot = get_uniprot_entry(&uniprot_id)?;
+                dbg!(&uniprot);
+            }
+            (Some(MoleculeType::PDB), Some(pdb_id)) => {
+                let pdb = get_pdb_entry(&pdb_id)?;
+                dbg!(&pdb);
+            }
+            _ => println!("Handle {protein:?}"),
+        }
+    }
 
     //let json_dir = &args.json_dir.clone().unwrap();
     //let in_dir_basename = &in_dir.file_name().unwrap().to_string_lossy().to_string();
@@ -428,4 +449,54 @@ fn get_topology_hash(topology: &PathBuf) -> Result<String> {
     let contents = fs::read(&topology)?;
     let digest = Sha1::digest(&contents);
     Ok(format!("{digest:x}"))
+}
+
+// --------------------------------------------------
+fn get_uniprot_entry(uniprot_id: &str) -> Result<UniprotEntry> {
+    let url = format!("https://rest.uniprot.org/uniprotkb/{uniprot_id}.json");
+    let resp = reqwest::blocking::get(&url)?;
+    if !resp.status().is_success() {
+        bail!("Failed to GET \"{url}\" ({})", resp.status());
+    }
+    let uniprot: UniprotResponse = resp
+        .json()
+        .map_err(|e| anyhow!("Failed to parse Uniprot response: {e}"))?;
+
+    let desc = uniprot.protein_description;
+    let name = if let Some(name) = desc.recommended_name {
+        name.full_name.value
+    } else if let Some(name) = desc.submission_names {
+        name.full_name.value
+    } else {
+        bail!("Uniprot entry for \"{uniprot_id}\" has no names")
+    };
+
+    Ok(UniprotEntry {
+        uniprot_id: uniprot_id.to_string(),
+        name,
+        sequence: uniprot.sequence.value,
+    })
+}
+
+// --------------------------------------------------
+fn get_pdb_entry(pdb_id: &str) -> Result<PdbEntry> {
+    let url = format!(
+        "https://data.rcsb.org/rest/v1/core/entry/{}",
+        pdb_id.to_uppercase()
+    );
+    let resp = reqwest::blocking::get(&url)?;
+    if !resp.status().is_success() {
+        bail!("Failed to GET \"{url}\" ({})", resp.status());
+    }
+    let pdb_resp: PdbResponse = resp
+        .json()
+        .map_err(|e| anyhow!("Failed to parse PDB response: {e}"))?;
+    dbg!(&pdb_resp);
+
+    Ok(PdbEntry {
+        pdb_id: pdb_id.to_string(),
+        title: pdb_resp.struct_.title.to_string(),
+        classification: pdb_resp.struct_keywords.pdbx_keywords.to_string(),
+        uniprots: vec![],
+    })
 }
