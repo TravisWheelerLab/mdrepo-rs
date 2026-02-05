@@ -6,6 +6,7 @@ mod validate;
 
 use anyhow::Result;
 use clap::Parser;
+//use diesel::prelude::*;
 use metadata::Meta;
 use std::{fs::File, io::BufWriter};
 use types::{Cli, Command, LogLevel};

@@ -1,15 +1,17 @@
 use crate::{
     metadata::{Meta, MoleculeType},
     types::{
-        Duration, FullMinFiles, PdbEntry, PdbResponse, ProcessArgs, ProteinSequence,
-        RmsdRmsf, UniprotEntry, UniprotResponse,
+        Duration, FullMinFiles, PdbEntry, PdbGraphqlResponse, PdbResponse, PdbUniprot,
+        ProcessArgs, ProteinSequence, RmsdRmsf, Server, UniprotEntry, UniprotResponse,
     },
 };
 use anyhow::{anyhow, bail, Result};
+use dotenvy::dotenv;
 use log::info;
 use regex::Regex;
 use sha1::{Digest, Sha1};
 use std::{
+    env,
     fs::{self, File},
     io::Write,
     path::PathBuf,
@@ -41,46 +43,16 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
     let thumbnail = out_dir.join("thumbnail.png");
     make_thumbnail(&thumbnail, &sampled_trajectory, &files.min_pdb, &script_dir)?;
 
-    let sequence_file = out_dir.join("sequence.json");
-    let sequence = get_sequence(&files.full_pdb, &sequence_file, &script_dir)?;
-    dbg!(&sequence);
-
-    //let rmsd_rmsf_file = out_dir.join("rmsd_rmsf.json");
-    //let rmsd_rmsf =
-    //    get_rmsd_rmsf(&files.min_pdb, &files.min_xtc, &rmsd_rmsf_file, &script_dir)?;
-    //dbg!(&rmsd_rmsf);
-
-    let duration_file = out_dir.join("duration.json");
-    let duration = get_duration(&files.full_xtc, &duration_file)?;
-    dbg!(&duration);
-
-    let meta = Meta::from_file(&files.meta_toml)?;
-    let topology = in_dir.join(meta.required_files.topology_file_name);
-    let topology_hash = get_topology_hash(&topology)?;
-    dbg!(&topology_hash);
-
-    dbg!(&meta.proteins);
-    for protein in &meta.proteins {
-        match (
-            protein.molecule_id_type.clone(),
-            protein.molecule_id.clone(),
-        ) {
-            (Some(MoleculeType::Uniprot), Some(uniprot_id)) => {
-                let uniprot = get_uniprot_entry(&uniprot_id)?;
-                dbg!(&uniprot);
-            }
-            (Some(MoleculeType::PDB), Some(pdb_id)) => {
-                let pdb = get_pdb_entry(&pdb_id)?;
-                dbg!(&pdb);
-            }
-            _ => println!("Handle {protein:?}"),
-        }
-    }
-
     //let json_dir = &args.json_dir.clone().unwrap();
     //let in_dir_basename = &in_dir.file_name().unwrap().to_string_lossy().to_string();
     //let import_json = json_dir.join(format!("{in_dir_basename}.json"));
-    //make_import_json(&files, &sampled_trajectory, &thumbnail, &import_json)?;
+    import(
+        &args.server,
+        &files,
+        &sampled_trajectory,
+        &thumbnail,
+        &out_dir,
+    )?; //, &import_json)?;
 
     Ok(())
 }
@@ -343,18 +315,72 @@ fn sample_trajectory(
 }
 
 // --------------------------------------------------
-fn make_import_json(
+pub fn db_connection(server: &Server) -> Result<postgres::Client> {
+    dotenv().ok();
+
+    let env_key = match server {
+        Server::Production => "PRODUCTION_DB_URL",
+        Server::Staging => "STAGING_DB_URL",
+    };
+    dbg!(&env_key);
+
+    let db_url = env::var(env_key).expect(&format!("{env_key} must be set"));
+    //PgConnection::establish(&db_url).map_err(|e| anyhow!("Failed db connection: {e}"))
+    postgres::Client::connect(&db_url, postgres::NoTls)
+        .map_err(|_| anyhow!("Failed db connection"))
+}
+
+// --------------------------------------------------
+fn import(
+    server: &Server,
     files: &FullMinFiles,
     sampled_trajectory: &PathBuf,
     thumbnail: &PathBuf,
-    import_json: &PathBuf,
-    script_dir: &PathBuf,
+    out_dir: &PathBuf,
 ) -> Result<()> {
-    if exists(import_json) {
-        info!("Import JSON exists");
-    } else {
-        info!("Creating import JSON");
-    }
+    let _dbh = db_connection(server)?;
+    println!("Connected to {server:?}");
+
+    //let meta = Meta::from_file(&files.meta_toml)?;
+    //let topology = in_dir.join(meta.required_files.topology_file_name);
+    //let topology_hash = get_topology_hash(&topology)?;
+    //dbg!(&topology_hash);
+
+    //let sequence_file = out_dir.join("sequence.json");
+    //let sequence = get_sequence(&files.full_pdb, &sequence_file, &script_dir)?;
+    //dbg!(&sequence);
+
+    //let rmsd_rmsf_file = out_dir.join("rmsd_rmsf.json");
+    //let rmsd_rmsf =
+    //    get_rmsd_rmsf(&files.min_pdb, &files.min_xtc, &rmsd_rmsf_file, &script_dir)?;
+    //dbg!(&rmsd_rmsf);
+
+    //let duration_file = out_dir.join("duration.json");
+    //let duration = get_duration(&files.full_xtc, &duration_file)?;
+    //dbg!(&duration);
+
+    //dbg!(&meta.proteins);
+    //let mut uniprots: Vec<UniprotEntry> = vec![];
+    //let mut pdbs: Vec<PdbEntry> = vec![];
+    //for protein in &meta.proteins {
+    //    match (
+    //        protein.molecule_id_type.clone(),
+    //        protein.molecule_id.clone(),
+    //    ) {
+    //        (Some(MoleculeType::Uniprot), Some(uniprot_id)) => {
+    //            let uniprot = get_uniprot_entry(&uniprot_id)?;
+    //            uniprots.push(uniprot);
+    //        }
+    //        (Some(MoleculeType::PDB), Some(pdb_id)) => {
+    //            let pdb = get_pdb_entry(&pdb_id)?;
+    //            pdbs.push(pdb);
+    //        }
+    //        _ => println!("Handle {protein:?}"),
+    //    }
+    //}
+    //dbg!(&uniprots);
+    //dbg!(&pdbs);
+
     Ok(())
 }
 
@@ -480,10 +506,8 @@ fn get_uniprot_entry(uniprot_id: &str) -> Result<UniprotEntry> {
 
 // --------------------------------------------------
 fn get_pdb_entry(pdb_id: &str) -> Result<PdbEntry> {
-    let url = format!(
-        "https://data.rcsb.org/rest/v1/core/entry/{}",
-        pdb_id.to_uppercase()
-    );
+    let pdb_id = pdb_id.to_uppercase();
+    let url = format!("https://data.rcsb.org/rest/v1/core/entry/{pdb_id}");
     let resp = reqwest::blocking::get(&url)?;
     if !resp.status().is_success() {
         bail!("Failed to GET \"{url}\" ({})", resp.status());
@@ -491,12 +515,42 @@ fn get_pdb_entry(pdb_id: &str) -> Result<PdbEntry> {
     let pdb_resp: PdbResponse = resp
         .json()
         .map_err(|e| anyhow!("Failed to parse PDB response: {e}"))?;
-    dbg!(&pdb_resp);
+
+    let query = [
+        "{entry(entry_id:\"",
+        &pdb_id,
+        "\"){polymer_entities{uniprots{rcsb_id,rcsb_uniprot_protein{",
+        "name{value},sequence}}}}}",
+    ]
+    .join("");
+    let url = format!(
+        "https://data.rcsb.org/graphql?query={}",
+        urlencoding::encode(&query)
+    );
+
+    let resp = reqwest::blocking::get(&url)?;
+    if !resp.status().is_success() {
+        bail!("Failed to GET \"{url}\" ({})", resp.status());
+    }
+    let graphql_resp: PdbGraphqlResponse = resp
+        .json()
+        .map_err(|e| anyhow!("Failed to parse PDB response: {e}"))?;
+
+    let mut uniprots: Vec<UniprotEntry> = vec![];
+    for entry in graphql_resp.data.entry.polymer_entities {
+        for uniprot in entry.uniprots {
+            uniprots.push(UniprotEntry {
+                uniprot_id: uniprot.rcsb_id,
+                name: uniprot.rcsb_uniprot_protein.name.value,
+                sequence: uniprot.rcsb_uniprot_protein.sequence,
+            })
+        }
+    }
 
     Ok(PdbEntry {
         pdb_id: pdb_id.to_string(),
         title: pdb_resp.struct_.title.to_string(),
         classification: pdb_resp.struct_keywords.pdbx_keywords.to_string(),
-        uniprots: vec![],
+        uniprots,
     })
 }

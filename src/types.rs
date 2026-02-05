@@ -61,7 +61,7 @@ pub struct ProcessArgs {
 
     /// Script directory
     #[arg(
-        short,
+        short('S'),
         long,
         value_name = "DIR",
         default_value = "/opt/mdrepo/simulation-processing/python/"
@@ -75,6 +75,30 @@ pub struct ProcessArgs {
     /// Output directory for JSON import file
     #[arg(short, long, value_name = "OUTDIR", default_value = "import_json")]
     pub json_dir: Option<PathBuf>,
+
+    /// staging or production
+    #[arg(short, long, value_name = "SERVER", default_value = "staging")]
+    pub server: Server,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Clone)]
+pub enum Server {
+    Production,
+    Staging,
+}
+
+impl ValueEnum for Server {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[Server::Production, Server::Staging]
+    }
+
+    fn to_possible_value<'a>(&self) -> Option<PossibleValue> {
+        Some(match self {
+            Server::Production => PossibleValue::new("prod"),
+            Server::Staging => PossibleValue::new("staging"),
+        })
+    }
 }
 
 // --------------------------------------------------
@@ -224,4 +248,48 @@ pub struct PdbStruct {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct PdbStructKeywords {
     pub pdbx_keywords: String,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PdbGraphqlResponse {
+    pub data: PdbData,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PdbData {
+    pub entry: PdbDataEntry,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PdbDataEntry {
+    pub polymer_entities: Vec<PdbPolymerEntities>,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PdbPolymerEntities {
+    pub uniprots: Vec<PdbUniprot>,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PdbUniprot {
+    pub rcsb_id: String,
+    pub rcsb_uniprot_protein: RcsbUniprotProtein,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RcsbUniprotProtein {
+    pub name: RcsbUniprotProteinName,
+    pub sequence: String,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RcsbUniprotProteinName {
+    pub value: String,
 }
