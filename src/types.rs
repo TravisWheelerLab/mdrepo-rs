@@ -141,14 +141,15 @@ pub struct SubmissionCompleteFile {
 }
 
 // --------------------------------------------------
-pub struct FullMinFiles {
-    pub meta_toml: PathBuf,
+pub struct ProcessedFiles {
     pub full_gro: PathBuf,
     pub full_pdb: PathBuf,
     pub full_xtc: PathBuf,
     pub min_gro: PathBuf,
     pub min_pdb: PathBuf,
     pub min_xtc: PathBuf,
+    pub sampled_xtc: PathBuf,
+    pub thumbnail_png: PathBuf,
 }
 
 // --------------------------------------------------

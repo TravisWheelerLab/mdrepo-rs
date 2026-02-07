@@ -1,12 +1,12 @@
-use crate::{constants::MAX_FILE_SIZE_BYTES, types::SubmissionCompleteJson, Meta};
-use anyhow::{anyhow, bail, Result};
-//use chksum_md5 as md5;
-use log::info;
-use std::{
-    //fs::{self, File},
-    fs,
-    path::PathBuf,
+use crate::{
+    common::{get_md5, read_file},
+    constants::MAX_FILE_SIZE_BYTES,
+    types::SubmissionCompleteJson,
+    Meta,
 };
+use anyhow::{anyhow, bail, Result};
+use log::info;
+use std::{fs, path::PathBuf};
 
 // --------------------------------------------------
 pub fn validate(dir: &PathBuf) -> Result<()> {
@@ -32,17 +32,24 @@ pub fn validate(dir: &PathBuf) -> Result<()> {
     }
     info!("Found files: {files:#?}");
 
-    // GetSubmissionCompletedDataStep
     let completed_path = dir.join("mdrepo-submission.completed.json");
     if !completed_path.is_file() {
         bail!(r#"Missing "{}""#, completed_path.display());
     }
 
-    let completed: SubmissionCompleteJson = serde_json::from_str(&read_file(
-        &completed_path.to_string_lossy(),
-    )?)
-    .map_err(|e| anyhow!(r#"Failed to parse "{}": {e}"#, completed_path.display()))?;
+    let completed: SubmissionCompleteJson =
+        serde_json::from_str(&read_file(&completed_path)?).map_err(|e| {
+            anyhow!(r#"Failed to parse "{}": {e}"#, completed_path.display())
+        })?;
     dbg!(&completed);
+
+    if completed.total_filenum as usize != completed.files.len() {
+        bail!(
+            "Expected {} file(s) but completed JSON has {}",
+            completed.total_filenum,
+            completed.files.len()
+        );
+    }
 
     // Ensure that some files were uploaded
     if completed.files.is_empty() {
@@ -60,35 +67,36 @@ pub fn validate(dir: &PathBuf) -> Result<()> {
         let size = path.metadata()?.len();
         total_file_size += size;
 
-        //let fh = File::open(&path).map_err(|e| anyhow!("{}: {e}", &file.irods_path))?;
-        //let digest = md5::chksum(fh)?.to_hex_lowercase();
+        let local_md5 = get_md5(&path)?;
 
         info!(
-            r#"Checking "{}" = size {}"#,
-            //r#"Checking "{}" = hash {}, size {}"#,
+            r#"Checking "{}" = md5 {}, size {}"#,
             file.irods_path,
-            //if file.md5_hash == digest { "OK" } else { "BAD" },
+            if file.md5_hash == local_md5 {
+                "OK"
+            } else {
+                "BAD"
+            },
             if file.size == size { "OK" } else { "Bad" }
         );
 
-        //if file.md5_hash != digest {
-        //    bail!(
-        //        r#""{}" MD5 "{}" does not match meta "{}""#,
-        //        file.irods_path,
-        //        digest,
-        //        file.md5_hash
-        //    )
-        //}
+        if file.md5_hash != local_md5 {
+            bail!(
+                r#""{}" MD5 "{}" does not match meta "{}""#,
+                file.irods_path,
+                local_md5,
+                file.md5_hash
+            )
+        }
 
-        // TODO: allow!
-        //if file.size != size {
-        //    bail!(
-        //        r#""{}" size "{}" does not match meta "{}""#,
-        //        file.irods_path,
-        //        size,
-        //        file.size
-        //    )
-        //}
+        if file.size != size {
+            bail!(
+                r#""{}" size "{}" does not match meta "{}""#,
+                file.irods_path,
+                size,
+                file.size
+            )
+        }
     }
 
     // Check min/max file size
@@ -102,13 +110,12 @@ pub fn validate(dir: &PathBuf) -> Result<()> {
         );
     }
 
-    // TODO: allow
-    //if total_file_size != completed.total_filesize {
-    //    bail!(
-    //        "Total file size ({total_file_size}) does not match meta {}",
-    //        completed.total_filesize
-    //    );
-    //}
+    if total_file_size != completed.total_filesize {
+        bail!(
+            "Total file size ({total_file_size}) does not match meta {}",
+            completed.total_filesize
+        );
+    }
 
     // Validate meta
     let meta_toml = dir.join("mdrepo-metadata.toml");
@@ -120,29 +127,25 @@ pub fn validate(dir: &PathBuf) -> Result<()> {
     let meta = Meta::from_file(&meta_toml)?;
     dbg!(&meta);
 
-    // CheckMetadataFilesExistStep
     let reqd_file = meta.required_files;
     println!("{reqd_file:?}");
-    let uploaded_files: Vec<_> = completed
+    let uploaded_file_names: Vec<_> = completed
         .files
         .into_iter()
         .map(|file| file.irods_path.clone())
         .collect();
+
     for (file_type, file) in &[
-        ("Trajectory", reqd_file.trajectory_file_name),
-        ("Structure", reqd_file.structure_file_name),
-        ("Topology", reqd_file.topology_file_name),
+        ("trajectory_file_name", reqd_file.trajectory_file_name),
+        ("structure_file_name", reqd_file.structure_file_name),
+        ("topology_file_name", reqd_file.topology_file_name),
     ] {
-        if !uploaded_files.contains(file) {
-            bail!(r#"Missing "{file_type}" file "{file}""#);
+        if !uploaded_file_names.contains(file) {
+            bail!(r#"Metadata is missing "initial.{file_type}" file "{file}""#);
         }
     }
+
     println!("Validation complete");
 
     Ok(())
-}
-
-// --------------------------------------------------
-fn read_file(filename: &str) -> Result<String> {
-    fs::read_to_string(filename).map_err(|e| anyhow!("{filename}: {e}"))
 }

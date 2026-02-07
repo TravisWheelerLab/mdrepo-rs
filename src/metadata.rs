@@ -1,7 +1,8 @@
+use crate::common::read_file;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, NoneAsEmptyString};
-use std::{fs, path::PathBuf};
+use std::path::PathBuf;
 use toml::value::Value as TomlValue;
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
@@ -84,8 +85,8 @@ pub struct Meta {
 }
 
 impl Meta {
-    pub fn from_file(filename: &PathBuf) -> Result<Self> {
-        let contents = fs::read_to_string(filename)?;
+    pub fn from_file(path: &PathBuf) -> Result<Self> {
+        let contents = read_file(path)?;
         let mut toml: Meta = toml::from_str(&contents)?;
         toml.fix();
         Ok(toml)
@@ -179,53 +180,56 @@ impl Meta {
 pub struct Initial {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde_as(as = "NoneAsEmptyString")]
-    short_description: Option<String>,
+    pub short_description: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde_as(as = "NoneAsEmptyString")]
-    description: Option<String>,
+    pub description: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde_as(as = "NoneAsEmptyString")]
-    external_link: Option<String>,
+    pub external_link: Option<String>,
 
-    lead_contributor_orcid: String,
+    pub lead_contributor_orcid: String,
 
-    date: Datelike,
+    pub date: Datelike,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde_as(as = "NoneAsEmptyString")]
-    commands: Option<String>,
+    pub commands: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    simulation_is_restricted: Option<bool>,
+    pub simulation_is_restricted: Option<bool>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    duration_ns: Option<u32>,
+    pub duration_ns: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AdditionalFile {
-    additional_file_type: String,
-    additional_file_name: String,
+    #[serde(alias = "additional_file_type")]
+    pub file_type: String,
+
+    #[serde(alias = "additional_file_name")]
+    pub file_name: String,
 }
 
 #[serde_as]
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Contributor {
-    name: String,
+    pub name: String,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde_as(as = "NoneAsEmptyString")]
-    orcid: Option<String>,
+    pub orcid: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde_as(as = "NoneAsEmptyString")]
-    email: Option<String>,
+    pub email: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde_as(as = "NoneAsEmptyString")]
-    institution: Option<String>,
+    pub institution: Option<String>,
 }
 
 #[serde_as]

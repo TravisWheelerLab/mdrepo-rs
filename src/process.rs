@@ -1,8 +1,10 @@
 use crate::{
+    common::{file_exists, get_md5},
     metadata::{Meta, MoleculeType},
     types::{
-        Duration, FullMinFiles, PdbEntry, PdbGraphqlResponse, PdbResponse, PdbUniprot,
-        ProcessArgs, ProteinSequence, RmsdRmsf, Server, UniprotEntry, UniprotResponse,
+        Duration, PdbEntry, PdbGraphqlResponse, PdbResponse, PdbUniprot, ProcessArgs,
+        ProcessedFiles, ProteinSequence, RmsdRmsf, Server, UniprotEntry,
+        UniprotResponse,
     },
 };
 use anyhow::{anyhow, bail, Result};
@@ -22,48 +24,31 @@ use which::which;
 // --------------------------------------------------
 pub fn process(args: &ProcessArgs) -> Result<()> {
     dbg!(&args);
-    let in_dir = &args.dirname;
-    let out_dir = args
+    let input_dir = &args.dirname;
+    let processed_dir = args
         .outdir
         .clone()
-        .map_or(in_dir.join("processed"), |dir| PathBuf::from(&dir));
+        .map_or(input_dir.join("processed"), |dir| PathBuf::from(&dir));
     let script_dir = &args.script_dir.clone().unwrap();
-    dbg!(&out_dir);
+    dbg!(&processed_dir);
 
-    let files = make_full_min_files(&in_dir, &out_dir, &script_dir)?;
-
-    let sampled_trajectory = out_dir.join("sampled.xtc");
-    sample_trajectory(
-        &files.min_xtc,
-        &files.min_pdb,
-        &sampled_trajectory,
-        &script_dir,
-    )?;
-
-    let thumbnail = out_dir.join("thumbnail.png");
-    make_thumbnail(&thumbnail, &sampled_trajectory, &files.min_pdb, &script_dir)?;
+    let meta_path = input_dir.join("mdrepo-metadata.toml");
+    let meta = Meta::from_file(&meta_path)?;
+    let processed_files =
+        make_processed_files(&meta, &input_dir, &processed_dir, &script_dir)?;
 
     //let json_dir = &args.json_dir.clone().unwrap();
     //let in_dir_basename = &in_dir.file_name().unwrap().to_string_lossy().to_string();
     //let import_json = json_dir.join(format!("{in_dir_basename}.json"));
     import(
+        &meta,
+        &input_dir,
+        &script_dir,
+        &processed_files,
         &args.server,
-        &files,
-        &sampled_trajectory,
-        &thumbnail,
-        &out_dir,
-    )?; //, &import_json)?;
+    )?;
 
     Ok(())
-}
-
-// --------------------------------------------------
-fn exists(file: &PathBuf) -> bool {
-    if let Ok(meta) = fs::metadata(file) {
-        meta.is_file() && meta.len() > 0
-    } else {
-        false
-    }
 }
 
 // --------------------------------------------------
@@ -74,7 +59,7 @@ fn make_thumbnail(
     script_dir: &PathBuf,
 ) -> Result<()> {
     let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
-    if exists(&thumbnail) {
+    if file_exists(&thumbnail) {
         info!("Thumbnail exists");
     } else {
         info!("Creating thumbnail");
@@ -99,7 +84,7 @@ fn make_thumbnail(
             bail!(str::from_utf8(&cmd.stderr)?.to_string());
         }
 
-        if !exists(&thumbnail) {
+        if !file_exists(&thumbnail) {
             bail!(r#"Failed to create "{}""#, thumbnail.display());
         }
     }
@@ -107,15 +92,14 @@ fn make_thumbnail(
 }
 
 // --------------------------------------------------
-fn make_full_min_files(
+fn make_processed_files(
+    meta: &Meta,
     in_dir: &PathBuf,
-    out_dir: &PathBuf,
+    processed_dir: &PathBuf,
     script_dir: &PathBuf,
-) -> Result<FullMinFiles> {
-    let meta_path = in_dir.join("mdrepo-metadata.toml");
-    let meta = Meta::from_file(&meta_path)?;
-    let reqd_file = meta.required_files;
-    let expected_out_files = &[
+) -> Result<ProcessedFiles> {
+    let reqd_file = &meta.required_files;
+    let full_min_files = &[
         "full.gro",
         "full.pdb",
         "full.xtc",
@@ -123,10 +107,9 @@ fn make_full_min_files(
         "minimal.pdb",
         "minimal.xtc",
     ]
-    .map(|f| out_dir.join(f));
-    dbg!(&expected_out_files);
+    .map(|f| processed_dir.join(f));
 
-    if expected_out_files.iter().all(exists) {
+    if full_min_files.iter().all(file_exists) {
         info!("Full/minimal files all exist");
     } else {
         let micromamba = which("micromamba")
@@ -158,7 +141,7 @@ fn make_full_min_files(
                     .to_string_lossy()
                     .to_string(),
                 "-o",
-                &out_dir.to_string_lossy().to_string(),
+                &processed_dir.to_string_lossy().to_string(),
             ])
             .output()?;
         dbg!(&cmd);
@@ -167,9 +150,9 @@ fn make_full_min_files(
             bail!(str::from_utf8(&cmd.stderr)?.to_string());
         }
 
-        let missing: Vec<_> = expected_out_files
+        let missing: Vec<_> = full_min_files
             .iter()
-            .filter(|f| !exists(f))
+            .filter(|f| !file_exists(f))
             .map(|f| f.to_string_lossy().to_string())
             .collect();
 
@@ -178,14 +161,27 @@ fn make_full_min_files(
         }
     }
 
-    Ok(FullMinFiles {
-        meta_toml: meta_path,
-        full_gro: out_dir.join("full.gro"),
-        full_pdb: out_dir.join("full.pdb"),
-        full_xtc: out_dir.join("full.xtc"),
-        min_gro: out_dir.join("minimal.gro"),
-        min_pdb: out_dir.join("minimal.pdb"),
-        min_xtc: out_dir.join("minimal.xtc"),
+    let full_gro = processed_dir.join("full.gro");
+    let full_pdb = processed_dir.join("full.pdb");
+    let full_xtc = processed_dir.join("full.xtc");
+    let min_gro = processed_dir.join("minimal.gro");
+    let min_pdb = processed_dir.join("minimal.pdb");
+    let min_xtc = processed_dir.join("minimal.xtc");
+    let sampled_xtc = processed_dir.join("sampled.xtc");
+    let thumbnail_png = processed_dir.join("thumbnail.png");
+
+    sample_trajectory(&min_xtc, &min_pdb, &sampled_xtc, &script_dir)?;
+    make_thumbnail(&thumbnail_png, &sampled_xtc, &min_pdb, &script_dir)?;
+
+    Ok(ProcessedFiles {
+        full_gro,
+        full_pdb,
+        full_xtc,
+        min_gro,
+        min_pdb,
+        min_xtc,
+        sampled_xtc,
+        thumbnail_png,
     })
 }
 
@@ -193,14 +189,16 @@ fn make_full_min_files(
 fn get_rmsd_rmsf(
     min_pdb: &PathBuf,
     min_xtc: &PathBuf,
-    out_file: &PathBuf,
     script_dir: &PathBuf,
 ) -> Result<RmsdRmsf> {
-    let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
-    if exists(&out_file) {
+    let processed_dir = min_pdb.parent().unwrap();
+    let out_file = processed_dir.join("rmsd_rmsf.json");
+
+    if file_exists(&out_file) {
         info!("RMSD/RMSF file exists");
     } else {
         info!("Creating RMSD/RMSF file");
+        let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
         let script = script_dir.join("get_rmsd_rmsf.py");
         let cmd = Command::new(&uv)
             .current_dir(&script_dir)
@@ -222,7 +220,7 @@ fn get_rmsd_rmsf(
             bail!(str::from_utf8(&cmd.stderr)?.to_string());
         }
 
-        if !exists(&out_file) {
+        if !file_exists(&out_file) {
             bail!(r#"Failed to create "{}""#, out_file.display());
         }
     }
@@ -234,16 +232,15 @@ fn get_rmsd_rmsf(
 }
 
 // --------------------------------------------------
-fn get_sequence(
-    full_pdb: &PathBuf,
-    sequence_file: &PathBuf,
-    script_dir: &PathBuf,
-) -> Result<ProteinSequence> {
-    let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
-    if exists(&sequence_file) {
+fn get_sequence(full_pdb: &PathBuf, script_dir: &PathBuf) -> Result<ProteinSequence> {
+    let processed_dir = full_pdb.parent().unwrap();
+    let sequence_file = processed_dir.join("sequence.json");
+
+    if file_exists(&sequence_file) {
         info!("Sequence file exists");
     } else {
         info!("Creating sequence file");
+        let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
         let script = script_dir.join("get_sequence_from_pdb.py");
         let cmd = Command::new(&uv)
             .current_dir(&script_dir)
@@ -262,7 +259,7 @@ fn get_sequence(
             bail!(str::from_utf8(&cmd.stderr)?.to_string());
         }
 
-        if !exists(&sequence_file) {
+        if !file_exists(&sequence_file) {
             bail!(r#"Failed to create "{}""#, sequence_file.display());
         }
     }
@@ -277,14 +274,14 @@ fn get_sequence(
 fn sample_trajectory(
     min_xtc: &PathBuf,
     min_pdb: &PathBuf,
-    sampled_trajectory: &PathBuf,
+    out_file: &PathBuf,
     script_dir: &PathBuf,
 ) -> Result<()> {
-    let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
-    if exists(&sampled_trajectory) {
+    if file_exists(&out_file) {
         info!("Sampled trajectory exists");
     } else {
         info!("Creating sampled trajectory");
+        let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
         let sampler = script_dir.join("sample_trajectory.py");
         let cmd = Command::new(&uv)
             .current_dir(&script_dir)
@@ -296,7 +293,7 @@ fn sample_trajectory(
                 "--structure",
                 &min_pdb.to_string_lossy().to_string(),
                 "--outfile",
-                &sampled_trajectory.to_string_lossy().to_string(),
+                &out_file.to_string_lossy().to_string(),
             ])
             .output()?;
 
@@ -306,8 +303,8 @@ fn sample_trajectory(
             bail!(str::from_utf8(&cmd.stderr)?.to_string());
         }
 
-        if !exists(&sampled_trajectory) {
-            bail!(r#"Failed to create "{}""#, sampled_trajectory.display());
+        if !file_exists(&out_file) {
+            bail!(r#"Failed to create "{}""#, out_file.display());
         }
     }
 
@@ -325,39 +322,69 @@ pub fn db_connection(server: &Server) -> Result<postgres::Client> {
     dbg!(&env_key);
 
     let db_url = env::var(env_key).expect(&format!("{env_key} must be set"));
-    //PgConnection::establish(&db_url).map_err(|e| anyhow!("Failed db connection: {e}"))
     postgres::Client::connect(&db_url, postgres::NoTls)
         .map_err(|_| anyhow!("Failed db connection"))
 }
 
 // --------------------------------------------------
 fn import(
+    meta: &Meta,
+    input_dir: &PathBuf,
+    script_dir: &PathBuf,
+    processed_files: &ProcessedFiles,
     server: &Server,
-    files: &FullMinFiles,
-    sampled_trajectory: &PathBuf,
-    thumbnail: &PathBuf,
-    out_dir: &PathBuf,
 ) -> Result<()> {
-    let _dbh = db_connection(server)?;
+    let mut dbh = db_connection(server)?;
     println!("Connected to {server:?}");
 
-    //let meta = Meta::from_file(&files.meta_toml)?;
-    //let topology = in_dir.join(meta.required_files.topology_file_name);
-    //let topology_hash = get_topology_hash(&topology)?;
+    let topology = input_dir.join(&meta.required_files.topology_file_name);
+    let topology_hash = get_topology_hash(&topology)?;
     //dbg!(&topology_hash);
 
-    //let sequence_file = out_dir.join("sequence.json");
-    //let sequence = get_sequence(&files.full_pdb, &sequence_file, &script_dir)?;
-    //dbg!(&sequence);
+    let sequence = get_sequence(&processed_files.full_pdb, &script_dir)?;
+    dbg!(&sequence);
 
-    //let rmsd_rmsf_file = out_dir.join("rmsd_rmsf.json");
-    //let rmsd_rmsf =
-    //    get_rmsd_rmsf(&files.min_pdb, &files.min_xtc, &rmsd_rmsf_file, &script_dir)?;
+    let rmsd_rmsf = get_rmsd_rmsf(
+        &processed_files.min_pdb,
+        &processed_files.min_xtc,
+        &script_dir,
+    )?;
     //dbg!(&rmsd_rmsf);
 
-    //let duration_file = out_dir.join("duration.json");
-    //let duration = get_duration(&files.full_xtc, &duration_file)?;
+    let duration = get_duration(&processed_files.full_xtc)?;
     //dbg!(&duration);
+
+    let mut input_files = vec![
+        meta.required_files.trajectory_file_name.to_string(),
+        meta.required_files.structure_file_name.to_string(),
+        meta.required_files.topology_file_name.to_string(),
+    ];
+    if let Some(addl_files) = &meta.additional_files {
+        for file in addl_files {
+            input_files.push(file.file_name.to_string());
+        }
+    }
+    let input_paths: Vec<PathBuf> =
+        input_files.iter().map(|f| input_dir.join(f)).collect();
+
+    let mut md5s: Vec<String> = input_paths
+        .iter()
+        .filter_map(|path| get_md5(path).ok())
+        .collect();
+    md5s.sort();
+    let unique_file_hash = md5s.join(",");
+    dbg!(&unique_file_hash);
+
+    let sim_id = find_or_create_simulation(
+        &mut dbh,
+        &unique_file_hash,
+        &meta,
+        &sequence,
+        &topology_hash,
+        &duration,
+        &rmsd_rmsf,
+    )?;
+    dbg!(&sim_id);
 
     //dbg!(&meta.proteins);
     //let mut uniprots: Vec<UniprotEntry> = vec![];
@@ -385,8 +412,11 @@ fn import(
 }
 
 // --------------------------------------------------
-fn get_duration(full_xtc: &PathBuf, out_file: &PathBuf) -> Result<Duration> {
-    if exists(&out_file) {
+fn get_duration(full_xtc: &PathBuf) -> Result<Duration> {
+    let processed_dir = full_xtc.parent().unwrap();
+    let out_file = processed_dir.join("duration.json");
+
+    if file_exists(&out_file) {
         info!("Duration file exists");
     } else {
         info!("Creating duration file");
@@ -450,16 +480,16 @@ fn get_duration(full_xtc: &PathBuf, out_file: &PathBuf) -> Result<Duration> {
             let sampling_frequency_ns = format!("{:.2}", totaltime_ns / num_frames)
                 .parse::<f32>()
                 .unwrap();
-            let mut fh = File::create(&out_file)?;
             let duration = Duration {
                 totaltime_ns: totaltime_ns as u32,
                 sampling_frequency_ns,
             };
             let json = serde_json::to_string_pretty(&duration)?;
+            let mut fh = File::create(&out_file)?;
             writeln!(&mut fh, "{json}")?;
         }
 
-        if !exists(&out_file) {
+        if !file_exists(&out_file) {
             bail!(r#"Failed to create "{}""#, out_file.display());
         }
     }
@@ -553,4 +583,58 @@ fn get_pdb_entry(pdb_id: &str) -> Result<PdbEntry> {
         classification: pdb_resp.struct_keywords.pdbx_keywords.to_string(),
         uniprots,
     })
+}
+
+// --------------------------------------------------
+fn find_or_create_simulation(
+    dbh: &mut postgres::Client,
+    unique_file_hash: &str,
+    _meta: &Meta,
+    _sequence: &ProteinSequence,
+    topology_hash: &str,
+    _duration: &Duration,
+    _rmsd_rmsf: &RmsdRmsf,
+) -> Result<u64> {
+    let replicate_group_id = find_or_create_replicate_group(dbh, topology_hash)?;
+    dbg!(&replicate_group_id);
+
+    let res = dbh.query(
+        "select id from md_simulation where unique_file_hash_string=$1",
+        &[&unique_file_hash],
+    )?;
+
+    if res.is_empty() {}
+    dbg!(&res);
+    Ok(0)
+}
+
+// --------------------------------------------------
+fn find_or_create_replicate_group(
+    dbh: &mut postgres::Client,
+    topology_hash: &str,
+) -> Result<i64> {
+    let res = dbh.query(
+        "select id from md_simulation_replicate_group where psf_hash=$1",
+        &[&topology_hash],
+    )?;
+
+    if let Some(first) = res.first() {
+        return Ok(first.get::<usize, i64>(0));
+    }
+
+    let res = dbh.query(
+        "
+        insert
+        into   md_simulation_replicate_group (psf_hash)
+        values ($1)
+        returning id;
+        ",
+        &[&topology_hash],
+    )?;
+
+    if let Some(first) = res.first() {
+        return Ok(first.get::<usize, i64>(0));
+    }
+
+    Ok(0)
 }
