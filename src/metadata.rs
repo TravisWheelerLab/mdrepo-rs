@@ -5,7 +5,7 @@ use serde_with::{serde_as, NoneAsEmptyString};
 use std::path::PathBuf;
 use toml::value::Value as TomlValue;
 
-#[derive(Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(untagged)]
 enum Datelike {
     Stringy(String),
@@ -176,7 +176,7 @@ impl Meta {
 }
 
 #[serde_as]
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Initial {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde_as(as = "NoneAsEmptyString")]
@@ -237,10 +237,10 @@ pub struct Contributor {
 pub struct Forcefield {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde_as(as = "NoneAsEmptyString")]
-    forcefield: Option<String>,
+    pub forcefield: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    forcefield_comments: Option<String>,
+    pub forcefield_comments: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -252,33 +252,33 @@ pub struct Permission {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Protonation {
-    protonation_method: Option<String>,
+    pub protonation_method: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Timestep {
-    integration_time_step: Option<f64>,
+    pub integration_time_step: Option<f64>,
 }
 
 #[serde_as]
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Paper {
-    title: String,
+    pub title: String,
 
-    authors: String,
+    pub authors: String,
 
-    journal: String,
+    pub journal: String,
 
-    volume: Numlike,
+    pub volume: Numlike,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    number: Option<Numlike>,
+    pub number: Option<Numlike>,
 
-    year: u32,
+    pub year: u32,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     //[serde_as(as = "NoneAsEmptyString")]
-    pages: Option<String>,
+    pub pages: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

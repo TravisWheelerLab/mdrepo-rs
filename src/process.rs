@@ -2,18 +2,17 @@ use crate::{
     common::{file_exists, get_md5},
     metadata::{Meta, MoleculeType},
     types::{
-        Duration, PdbEntry, PdbGraphqlResponse, PdbResponse, PdbUniprot, ProcessArgs,
-        ProcessedFiles, ProteinSequence, RmsdRmsf, Server, UniprotEntry,
-        UniprotResponse,
+        Duration, Export, MdContributor, MdPdb, MdSimulation, MdSoftware, PdbEntry,
+        PdbGraphqlResponse, PdbResponse, ProcessArgs, ProcessedFiles, ProteinSequence,
+        RmsdRmsf, UniprotEntry, UniprotResponse,
     },
 };
 use anyhow::{anyhow, bail, Result};
-use dotenvy::dotenv;
+//use dotenvy::dotenv;
 use log::info;
 use regex::Regex;
 use sha1::{Digest, Sha1};
 use std::{
-    env,
     fs::{self, File},
     io::Write,
     path::PathBuf,
@@ -37,15 +36,20 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
     let processed_files =
         make_processed_files(&meta, &input_dir, &processed_dir, &script_dir)?;
 
-    //let json_dir = &args.json_dir.clone().unwrap();
-    //let in_dir_basename = &in_dir.file_name().unwrap().to_string_lossy().to_string();
-    //let import_json = json_dir.join(format!("{in_dir_basename}.json"));
-    import(
+    let json_dir = &args.json_dir.clone().unwrap();
+    if !json_dir.is_dir() {
+        fs::create_dir_all(&json_dir)?;
+    }
+    let in_dir_basename = &input_dir.file_name().unwrap().to_string_lossy().to_string();
+    let import_json = json_dir.join(format!("{in_dir_basename}.json"));
+
+    make_import_json(
         &meta,
         &input_dir,
         &script_dir,
         &processed_files,
-        &args.server,
+        //&args.server,
+        &import_json,
     )?;
 
     Ok(())
@@ -312,37 +316,36 @@ fn sample_trajectory(
 }
 
 // --------------------------------------------------
-pub fn db_connection(server: &Server) -> Result<postgres::Client> {
-    dotenv().ok();
-
-    let env_key = match server {
-        Server::Production => "PRODUCTION_DB_URL",
-        Server::Staging => "STAGING_DB_URL",
-    };
-    dbg!(&env_key);
-
-    let db_url = env::var(env_key).expect(&format!("{env_key} must be set"));
-    postgres::Client::connect(&db_url, postgres::NoTls)
-        .map_err(|_| anyhow!("Failed db connection"))
-}
+//pub fn db_connection(server: &Server) -> Result<postgres::Client> {
+//    dotenv().ok();
+//    let env_key = match server {
+//        Server::Production => "PRODUCTION_DB_URL",
+//        Server::Staging => "STAGING_DB_URL",
+//    };
+//    dbg!(&env_key);
+//    let db_url = env::var(env_key).expect(&format!("{env_key} must be set"));
+//    postgres::Client::connect(&db_url, postgres::NoTls)
+//        .map_err(|_| anyhow!("Failed db connection"))
+//}
 
 // --------------------------------------------------
-fn import(
+fn make_import_json(
     meta: &Meta,
     input_dir: &PathBuf,
     script_dir: &PathBuf,
     processed_files: &ProcessedFiles,
-    server: &Server,
+    //server: &Server,
+    import_json: &PathBuf,
 ) -> Result<()> {
-    let mut dbh = db_connection(server)?;
-    println!("Connected to {server:?}");
+    //let mut dbh = db_connection(server)?;
+    //println!("Connected to {server:?}");
 
-    let topology = input_dir.join(&meta.required_files.topology_file_name);
-    let topology_hash = get_topology_hash(&topology)?;
+    let topology_path = input_dir.join(&meta.required_files.topology_file_name);
+    let topology_hash = get_topology_hash(&topology_path)?;
     //dbg!(&topology_hash);
 
     let sequence = get_sequence(&processed_files.full_pdb, &script_dir)?;
-    dbg!(&sequence);
+    //dbg!(&sequence);
 
     let rmsd_rmsf = get_rmsd_rmsf(
         &processed_files.min_pdb,
@@ -354,59 +357,148 @@ fn import(
     let duration = get_duration(&processed_files.full_xtc)?;
     //dbg!(&duration);
 
-    let mut input_files = vec![
-        meta.required_files.trajectory_file_name.to_string(),
-        meta.required_files.structure_file_name.to_string(),
-        meta.required_files.topology_file_name.to_string(),
-    ];
-    if let Some(addl_files) = &meta.additional_files {
-        for file in addl_files {
-            input_files.push(file.file_name.to_string());
-        }
-    }
-    let input_paths: Vec<PathBuf> =
-        input_files.iter().map(|f| input_dir.join(f)).collect();
-
-    let mut md5s: Vec<String> = input_paths
-        .iter()
-        .filter_map(|path| get_md5(path).ok())
-        .collect();
-    md5s.sort();
-    let unique_file_hash = md5s.join(",");
-    dbg!(&unique_file_hash);
-
-    let sim_id = find_or_create_simulation(
-        &mut dbh,
-        &unique_file_hash,
-        &meta,
-        &sequence,
-        &topology_hash,
-        &duration,
-        &rmsd_rmsf,
-    )?;
-    dbg!(&sim_id);
+    //let sim_id = find_or_create_simulation(
+    //    &mut dbh,
+    //    &unique_file_hash,
+    //    &meta,
+    //    &sequence,
+    //    &topology_hash,
+    //    &duration,
+    //    &rmsd_rmsf,
+    //)?;
+    //dbg!(&sim_id);
 
     //dbg!(&meta.proteins);
-    //let mut uniprots: Vec<UniprotEntry> = vec![];
-    //let mut pdbs: Vec<PdbEntry> = vec![];
-    //for protein in &meta.proteins {
-    //    match (
-    //        protein.molecule_id_type.clone(),
-    //        protein.molecule_id.clone(),
-    //    ) {
-    //        (Some(MoleculeType::Uniprot), Some(uniprot_id)) => {
-    //            let uniprot = get_uniprot_entry(&uniprot_id)?;
-    //            uniprots.push(uniprot);
-    //        }
-    //        (Some(MoleculeType::PDB), Some(pdb_id)) => {
-    //            let pdb = get_pdb_entry(&pdb_id)?;
-    //            pdbs.push(pdb);
-    //        }
-    //        _ => println!("Handle {protein:?}"),
-    //    }
-    //}
+    let mut uniprots: Vec<UniprotEntry> = vec![];
+    let mut pdbs: Vec<PdbEntry> = vec![];
+    for protein in &meta.proteins {
+        match (
+            protein.molecule_id_type.clone(),
+            protein.molecule_id.clone(),
+        ) {
+            (Some(MoleculeType::Uniprot), Some(uniprot_id)) => {
+                let uniprot = get_uniprot_entry(&uniprot_id)?;
+                uniprots.push(uniprot);
+            }
+            (Some(MoleculeType::PDB), Some(pdb_id)) => {
+                let pdb = get_pdb_entry(&pdb_id)?;
+                pdbs.push(pdb);
+            }
+            _ => println!("Handle {protein:?}"),
+        }
+    }
+
+    if pdbs.len() > 1 {
+        bail!("There cannot be {} PDBs!", pdbs.len());
+    }
+
+    for pdb in &pdbs {
+        for uniprot in &pdb.uniprots {
+            uniprots.push(uniprot.clone());
+        }
+    }
+
     //dbg!(&uniprots);
     //dbg!(&pdbs);
+
+    let integration_timestep_fs = match &meta.timestep_information {
+        Some(val) => val.integration_time_step.unwrap(),
+        _ => bail!("Missing timestep"),
+    };
+
+    let (forcefield, forcefield_comments) = match &meta.forcefield {
+        Some(val) => (val.forcefield.clone(), val.forcefield_comments.clone()),
+        _ => (None, None),
+    };
+
+    let protonation_method = match &meta.protonation_method {
+        Some(val) => val.protonation_method.clone(),
+        _ => None,
+    };
+
+    let temperature = match &meta.temperature {
+        Some(val) => val.temperature.clone(),
+        _ => None,
+    };
+
+    let (includes_water, water_type, water_density, water_density_units) =
+        match &meta.water {
+            Some(val) => (
+                val.is_present,
+                val.model.clone(),
+                val.density,
+                val.water_density_units.clone(),
+            ),
+            _ => (false, None, None, None),
+        };
+
+    let total_replicates = match &meta.replicates {
+        Some(val) => val.total_replicates.unwrap_or(1),
+        _ => bail!("Missing replicates"),
+    };
+
+    let pdb = pdbs.first().map(|val| MdPdb {
+        pdb_id: val.pdb_id.clone(),
+        title: val.title.clone(),
+        classification: val.classification.clone(),
+    });
+
+    let software = MdSoftware {
+        name: meta.software.name.clone(),
+        version: meta.software.version.clone(),
+    };
+
+    let contributors = match &meta.contributors {
+        Some(vals) => vals
+            .iter()
+            .map(|val| MdContributor {
+                name: val.name.clone(),
+                orcid: val.orcid.clone(),
+                institution: val.institution.clone(),
+                email: val.email.clone(),
+            })
+            .collect::<Vec<_>>(),
+        _ => vec![],
+    };
+
+    let initial = meta.initial.clone();
+    let simulation = MdSimulation {
+        lead_contributor_orcid: initial.lead_contributor_orcid,
+        unique_file_hash_string: unique_file_hash(meta, input_dir),
+        description: initial
+            .description
+            .map_or("".to_string(), |val| val.to_string()),
+        short_description: initial.short_description.clone(),
+        run_commands: initial.commands.clone(),
+        software,
+        pdb,
+        uniprots,
+        duration: duration.totaltime_ns,
+        sampling_frequency: duration.sampling_frequency_ns,
+        integration_timestep_fs,
+        external_link: initial.external_link.clone(),
+        forcefield,
+        forcefield_comments,
+        protonation_method,
+        rmsd_values: rmsd_rmsf.rmsd,
+        rmsf_values: rmsd_rmsf.rmsf,
+        temperature,
+        three_letter_amino_acid_sequence: sequence.three_letters,
+        fasta_sequence: sequence.single_letters,
+        total_replicates,
+        includes_water,
+        water_density,
+        water_density_units,
+        water_type,
+        topology_hash,
+        contributors,
+    };
+
+    let export = Export { simulation };
+
+    info!(r#"Writing JSON to "{}""#, &import_json.display());
+    let file = File::create(&import_json)?;
+    writeln!(&file, "{}", &serde_json::to_string_pretty(&export)?)?;
 
     Ok(())
 }
@@ -435,7 +527,6 @@ fn get_duration(full_xtc: &PathBuf) -> Result<Duration> {
         let mut time_stop: Option<u64> = None;
         let mut num_frames: Option<u64> = None;
         for line in stdout.split("\n") {
-            println!("{line}");
             if let Some(caps) = time_re.captures(line) {
                 let start = caps.get(1).unwrap().as_str();
                 let stop = caps.get(2).unwrap().as_str();
@@ -586,55 +677,79 @@ fn get_pdb_entry(pdb_id: &str) -> Result<PdbEntry> {
 }
 
 // --------------------------------------------------
-fn find_or_create_simulation(
-    dbh: &mut postgres::Client,
-    unique_file_hash: &str,
-    _meta: &Meta,
-    _sequence: &ProteinSequence,
-    topology_hash: &str,
-    _duration: &Duration,
-    _rmsd_rmsf: &RmsdRmsf,
-) -> Result<u64> {
-    let replicate_group_id = find_or_create_replicate_group(dbh, topology_hash)?;
-    dbg!(&replicate_group_id);
+//fn find_or_create_simulation(
+//    dbh: &mut postgres::Client,
+//    unique_file_hash: &str,
+//    _meta: &Meta,
+//    _sequence: &ProteinSequence,
+//    topology_hash: &str,
+//    _duration: &Duration,
+//    _rmsd_rmsf: &RmsdRmsf,
+//) -> Result<u64> {
+//    let replicate_group_id = find_or_create_replicate_group(dbh, topology_hash)?;
+//    dbg!(&replicate_group_id);
 
-    let res = dbh.query(
-        "select id from md_simulation where unique_file_hash_string=$1",
-        &[&unique_file_hash],
-    )?;
+//    let res = dbh.query(
+//        "select id from md_simulation where unique_file_hash_string=$1",
+//        &[&unique_file_hash],
+//    )?;
 
-    if res.is_empty() {}
-    dbg!(&res);
-    Ok(0)
-}
+//    if res.is_empty() {}
+//    dbg!(&res);
+//    Ok(0)
+//}
 
 // --------------------------------------------------
-fn find_or_create_replicate_group(
-    dbh: &mut postgres::Client,
-    topology_hash: &str,
-) -> Result<i64> {
-    let res = dbh.query(
-        "select id from md_simulation_replicate_group where psf_hash=$1",
-        &[&topology_hash],
-    )?;
+//fn find_or_create_replicate_group(
+//    dbh: &mut postgres::Client,
+//    topology_hash: &str,
+//) -> Result<i64> {
+//    let res = dbh.query(
+//        "select id from md_simulation_replicate_group where psf_hash=$1",
+//        &[&topology_hash],
+//    )?;
 
-    if let Some(first) = res.first() {
-        return Ok(first.get::<usize, i64>(0));
+//    if let Some(first) = res.first() {
+//        return Ok(first.get::<usize, i64>(0));
+//    }
+
+//    let res = dbh.query(
+//        "
+//        insert
+//        into   md_simulation_replicate_group (psf_hash)
+//        values ($1)
+//        returning id;
+//        ",
+//        &[&topology_hash],
+//    )?;
+
+//    if let Some(first) = res.first() {
+//        return Ok(first.get::<usize, i64>(0));
+//    }
+
+//    Ok(0)
+//}
+
+// --------------------------------------------------
+fn unique_file_hash(meta: &Meta, input_dir: &PathBuf) -> String {
+    let mut input_files = vec![
+        meta.required_files.trajectory_file_name.to_string(),
+        meta.required_files.structure_file_name.to_string(),
+        meta.required_files.topology_file_name.to_string(),
+    ];
+
+    if let Some(addl_files) = &meta.additional_files {
+        for file in addl_files {
+            input_files.push(file.file_name.to_string());
+        }
     }
 
-    let res = dbh.query(
-        "
-        insert
-        into   md_simulation_replicate_group (psf_hash)
-        values ($1)
-        returning id;
-        ",
-        &[&topology_hash],
-    )?;
+    let mut md5s: Vec<String> = input_files
+        .iter()
+        .filter_map(|filename| get_md5(&input_dir.join(filename)).ok())
+        .collect();
 
-    if let Some(first) = res.first() {
-        return Ok(first.get::<usize, i64>(0));
-    }
+    md5s.sort();
 
-    Ok(0)
+    md5s.join(",")
 }

@@ -177,7 +177,7 @@ pub struct Duration {
 }
 
 // --------------------------------------------------
-#[derive(Debug)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UniprotEntry {
     pub uniprot_id: String,
     pub name: String,
@@ -222,7 +222,7 @@ pub struct UniprotProteinSequence {
 }
 
 // --------------------------------------------------
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PdbEntry {
     pub pdb_id: String,
     pub title: String,
@@ -293,4 +293,82 @@ pub struct RcsbUniprotProtein {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RcsbUniprotProteinName {
     pub value: String,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Export {
+    pub simulation: MdSimulation,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct MdSimulation {
+    pub lead_contributor_orcid: String,
+    pub unique_file_hash_string: String,
+    pub description: String,
+    pub short_description: Option<String>,
+    pub software: MdSoftware,
+    pub run_commands: Option<String>,
+    pub pdb: Option<MdPdb>,
+    pub uniprots: Vec<UniprotEntry>,
+    pub external_link: Option<String>,
+    pub forcefield: Option<String>,
+    pub forcefield_comments: Option<String>,
+    pub protonation_method: Option<String>,
+    pub rmsd_values: Vec<f64>,
+    pub rmsf_values: Vec<f64>,
+    pub duration: u32,
+    pub sampling_frequency: f32,
+    pub integration_timestep_fs: f64,
+    pub temperature: Option<u32>,
+    pub three_letter_amino_acid_sequence: String,
+    pub fasta_sequence: String,
+    pub total_replicates: u32,
+    pub includes_water: bool,
+    pub water_type: Option<String>,
+    pub water_density: Option<f32>,
+    pub water_density_units: Option<String>,
+    pub topology_hash: String,
+    pub contributors: Vec<MdContributor>,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MdPdb {
+    pub pdb_id: String,
+    pub title: String,
+    pub classification: String,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MdUniprot {
+    pub pdb_id: String,
+    pub title: String,
+    pub classification: String,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct MdSoftware {
+    pub name: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct MdContributor {
+    pub name: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orcid: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub institution: Option<String>,
 }
