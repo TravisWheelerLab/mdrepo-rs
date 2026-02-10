@@ -1,22 +1,47 @@
 use crate::common::read_file;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, NoneAsEmptyString};
 use std::path::PathBuf;
 use toml::value::Value as TomlValue;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(untagged)]
-enum Datelike {
+pub enum Datelike {
     Stringy(String),
     TomlDate(toml::value::Datetime),
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(untagged)]
-enum Numlike {
+pub enum Numlike {
     Stringy(String),
     TomlVal(TomlValue),
+}
+
+impl Numlike {
+    pub fn to_integer(&self) -> Option<i64> {
+        match self {
+            Numlike::Stringy(val) => val.parse().ok(),
+            Numlike::TomlVal(toml_val) => match toml_val {
+                TomlValue::String(val) => val.parse().ok(),
+                TomlValue::Integer(val) => Some(val.clone()),
+                TomlValue::Float(val) => format!("{}", val.round()).parse::<i64>().ok(),
+                _ => None,
+            },
+        }
+    }
+
+    pub fn to_string(&self) -> Option<String> {
+        match self {
+            Numlike::Stringy(val) => Some(val.clone()),
+            Numlike::TomlVal(toml_val) => match toml_val {
+                TomlValue::String(val) => Some(val.clone()),
+                TomlValue::Integer(val) => Some(val.to_string()),
+                TomlValue::Float(val) => Some(val.to_string()),
+                _ => None,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
@@ -68,6 +93,7 @@ pub struct Meta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub protonation_method: Option<Protonation>,
 
+    #[serde(alias = "timestep")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestep_information: Option<Timestep>,
 
@@ -82,12 +108,15 @@ pub struct Meta {
         skip_serializing_if = "Option::is_none"
     )]
     pub permissions: Option<Vec<Permission>>,
+
+    pub pdb_id: Option<String>,
 }
 
 impl Meta {
     pub fn from_file(path: &PathBuf) -> Result<Self> {
         let contents = read_file(path)?;
-        let mut toml: Meta = toml::from_str(&contents)?;
+        let mut toml: Meta = toml::from_str(&contents)
+            .map_err(|e| anyhow!(r#"Failed to parse "{}": {e}"#, path.display()))?;
         toml.fix();
         Ok(toml)
     }
@@ -175,19 +204,15 @@ impl Meta {
     }
 }
 
-#[serde_as]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Initial {
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde_as(as = "NoneAsEmptyString")]
     pub short_description: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde_as(as = "NoneAsEmptyString")]
     pub description: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde_as(as = "NoneAsEmptyString")]
     pub external_link: Option<String>,
 
     pub lead_contributor_orcid: String,
@@ -195,7 +220,6 @@ pub struct Initial {
     pub date: Datelike,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde_as(as = "NoneAsEmptyString")]
     pub commands: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -212,31 +236,28 @@ pub struct AdditionalFile {
 
     #[serde(alias = "additional_file_name")]
     pub file_name: String,
+
+    #[serde(alias = "additional_file_description")]
+    pub description: Option<String>,
 }
 
-#[serde_as]
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Contributor {
     pub name: String,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde_as(as = "NoneAsEmptyString")]
     pub orcid: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde_as(as = "NoneAsEmptyString")]
     pub email: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde_as(as = "NoneAsEmptyString")]
     pub institution: Option<String>,
 }
 
-#[serde_as]
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Forcefield {
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde_as(as = "NoneAsEmptyString")]
     pub forcefield: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -260,7 +281,6 @@ pub struct Timestep {
     pub integration_time_step: Option<f64>,
 }
 
-#[serde_as]
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Paper {
     pub title: String,
@@ -277,8 +297,9 @@ pub struct Paper {
     pub year: u32,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    //[serde_as(as = "NoneAsEmptyString")]
     pub pages: Option<String>,
+
+    pub doi: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -331,7 +352,7 @@ pub struct Protein {
     pub uniprot_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Solvent {
     pub name: String,
 
@@ -345,7 +366,7 @@ pub struct Solvent {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Water {
-    pub is_present: bool,
+    pub is_present: Option<bool>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,

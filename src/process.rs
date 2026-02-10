@@ -2,14 +2,15 @@ use crate::{
     common::{file_exists, get_md5},
     metadata::{Meta, MoleculeType},
     types::{
-        Duration, Export, MdContributor, MdPdb, MdSimulation, MdSoftware, PdbEntry,
-        PdbGraphqlResponse, PdbResponse, ProcessArgs, ProcessedFiles, ProteinSequence,
-        RmsdRmsf, UniprotEntry, UniprotResponse,
+        Duration, Export, MdContributor, MdFile, MdLigand, MdPaper, MdPdb,
+        MdSimulation, MdSoftware, MdSolvent, PdbEntry, PdbGraphqlResponse, PdbResponse,
+        ProcessArgs, ProcessedFiles, ProteinSequence, RmsdRmsf, UniprotEntry,
+        UniprotResponse,
     },
 };
 use anyhow::{anyhow, bail, Result};
 //use dotenvy::dotenv;
-use log::info;
+use log::{debug, info};
 use regex::Regex;
 use sha1::{Digest, Sha1};
 use std::{
@@ -22,19 +23,18 @@ use which::which;
 
 // --------------------------------------------------
 pub fn process(args: &ProcessArgs) -> Result<()> {
-    dbg!(&args);
+    debug!("{args:?}");
     let input_dir = &args.dirname;
     let processed_dir = args
         .outdir
         .clone()
         .map_or(input_dir.join("processed"), |dir| PathBuf::from(&dir));
     let script_dir = &args.script_dir.clone().unwrap();
-    dbg!(&processed_dir);
+    debug!("{processed_dir:?}");
 
     let meta_path = input_dir.join("mdrepo-metadata.toml");
-    let meta = Meta::from_file(&meta_path)?;
     let processed_files =
-        make_processed_files(&meta, &input_dir, &processed_dir, &script_dir)?;
+        make_processed_files(&meta_path, &input_dir, &processed_dir, &script_dir)?;
 
     let json_dir = &args.json_dir.clone().unwrap();
     if !json_dir.is_dir() {
@@ -44,11 +44,10 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
     let import_json = json_dir.join(format!("{in_dir_basename}.json"));
 
     make_import_json(
-        &meta,
+        &meta_path,
         &input_dir,
         &script_dir,
         &processed_files,
-        //&args.server,
         &import_json,
     )?;
 
@@ -97,11 +96,12 @@ fn make_thumbnail(
 
 // --------------------------------------------------
 fn make_processed_files(
-    meta: &Meta,
+    meta_path: &PathBuf,
     in_dir: &PathBuf,
     processed_dir: &PathBuf,
     script_dir: &PathBuf,
 ) -> Result<ProcessedFiles> {
+    let meta = Meta::from_file(&meta_path)?;
     let reqd_file = &meta.required_files;
     let full_min_files = &[
         "full.gro",
@@ -123,35 +123,36 @@ fn make_processed_files(
         if !cpp_traj.is_file() {
             bail!(r#"Missing "{}""#, cpp_traj.display());
         }
-        let cmd = Command::new(micromamba)
-            .args([
-                "run",
-                "-n",
-                "simproc",
-                &cpp_traj.to_string_lossy().to_string(),
-                "-f",
-                &in_dir
-                    .join(&reqd_file.trajectory_file_name)
-                    .to_string_lossy()
-                    .to_string(),
-                "-c",
-                &in_dir
-                    .join(&reqd_file.structure_file_name)
-                    .to_string_lossy()
-                    .to_string(),
-                "-t",
-                &in_dir
-                    .join(&reqd_file.topology_file_name)
-                    .to_string_lossy()
-                    .to_string(),
-                "-o",
-                &processed_dir.to_string_lossy().to_string(),
-            ])
-            .output()?;
-        dbg!(&cmd);
+        let mut cmd = Command::new(micromamba);
+        cmd.args([
+            "run",
+            "-n",
+            "simproc",
+            &cpp_traj.to_string_lossy().to_string(),
+            "--traj",
+            &in_dir
+                .join(&reqd_file.trajectory_file_name)
+                .to_string_lossy()
+                .to_string(),
+            "--coord",
+            &in_dir
+                .join(&reqd_file.structure_file_name)
+                .to_string_lossy()
+                .to_string(),
+            "--top",
+            &in_dir
+                .join(&reqd_file.topology_file_name)
+                .to_string_lossy()
+                .to_string(),
+            "--outdir",
+            &processed_dir.to_string_lossy().to_string(),
+        ]);
+        debug!("{cmd:?}");
+        let output = cmd.output()?;
+        debug!("{output:?}");
 
-        if !cmd.status.success() {
-            bail!(str::from_utf8(&cmd.stderr)?.to_string());
+        if !output.status.success() {
+            bail!(str::from_utf8(&output.stderr)?.to_string());
         }
 
         let missing: Vec<_> = full_min_files
@@ -330,13 +331,15 @@ fn sample_trajectory(
 
 // --------------------------------------------------
 fn make_import_json(
-    meta: &Meta,
+    meta_path: &PathBuf,
     input_dir: &PathBuf,
     script_dir: &PathBuf,
     processed_files: &ProcessedFiles,
     //server: &Server,
     import_json: &PathBuf,
 ) -> Result<()> {
+    let meta = Meta::from_file(&meta_path)?;
+
     //let mut dbh = db_connection(server)?;
     //println!("Connected to {server:?}");
 
@@ -377,13 +380,15 @@ fn make_import_json(
             protein.molecule_id.clone(),
         ) {
             (Some(MoleculeType::Uniprot), Some(uniprot_id)) => {
-                let uniprot = get_uniprot_entry(&uniprot_id)?;
-                uniprots.push(uniprot);
+                match get_uniprot_entry(&uniprot_id) {
+                    Ok(uniprot) => uniprots.push(uniprot),
+                    _ => info!(r#"Failed to get Uniprot entry for "{uniprot_id}""#),
+                }
             }
-            (Some(MoleculeType::PDB), Some(pdb_id)) => {
-                let pdb = get_pdb_entry(&pdb_id)?;
-                pdbs.push(pdb);
-            }
+            (Some(MoleculeType::PDB), Some(pdb_id)) => match get_pdb_entry(&pdb_id) {
+                Ok(pdb) => pdbs.push(pdb),
+                _ => info!(r#"Failed to get PDB entry for "{pdb_id}""#),
+            },
             _ => println!("Handle {protein:?}"),
         }
     }
@@ -396,6 +401,10 @@ fn make_import_json(
         for uniprot in &pdb.uniprots {
             uniprots.push(uniprot.clone());
         }
+    }
+
+    if let Some(pdb_id) = &meta.pdb_id {
+        pdbs.push(get_pdb_entry(&pdb_id)?);
     }
 
     //dbg!(&uniprots);
@@ -424,7 +433,7 @@ fn make_import_json(
     let (includes_water, water_type, water_density, water_density_units) =
         match &meta.water {
             Some(val) => (
-                val.is_present,
+                val.is_present.unwrap_or(true),
                 val.model.clone(),
                 val.density,
                 val.water_density_units.clone(),
@@ -461,10 +470,106 @@ fn make_import_json(
         _ => vec![],
     };
 
+    let mut original_files: Vec<MdFile> = vec![MdFile {
+        name: meta_path.file_name().unwrap().to_string_lossy().to_string(),
+        file_type: "Metadata".to_string(),
+        size: meta_path.metadata()?.len(),
+        md5_sum: get_md5(meta_path)?,
+        description: None,
+    }];
+
+    for (file_type, filename) in &[
+        ("Trajectory", &meta.required_files.trajectory_file_name),
+        ("Structure", &meta.required_files.structure_file_name),
+        ("Topology", &meta.required_files.topology_file_name),
+    ] {
+        let path = input_dir.join(filename);
+        original_files.push(MdFile {
+            name: filename.to_string(),
+            file_type: file_type.to_string(),
+            size: path.metadata()?.len(),
+            md5_sum: get_md5(&path)?,
+            description: None,
+        })
+    }
+
+    if let Some(files) = &meta.additional_files {
+        for file in files {
+            let path = input_dir.join(&file.file_name);
+            original_files.push(MdFile {
+                name: file.file_name.to_string(),
+                file_type: file.file_type.to_string(),
+                size: path.metadata()?.len(),
+                md5_sum: get_md5(&path)?,
+                description: file.description.clone(),
+            })
+        }
+    }
+
+    let mut processed_export: Vec<MdFile> = vec![];
+    for (file_type, path) in &[
+        ("Processed topology", &processed_files.full_gro),
+        ("Processed structure", &processed_files.full_pdb),
+        ("Processed trajectory", &processed_files.full_xtc),
+        ("Minimal topology", &processed_files.min_gro),
+        ("Minimal structure", &processed_files.min_pdb),
+        ("Minimal trajectory", &processed_files.min_xtc),
+        ("Sampled minimal trajectory", &processed_files.sampled_xtc),
+        ("Preview image", &processed_files.thumbnail_png),
+    ] {
+        processed_export.push(MdFile {
+            name: path.file_name().unwrap().to_string_lossy().to_string(),
+            file_type: file_type.to_string(),
+            size: path.metadata()?.len(),
+            md5_sum: get_md5(&path)?,
+            description: None,
+        })
+    }
+
+    let mut ligands = vec![];
+    if let Some(vals) = &meta.ligands {
+        for ligand in vals {
+            ligands.push(MdLigand {
+                name: ligand.name.clone(),
+                smiles: ligand.smiles.clone(),
+            });
+        }
+    }
+
+    let mut solvents = vec![];
+    if let Some(vals) = &meta.solvents {
+        for solvent in vals {
+            solvents.push(MdSolvent {
+                name: solvent.name.clone(),
+                concentration: solvent.ion_concentration.clone(),
+                concentration_units: solvent
+                    .concentration_units
+                    .clone()
+                    .map_or("mol/L".to_string(), |val| val.to_string()),
+            });
+        }
+    }
+
+    let mut papers = vec![];
+    if let Some(vals) = &meta.papers {
+        for paper in vals {
+            papers.push(MdPaper {
+                title: paper.title.clone(),
+                authors: paper.authors.clone(),
+                journal: paper.journal.clone(),
+                volume: paper.volume.to_integer().unwrap(),
+                number: paper.number.clone().map(|val| val.to_string().unwrap()),
+                year: paper.year as i64,
+                pages: paper.pages.clone(),
+                doi: paper.doi.clone(),
+            })
+        }
+    }
+
     let initial = meta.initial.clone();
     let simulation = MdSimulation {
         lead_contributor_orcid: initial.lead_contributor_orcid,
-        unique_file_hash_string: unique_file_hash(meta, input_dir),
+        unique_file_hash_string: unique_file_hash(&meta, input_dir),
         description: initial
             .description
             .map_or("".to_string(), |val| val.to_string()),
@@ -492,6 +597,11 @@ fn make_import_json(
         water_type,
         topology_hash,
         contributors,
+        original_files,
+        processed_files: processed_export,
+        ligands,
+        solvents,
+        papers,
     };
 
     let export = Export { simulation };

@@ -331,19 +331,61 @@ pub struct MdSimulation {
     pub water_density_units: Option<String>,
     pub topology_hash: String,
     pub contributors: Vec<MdContributor>,
+    pub original_files: Vec<MdFile>,
+    pub processed_files: Vec<MdFile>,
+    pub ligands: Vec<MdLigand>,
+    pub solvents: Vec<MdSolvent>,
+    pub papers: Vec<MdPaper>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct MdPaper {
+    pub title: String,
+
+    pub authors: String,
+
+    pub journal: String,
+
+    pub volume: i64,
+
+    pub number: Option<String>,
+
+    pub year: i64,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pages: Option<String>,
+
+    pub doi: Option<String>,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MdSolvent {
+    pub name: String,
+    pub concentration: f64,
+    pub concentration_units: String,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MdLigand {
+    pub name: String,
+    pub smiles: String,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MdFile {
+    pub name: String,
+    pub file_type: String,
+    pub size: u64,
+    pub md5_sum: String,
+    pub description: Option<String>,
 }
 
 // --------------------------------------------------
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MdPdb {
-    pub pdb_id: String,
-    pub title: String,
-    pub classification: String,
-}
-
-// --------------------------------------------------
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct MdUniprot {
     pub pdb_id: String,
     pub title: String,
     pub classification: String,
