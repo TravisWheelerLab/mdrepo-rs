@@ -43,6 +43,10 @@ fn run(args: Cli) -> Result<()> {
             process::process(&args)?;
             Ok(())
         }
+        //Some(Command::Reprocess(args)) => {
+        //    process::process(&args)?;
+        //    Ok(())
+        //}
         Some(Command::MetaCheck(args)) => {
             let meta = Meta::from_file(&args.filename)?;
             dbg!(&meta);

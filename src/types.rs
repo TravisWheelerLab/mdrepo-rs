@@ -47,8 +47,10 @@ pub enum Command {
     /// Check metadata
     MetaCheck(MetaCheckArgs),
 
-    /// Process a simulation
+    /// Process a new simulation upload
     Process(ProcessArgs),
+    // Reprocess an existing simulation
+    //Reprocess(ReprocessArgs),
 }
 
 // --------------------------------------------------
@@ -80,6 +82,36 @@ pub struct ProcessArgs {
     #[arg(short, long, value_name = "SERVER", default_value = "staging")]
     pub server: Server,
 }
+
+// --------------------------------------------------
+//#[derive(Debug, Parser)]
+//#[command(alias = "re")]
+//pub struct ReprocessArgs {
+//    /// Input directory
+//    #[arg(value_name = "DIR")]
+//    pub dirname: PathBuf,
+
+//    /// Script directory
+//    #[arg(
+//        short('S'),
+//        long,
+//        value_name = "DIR",
+//        default_value = "/opt/mdrepo/simulation-processing/python/"
+//    )]
+//    pub script_dir: Option<PathBuf>,
+
+//    /// Output directory for processed files
+//    #[arg(short, long, value_name = "OUTDIR")]
+//    pub outdir: Option<PathBuf>,
+
+//    /// Output directory for JSON import file
+//    #[arg(short, long, value_name = "OUTDIR", default_value = "import_json")]
+//    pub json_dir: Option<PathBuf>,
+
+//    /// staging or production
+//    #[arg(short, long, value_name = "SERVER", default_value = "staging")]
+//    pub server: Server,
+//}
 
 // --------------------------------------------------
 #[derive(Debug, Clone)]
@@ -222,12 +254,11 @@ pub struct UniprotProteinSequence {
 }
 
 // --------------------------------------------------
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PdbEntry {
     pub pdb_id: String,
     pub title: String,
     pub classification: String,
-    pub uniprots: Vec<UniprotEntry>,
 }
 
 // --------------------------------------------------
@@ -310,7 +341,7 @@ pub struct MdSimulation {
     pub short_description: Option<String>,
     pub software: MdSoftware,
     pub run_commands: Option<String>,
-    pub pdb: Option<MdPdb>,
+    pub pdb: Option<PdbEntry>,
     pub uniprots: Vec<UniprotEntry>,
     pub external_link: Option<String>,
     pub forcefield: Option<String>,
@@ -322,8 +353,9 @@ pub struct MdSimulation {
     pub sampling_frequency: f32,
     pub integration_timestep_fs: f64,
     pub temperature: Option<u32>,
-    pub three_letter_amino_acid_sequence: String,
-    pub fasta_sequence: String,
+    pub single_letter_sequence: String,
+    pub three_letter_sequence: String,
+    pub replicate: u32,
     pub total_replicates: u32,
     pub includes_water: bool,
     pub water_type: Option<String>,
@@ -384,14 +416,6 @@ pub struct MdFile {
 }
 
 // --------------------------------------------------
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct MdPdb {
-    pub pdb_id: String,
-    pub title: String,
-    pub classification: String,
-}
-
-// --------------------------------------------------
 #[derive(Debug, Deserialize, Serialize)]
 pub struct MdSoftware {
     pub name: String,
@@ -413,4 +437,6 @@ pub struct MdContributor {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub institution: Option<String>,
+
+    pub rank: u32,
 }

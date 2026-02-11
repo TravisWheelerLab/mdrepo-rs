@@ -2,10 +2,9 @@ use crate::{
     common::{file_exists, get_md5},
     metadata::{Meta, MoleculeType},
     types::{
-        Duration, Export, MdContributor, MdFile, MdLigand, MdPaper, MdPdb,
-        MdSimulation, MdSoftware, MdSolvent, PdbEntry, PdbGraphqlResponse, PdbResponse,
-        ProcessArgs, ProcessedFiles, ProteinSequence, RmsdRmsf, UniprotEntry,
-        UniprotResponse,
+        Duration, Export, MdContributor, MdFile, MdLigand, MdPaper, MdSimulation,
+        MdSoftware, MdSolvent, PdbEntry, PdbGraphqlResponse, PdbResponse, ProcessArgs,
+        ProcessedFiles, ProteinSequence, RmsdRmsf, UniprotEntry, UniprotResponse,
     },
 };
 use anyhow::{anyhow, bail, Result};
@@ -386,25 +385,28 @@ fn make_import_json(
                 }
             }
             (Some(MoleculeType::PDB), Some(pdb_id)) => match get_pdb_entry(&pdb_id) {
-                Ok(pdb) => pdbs.push(pdb),
+                Ok((pdb, pdb_uniprots)) => {
+                    pdbs.push(pdb);
+                    if !pdb_uniprots.is_empty() {
+                        uniprots.extend(pdb_uniprots);
+                    }
+                }
                 _ => info!(r#"Failed to get PDB entry for "{pdb_id}""#),
             },
             _ => println!("Handle {protein:?}"),
         }
     }
 
-    if pdbs.len() > 1 {
-        bail!("There cannot be {} PDBs!", pdbs.len());
-    }
-
-    for pdb in &pdbs {
-        for uniprot in &pdb.uniprots {
-            uniprots.push(uniprot.clone());
+    if let Some(pdb_id) = &meta.pdb_id {
+        let (pdb, pdb_uniprots) = get_pdb_entry(&pdb_id)?;
+        pdbs.push(pdb);
+        if !pdb_uniprots.is_empty() {
+            uniprots.extend(pdb_uniprots);
         }
     }
 
-    if let Some(pdb_id) = &meta.pdb_id {
-        pdbs.push(get_pdb_entry(&pdb_id)?);
+    if pdbs.len() > 1 {
+        bail!("There cannot be {} PDBs!", pdbs.len());
     }
 
     //dbg!(&uniprots);
@@ -441,16 +443,13 @@ fn make_import_json(
             _ => (false, None, None, None),
         };
 
-    let total_replicates = match &meta.replicates {
-        Some(val) => val.total_replicates.unwrap_or(1),
+    let (replicate, total_replicates) = match &meta.replicates {
+        Some(val) => (
+            val.replicate.unwrap_or(1),
+            val.total_replicates.unwrap_or(1),
+        ),
         _ => bail!("Missing replicates"),
     };
-
-    let pdb = pdbs.first().map(|val| MdPdb {
-        pdb_id: val.pdb_id.clone(),
-        title: val.title.clone(),
-        classification: val.classification.clone(),
-    });
 
     let software = MdSoftware {
         name: meta.software.name.clone(),
@@ -460,11 +459,13 @@ fn make_import_json(
     let contributors = match &meta.contributors {
         Some(vals) => vals
             .iter()
-            .map(|val| MdContributor {
+            .enumerate()
+            .map(|(rank, val)| MdContributor {
                 name: val.name.clone(),
                 orcid: val.orcid.clone(),
                 institution: val.institution.clone(),
                 email: val.email.clone(),
+                rank: (rank + 1) as u32,
             })
             .collect::<Vec<_>>(),
         _ => vec![],
@@ -496,13 +497,22 @@ fn make_import_json(
     if let Some(files) = &meta.additional_files {
         for file in files {
             let path = input_dir.join(&file.file_name);
-            original_files.push(MdFile {
-                name: file.file_name.to_string(),
-                file_type: file.file_type.to_string(),
-                size: path.metadata()?.len(),
-                md5_sum: get_md5(&path)?,
-                description: file.description.clone(),
-            })
+            let md5_sum = get_md5(&path)?;
+            if original_files
+                .iter()
+                .filter(|f| f.md5_sum == md5_sum)
+                .collect::<Vec<_>>()
+                .len()
+                == 0
+            {
+                original_files.push(MdFile {
+                    name: file.file_name.to_string(),
+                    file_type: file.file_type.to_string(),
+                    size: path.metadata()?.len(),
+                    md5_sum,
+                    description: file.description.clone(),
+                })
+            }
         }
     }
 
@@ -576,7 +586,7 @@ fn make_import_json(
         short_description: initial.short_description.clone(),
         run_commands: initial.commands.clone(),
         software,
-        pdb,
+        pdb: pdbs.first().map(|val| val.clone()),
         uniprots,
         duration: duration.totaltime_ns,
         sampling_frequency: duration.sampling_frequency_ns,
@@ -588,8 +598,9 @@ fn make_import_json(
         rmsd_values: rmsd_rmsf.rmsd,
         rmsf_values: rmsd_rmsf.rmsf,
         temperature,
-        three_letter_amino_acid_sequence: sequence.three_letters,
-        fasta_sequence: sequence.single_letters,
+        single_letter_sequence: sequence.single_letters,
+        three_letter_sequence: sequence.three_letters,
+        replicate,
         total_replicates,
         includes_water,
         water_density,
@@ -736,7 +747,7 @@ fn get_uniprot_entry(uniprot_id: &str) -> Result<UniprotEntry> {
 }
 
 // --------------------------------------------------
-fn get_pdb_entry(pdb_id: &str) -> Result<PdbEntry> {
+fn get_pdb_entry(pdb_id: &str) -> Result<(PdbEntry, Vec<UniprotEntry>)> {
     let pdb_id = pdb_id.to_uppercase();
     let url = format!("https://data.rcsb.org/rest/v1/core/entry/{pdb_id}");
     let resp = reqwest::blocking::get(&url)?;
@@ -778,12 +789,14 @@ fn get_pdb_entry(pdb_id: &str) -> Result<PdbEntry> {
         }
     }
 
-    Ok(PdbEntry {
-        pdb_id: pdb_id.to_string(),
-        title: pdb_resp.struct_.title.to_string(),
-        classification: pdb_resp.struct_keywords.pdbx_keywords.to_string(),
+    Ok((
+        PdbEntry {
+            pdb_id: pdb_id.to_string(),
+            title: pdb_resp.struct_.title.to_string(),
+            classification: pdb_resp.struct_keywords.pdbx_keywords.to_string(),
+        },
         uniprots,
-    })
+    ))
 }
 
 // --------------------------------------------------
