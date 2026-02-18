@@ -1,6 +1,6 @@
 use clap::{builder::PossibleValue, Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::{fmt, path::PathBuf};
 
 // --------------------------------------------------
 #[derive(Parser, Debug)]
@@ -49,8 +49,9 @@ pub enum Command {
 
     /// Process a new simulation upload
     Process(ProcessArgs),
-    // Reprocess an existing simulation
-    //Reprocess(ReprocessArgs),
+
+    /// Reprocess an existing simulation
+    Reprocess(ReprocessArgs),
 }
 
 // --------------------------------------------------
@@ -72,7 +73,7 @@ pub struct ProcessArgs {
 
     /// Output directory for processed files
     #[arg(short, long, value_name = "OUTDIR")]
-    pub outdir: Option<PathBuf>,
+    pub out_dir: Option<PathBuf>,
 
     /// Output directory for JSON import file
     #[arg(short, long, value_name = "OUTDIR", default_value = "import_json")]
@@ -84,34 +85,42 @@ pub struct ProcessArgs {
 }
 
 // --------------------------------------------------
-//#[derive(Debug, Parser)]
-//#[command(alias = "re")]
-//pub struct ReprocessArgs {
-//    /// Input directory
-//    #[arg(value_name = "DIR")]
-//    pub dirname: PathBuf,
+#[derive(Debug, Parser)]
+#[command(alias = "re")]
+pub struct ReprocessArgs {
+    /// Simulation ID
+    #[arg(value_name = "INT")]
+    pub simulation_id: u32,
 
-//    /// Script directory
-//    #[arg(
-//        short('S'),
-//        long,
-//        value_name = "DIR",
-//        default_value = "/opt/mdrepo/simulation-processing/python/"
-//    )]
-//    pub script_dir: Option<PathBuf>,
+    /// Script directory
+    #[arg(
+        short('S'),
+        long,
+        value_name = "DIR",
+        default_value = "/opt/mdrepo/simulation-processing/python/"
+    )]
+    pub script_dir: Option<PathBuf>,
 
-//    /// Output directory for processed files
-//    #[arg(short, long, value_name = "OUTDIR")]
-//    pub outdir: Option<PathBuf>,
+    /// Output directory for processed files
+    #[arg(
+        short,
+        long,
+        value_name = "OUTDIR",
+        default_value = "/opt/mdrepo/reprocess"
+    )]
+    pub work_dir: PathBuf,
 
-//    /// Output directory for JSON import file
-//    #[arg(short, long, value_name = "OUTDIR", default_value = "import_json")]
-//    pub json_dir: Option<PathBuf>,
+    /// Output directory for JSON import file
+    #[arg(short, long, value_name = "OUTDIR", default_value = "import_json")]
+    pub json_dir: Option<PathBuf>,
 
-//    /// staging or production
-//    #[arg(short, long, value_name = "SERVER", default_value = "staging")]
-//    pub server: Server,
-//}
+    /// staging or production
+    #[arg(short, long, value_name = "SERVER", default_value = "staging")]
+    pub server: Server,
+    // File types
+    //#[arg(short, long, value_name = "SERVER", default_value = "staging")]
+    //pub file_type: Server,
+}
 
 // --------------------------------------------------
 #[derive(Debug, Clone)]
@@ -130,6 +139,19 @@ impl ValueEnum for Server {
             Server::Production => PossibleValue::new("prod"),
             Server::Staging => PossibleValue::new("staging"),
         })
+    }
+}
+
+impl fmt::Display for Server {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Server::Production => "prod",
+                Server::Staging => "staging",
+            }
+        )
     }
 }
 
@@ -173,6 +195,7 @@ pub struct SubmissionCompleteFile {
 }
 
 // --------------------------------------------------
+#[derive(Debug)]
 pub struct ProcessedFiles {
     pub full_gro: PathBuf,
     pub full_pdb: PathBuf,
@@ -182,14 +205,6 @@ pub struct ProcessedFiles {
     pub min_xtc: PathBuf,
     pub sampled_xtc: PathBuf,
     pub thumbnail_png: PathBuf,
-}
-
-// --------------------------------------------------
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProteinSequence {
-    pub three_letters: String,
-    pub single_letters: String,
 }
 
 // --------------------------------------------------
@@ -209,7 +224,7 @@ pub struct Duration {
 }
 
 // --------------------------------------------------
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub struct UniprotEntry {
     pub uniprot_id: String,
     pub name: String,
@@ -335,6 +350,8 @@ pub struct Export {
 // --------------------------------------------------
 #[derive(Debug, Deserialize, Serialize)]
 pub struct MdSimulation {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub simulation_id: Option<u32>,
     pub lead_contributor_orcid: String,
     pub unique_file_hash_string: String,
     pub description: String,
@@ -353,8 +370,7 @@ pub struct MdSimulation {
     pub sampling_frequency: f32,
     pub integration_timestep_fs: f64,
     pub temperature: Option<u32>,
-    pub single_letter_sequence: String,
-    pub three_letter_sequence: String,
+    pub fasta_sequence: String,
     pub replicate: u32,
     pub total_replicates: u32,
     pub includes_water: bool,

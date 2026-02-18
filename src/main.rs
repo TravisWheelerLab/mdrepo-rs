@@ -2,6 +2,7 @@ mod common;
 mod constants;
 mod metadata;
 mod process;
+mod reprocess;
 mod types;
 mod validate;
 
@@ -43,13 +44,14 @@ fn run(args: Cli) -> Result<()> {
             process::process(&args)?;
             Ok(())
         }
-        //Some(Command::Reprocess(args)) => {
-        //    process::process(&args)?;
-        //    Ok(())
-        //}
+        Some(Command::Reprocess(args)) => {
+            reprocess::reprocess(&args)?;
+            Ok(())
+        }
         Some(Command::MetaCheck(args)) => {
-            let meta = Meta::from_file(&args.filename)?;
-            dbg!(&meta);
+            let _meta = Meta::from_file(&args.filename)?;
+            //dbg!(&meta);
+            println!("{} OK", args.filename.display());
             Ok(())
         }
         Some(Command::Validate(args)) => {

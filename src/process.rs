@@ -4,7 +4,7 @@ use crate::{
     types::{
         Duration, Export, MdContributor, MdFile, MdLigand, MdPaper, MdSimulation,
         MdSoftware, MdSolvent, PdbEntry, PdbGraphqlResponse, PdbResponse, ProcessArgs,
-        ProcessedFiles, ProteinSequence, RmsdRmsf, UniprotEntry, UniprotResponse,
+        ProcessedFiles, RmsdRmsf, UniprotEntry, UniprotResponse,
     },
 };
 use anyhow::{anyhow, bail, Result};
@@ -15,7 +15,7 @@ use sha1::{Digest, Sha1};
 use std::{
     fs::{self, File},
     io::Write,
-    path::PathBuf,
+    path::{self, PathBuf},
     process::Command,
 };
 use which::which;
@@ -23,9 +23,9 @@ use which::which;
 // --------------------------------------------------
 pub fn process(args: &ProcessArgs) -> Result<()> {
     debug!("{args:?}");
-    let input_dir = &args.dirname;
+    let input_dir = path::absolute(&args.dirname)?;
     let processed_dir = args
-        .outdir
+        .out_dir
         .clone()
         .map_or(input_dir.join("processed"), |dir| PathBuf::from(&dir));
     let script_dir = &args.script_dir.clone().unwrap();
@@ -48,13 +48,14 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
         &script_dir,
         &processed_files,
         &import_json,
+        None,
     )?;
 
     Ok(())
 }
 
 // --------------------------------------------------
-fn make_thumbnail(
+pub fn make_thumbnail(
     thumbnail: &PathBuf,
     sampled_trajectory: &PathBuf,
     min_pdb: &PathBuf,
@@ -94,7 +95,7 @@ fn make_thumbnail(
 }
 
 // --------------------------------------------------
-fn make_processed_files(
+pub fn make_processed_files(
     meta_path: &PathBuf,
     in_dir: &PathBuf,
     processed_dir: &PathBuf,
@@ -190,7 +191,7 @@ fn make_processed_files(
 }
 
 // --------------------------------------------------
-fn get_rmsd_rmsf(
+pub fn get_rmsd_rmsf(
     min_pdb: &PathBuf,
     min_xtc: &PathBuf,
     script_dir: &PathBuf,
@@ -236,9 +237,9 @@ fn get_rmsd_rmsf(
 }
 
 // --------------------------------------------------
-fn get_sequence(full_pdb: &PathBuf, script_dir: &PathBuf) -> Result<ProteinSequence> {
+pub fn get_sequence(full_pdb: &PathBuf, script_dir: &PathBuf) -> Result<String> {
     let processed_dir = full_pdb.parent().unwrap();
-    let sequence_file = processed_dir.join("sequence.json");
+    let sequence_file = processed_dir.join("sequence.fa");
 
     if file_exists(&sequence_file) {
         info!("Sequence file exists");
@@ -268,14 +269,12 @@ fn get_sequence(full_pdb: &PathBuf, script_dir: &PathBuf) -> Result<ProteinSeque
         }
     }
 
-    let contents = fs::read_to_string(&sequence_file)?;
-    let sequence: ProteinSequence = serde_json::from_str(&contents)?;
-
-    Ok(sequence)
+    fs::read_to_string(&sequence_file)
+        .map_err(|e| anyhow!("{}: {e}", sequence_file.display()))
 }
 
 // --------------------------------------------------
-fn sample_trajectory(
+pub fn sample_trajectory(
     min_xtc: &PathBuf,
     min_pdb: &PathBuf,
     out_file: &PathBuf,
@@ -329,13 +328,14 @@ fn sample_trajectory(
 //}
 
 // --------------------------------------------------
-fn make_import_json(
+pub fn make_import_json(
     meta_path: &PathBuf,
     input_dir: &PathBuf,
     script_dir: &PathBuf,
     processed_files: &ProcessedFiles,
     //server: &Server,
     import_json: &PathBuf,
+    simulation_id: Option<u32>,
 ) -> Result<()> {
     let meta = Meta::from_file(&meta_path)?;
 
@@ -346,7 +346,7 @@ fn make_import_json(
     let topology_hash = get_topology_hash(&topology_path)?;
     //dbg!(&topology_hash);
 
-    let sequence = get_sequence(&processed_files.full_pdb, &script_dir)?;
+    let fasta_sequence = get_sequence(&processed_files.full_pdb, &script_dir)?;
     //dbg!(&sequence);
 
     let rmsd_rmsf = get_rmsd_rmsf(
@@ -356,7 +356,12 @@ fn make_import_json(
     )?;
     //dbg!(&rmsd_rmsf);
 
-    let duration = get_duration(&processed_files.full_xtc)?;
+    let integration_timestep_fs = match &meta.timestep_information {
+        Some(val) => val.integration_time_step.unwrap(),
+        _ => bail!("Missing timestep"),
+    };
+
+    let duration = get_duration(&processed_files.full_xtc, integration_timestep_fs)?;
     //dbg!(&duration);
 
     //let sim_id = find_or_create_simulation(
@@ -379,16 +384,22 @@ fn make_import_json(
             protein.molecule_id.clone(),
         ) {
             (Some(MoleculeType::Uniprot), Some(uniprot_id)) => {
-                match get_uniprot_entry(&uniprot_id) {
-                    Ok(uniprot) => uniprots.push(uniprot),
-                    _ => info!(r#"Failed to get Uniprot entry for "{uniprot_id}""#),
+                if !uniprot_present(&uniprot_id, &uniprots) {
+                    match get_uniprot_entry(&uniprot_id) {
+                        Ok(uniprot) => uniprots.push(uniprot),
+                        _ => info!(r#"Failed to get Uniprot entry for "{uniprot_id}""#),
+                    }
                 }
             }
             (Some(MoleculeType::PDB), Some(pdb_id)) => match get_pdb_entry(&pdb_id) {
                 Ok((pdb, pdb_uniprots)) => {
-                    pdbs.push(pdb);
-                    if !pdb_uniprots.is_empty() {
-                        uniprots.extend(pdb_uniprots);
+                    if !pdb_present(&pdb.pdb_id, &pdbs) {
+                        pdbs.push(pdb);
+                    }
+                    for uniprot in pdb_uniprots {
+                        if !uniprot_present(&uniprot.uniprot_id, &uniprots) {
+                            uniprots.push(uniprot);
+                        }
                     }
                 }
                 _ => info!(r#"Failed to get PDB entry for "{pdb_id}""#),
@@ -399,9 +410,14 @@ fn make_import_json(
 
     if let Some(pdb_id) = &meta.pdb_id {
         let (pdb, pdb_uniprots) = get_pdb_entry(&pdb_id)?;
-        pdbs.push(pdb);
-        if !pdb_uniprots.is_empty() {
-            uniprots.extend(pdb_uniprots);
+        if !pdb_present(&pdb.pdb_id, &pdbs) {
+            pdbs.push(pdb);
+        }
+
+        for uniprot in pdb_uniprots {
+            if !uniprot_present(&uniprot.uniprot_id, &uniprots) {
+                uniprots.push(uniprot);
+            }
         }
     }
 
@@ -411,11 +427,6 @@ fn make_import_json(
 
     //dbg!(&uniprots);
     //dbg!(&pdbs);
-
-    let integration_timestep_fs = match &meta.timestep_information {
-        Some(val) => val.integration_time_step.unwrap(),
-        _ => bail!("Missing timestep"),
-    };
 
     let (forcefield, forcefield_comments) = match &meta.forcefield {
         Some(val) => (val.forcefield.clone(), val.forcefield_comments.clone()),
@@ -578,6 +589,7 @@ fn make_import_json(
 
     let initial = meta.initial.clone();
     let simulation = MdSimulation {
+        simulation_id,
         lead_contributor_orcid: initial.lead_contributor_orcid,
         unique_file_hash_string: unique_file_hash(&meta, input_dir),
         description: initial
@@ -598,8 +610,7 @@ fn make_import_json(
         rmsd_values: rmsd_rmsf.rmsd,
         rmsf_values: rmsd_rmsf.rmsf,
         temperature,
-        single_letter_sequence: sequence.single_letters,
-        three_letter_sequence: sequence.three_letters,
+        fasta_sequence,
         replicate,
         total_replicates,
         includes_water,
@@ -625,7 +636,10 @@ fn make_import_json(
 }
 
 // --------------------------------------------------
-fn get_duration(full_xtc: &PathBuf) -> Result<Duration> {
+pub fn get_duration(
+    full_xtc: &PathBuf,
+    integration_timestep_fs: f64,
+) -> Result<Duration> {
     let processed_dir = full_xtc.parent().unwrap();
     let out_file = processed_dir.join("duration.json");
 
@@ -642,7 +656,7 @@ fn get_duration(full_xtc: &PathBuf) -> Result<Duration> {
         }
 
         let stdout = str::from_utf8(&cmd.stdout)?.to_string();
-        let time_re = Regex::new(r"^time:\s*(\d+)-(\d+)\s+ps").unwrap();
+        let time_re = Regex::new(r"^time:\s*(\d+)-(\d+(?:\.\d)?)\s+ps").unwrap();
         let nframes_re = Regex::new(r"^nframes:\s*(\d+)").unwrap();
         let mut time_start: Option<u64> = None;
         let mut time_stop: Option<u64> = None;
@@ -660,6 +674,8 @@ fn get_duration(full_xtc: &PathBuf) -> Result<Duration> {
 
                 if let Ok(tmp) = stop.parse::<u64>() {
                     time_stop = Some(tmp);
+                } else if let Ok(tmp) = stop.parse::<f64>() {
+                    time_stop = format!("{}", tmp.round()).parse::<u64>().ok();
                 } else {
                     info!("Failed to parse time_start from \"{stop}\" ({line})")
                 }
@@ -687,15 +703,46 @@ fn get_duration(full_xtc: &PathBuf) -> Result<Duration> {
             bail!("Trajectory file has only {num_frames} frame(s)");
         }
 
+        // time_start/time_stop are in ps from molly
+        let mut duration_ps = time_stop - time_start;
+        let sampling_ps = duration_ps / (num_frames - 1.0);
+
+        // Sanity check: compute nstxout (output steps per frame)
+        // using the integration timestep from metadata.
+        let dt_ps = integration_timestep_fs / 1000.0;
+        let nstxout = sampling_ps / dt_ps;
+
+        // A reasonable nstxout is 1e3..1e7. If it's way too large
+        // but dividing by 1000 fixes it, the XTC timestamps are
+        // inflated by 1000x (a known issue with some MD engines).
+        if nstxout > 1e7 {
+            let corrected_nstxout = nstxout / 1000.0;
+            if corrected_nstxout >= 1e3 && corrected_nstxout <= 1e7 {
+                info!(
+                    "XTC timestamps appear inflated by 1000x \
+                         (nstxout={nstxout:.0}, corrected={corrected_nstxout:.0}). \
+                         Applying correction."
+                );
+                duration_ps /= 1000.0;
+            } else {
+                bail!(
+                    "XTC timestamps look wrong (nstxout={nstxout:.0}) \
+                         but no clean 1000x correction found"
+                );
+            }
+        }
+
+        let totaltime_ns = (duration_ps / 1000.0).round();
+        let sampling_frequency_ns = format!("{:.2}", totaltime_ns / num_frames)
+            .parse::<f32>()
+            .unwrap();
+        let duration = Duration {
+            totaltime_ns: totaltime_ns as u32,
+            sampling_frequency_ns,
+        };
+
+        // Scoped to force close of fh
         {
-            let totaltime_ns = ((time_stop - time_start) / 1000.0).round();
-            let sampling_frequency_ns = format!("{:.2}", totaltime_ns / num_frames)
-                .parse::<f32>()
-                .unwrap();
-            let duration = Duration {
-                totaltime_ns: totaltime_ns as u32,
-                sampling_frequency_ns,
-            };
             let json = serde_json::to_string_pretty(&duration)?;
             let mut fh = File::create(&out_file)?;
             writeln!(&mut fh, "{json}")?;
@@ -713,14 +760,14 @@ fn get_duration(full_xtc: &PathBuf) -> Result<Duration> {
 }
 
 // --------------------------------------------------
-fn get_topology_hash(topology: &PathBuf) -> Result<String> {
+pub fn get_topology_hash(topology: &PathBuf) -> Result<String> {
     let contents = fs::read(&topology)?;
     let digest = Sha1::digest(&contents);
     Ok(format!("{digest:x}"))
 }
 
 // --------------------------------------------------
-fn get_uniprot_entry(uniprot_id: &str) -> Result<UniprotEntry> {
+pub fn get_uniprot_entry(uniprot_id: &str) -> Result<UniprotEntry> {
     let url = format!("https://rest.uniprot.org/uniprotkb/{uniprot_id}.json");
     let resp = reqwest::blocking::get(&url)?;
     if !resp.status().is_success() {
@@ -747,7 +794,7 @@ fn get_uniprot_entry(uniprot_id: &str) -> Result<UniprotEntry> {
 }
 
 // --------------------------------------------------
-fn get_pdb_entry(pdb_id: &str) -> Result<(PdbEntry, Vec<UniprotEntry>)> {
+pub fn get_pdb_entry(pdb_id: &str) -> Result<(PdbEntry, Vec<UniprotEntry>)> {
     let pdb_id = pdb_id.to_uppercase();
     let url = format!("https://data.rcsb.org/rest/v1/core/entry/{pdb_id}");
     let resp = reqwest::blocking::get(&url)?;
@@ -854,7 +901,7 @@ fn get_pdb_entry(pdb_id: &str) -> Result<(PdbEntry, Vec<UniprotEntry>)> {
 //}
 
 // --------------------------------------------------
-fn unique_file_hash(meta: &Meta, input_dir: &PathBuf) -> String {
+pub fn unique_file_hash(meta: &Meta, input_dir: &PathBuf) -> String {
     let mut input_files = vec![
         meta.required_files.trajectory_file_name.to_string(),
         meta.required_files.structure_file_name.to_string(),
@@ -875,4 +922,16 @@ fn unique_file_hash(meta: &Meta, input_dir: &PathBuf) -> String {
     md5s.sort();
 
     md5s.join(",")
+}
+
+// --------------------------------------------------
+fn uniprot_present(uniprot_id: &str, uniprots: &Vec<UniprotEntry>) -> bool {
+    let ids: Vec<_> = uniprots.iter().map(|u| u.uniprot_id.as_str()).collect();
+    return ids.contains(&uniprot_id);
+}
+
+// --------------------------------------------------
+fn pdb_present(pdb_id: &str, pdbs: &Vec<PdbEntry>) -> bool {
+    let ids: Vec<_> = pdbs.iter().map(|p| p.pdb_id.as_str()).collect();
+    return ids.contains(&pdb_id);
 }
