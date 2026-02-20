@@ -8,6 +8,7 @@ anyhow = "1.0.100"
 assert_cmd = "2.1.2"
 chksum-md5 = "0.1.0"
 clap = { version = "4", features = ["derive"] }
+dotenv = "0.15.0"
 dotenvy = "0.15.7"
 env_logger = "0.11.8"
 log = "0.4.29"
