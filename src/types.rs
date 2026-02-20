@@ -476,3 +476,28 @@ pub struct MdContributor {
 
     pub rank: u32,
 }
+
+// --------------------------------------------------
+#[derive(Debug)]
+pub struct Import {
+    pub dirname: PathBuf,
+
+    pub import_json: PathBuf,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ImportResult {
+    pub server: String,
+    pub filename: String,
+    pub simulation_id: u32,
+    pub data_dir: String,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PushResult {
+    pub src: String,
+    pub dest: String,
+    pub size: u32,
+}

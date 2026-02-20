@@ -67,13 +67,13 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
     )?;
     dbg!(&processed_files);
 
-    let import_json = data_dir.join(format!("{mdrepo_id}.json"));
+    //let import_json = data_dir.join(format!("{mdrepo_id}.json"));
     process::make_import_json(
         &meta_path,
         &data_dir,
         &script_dir,
         &processed_files,
-        &import_json,
+        //&import_json,
         Some(simulation_id),
     )?;
 

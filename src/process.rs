@@ -40,19 +40,19 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
     let processed_files =
         make_processed_files(&meta_path, &input_dir, &processed_dir, &script_dir)?;
 
-    let json_dir = &args.json_dir.clone().unwrap_or(processed_dir);
-    if !json_dir.is_dir() {
-        fs::create_dir_all(&json_dir)?;
-    }
-    let in_dir_basename = &input_dir.file_name().unwrap().to_string_lossy().to_string();
-    let import_json = json_dir.join(format!("{in_dir_basename}.json"));
+    //let json_dir = &args.json_dir.clone().unwrap_or(processed_dir);
+    //if !json_dir.is_dir() {
+    //    fs::create_dir_all(&json_dir)?;
+    //}
+    //let in_dir_basename = &input_dir.file_name().unwrap().to_string_lossy().to_string();
+    //let import_json = json_dir.join(format!("{in_dir_basename}.json"));
 
     make_import_json(
         &meta_path,
         &input_dir,
         &script_dir,
         &processed_files,
-        &import_json,
+        //&import_json,
         None,
     )?;
 
@@ -339,7 +339,7 @@ pub fn make_import_json(
     script_dir: &PathBuf,
     processed_files: &ProcessedFiles,
     //server: &Server,
-    import_json: &PathBuf,
+    //import_json: &PathBuf,
     simulation_id: Option<u32>,
 ) -> Result<()> {
     let meta = Meta::from_file(&meta_path)?;
@@ -633,6 +633,7 @@ pub fn make_import_json(
 
     let export = Export { simulation };
 
+    let import_json = &input_dir.join("processed").join("import.json");
     info!(r#"Writing JSON to "{}""#, &import_json.display());
     let file = File::create(&import_json)?;
     writeln!(&file, "{}", &serde_json::to_string_pretty(&export)?)?;
