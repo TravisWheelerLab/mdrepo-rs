@@ -224,7 +224,7 @@ pub struct Duration {
 }
 
 // --------------------------------------------------
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UniprotEntry {
     pub uniprot_id: String,
     pub name: String,
