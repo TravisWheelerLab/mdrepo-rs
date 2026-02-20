@@ -3,6 +3,7 @@ mod constants;
 mod metadata;
 mod process;
 mod reprocess;
+mod ticket;
 mod types;
 mod validate;
 
@@ -52,6 +53,10 @@ fn run(args: Cli) -> Result<()> {
             let _meta = Meta::from_file(&args.filename)?;
             //dbg!(&meta);
             println!("{} OK", args.filename.display());
+            Ok(())
+        }
+        Some(Command::Ticket(args)) => {
+            ticket::process(&args)?;
             Ok(())
         }
         Some(Command::Validate(args)) => {

@@ -13,6 +13,7 @@ use log::{debug, info};
 use regex::Regex;
 use sha1::{Digest, Sha1};
 use std::{
+    env,
     fs::{self, File},
     io::Write,
     path::{self, PathBuf},
@@ -22,20 +23,24 @@ use which::which;
 
 // --------------------------------------------------
 pub fn process(args: &ProcessArgs) -> Result<()> {
+    dotenv::dotenv()?;
     debug!("{args:?}");
     let input_dir = path::absolute(&args.dirname)?;
     let processed_dir = args
         .out_dir
         .clone()
         .map_or(input_dir.join("processed"), |dir| PathBuf::from(&dir));
-    let script_dir = &args.script_dir.clone().unwrap();
+    let script_dir = &args
+        .script_dir
+        .clone()
+        .unwrap_or(PathBuf::from(env::var("SCRIPT_DIR")?));
     debug!("{processed_dir:?}");
 
     let meta_path = input_dir.join("mdrepo-metadata.toml");
     let processed_files =
         make_processed_files(&meta_path, &input_dir, &processed_dir, &script_dir)?;
 
-    let json_dir = &args.json_dir.clone().unwrap();
+    let json_dir = &args.json_dir.clone().unwrap_or(processed_dir);
     if !json_dir.is_dir() {
         fs::create_dir_all(&json_dir)?;
     }

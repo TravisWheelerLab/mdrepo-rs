@@ -47,11 +47,14 @@ pub enum Command {
     /// Check metadata
     MetaCheck(MetaCheckArgs),
 
-    /// Process a new simulation upload
+    /// Process simulation directory
     Process(ProcessArgs),
 
     /// Reprocess an existing simulation
     Reprocess(ReprocessArgs),
+
+    /// Use ticket ID to download and process
+    Ticket(TicketArgs),
 }
 
 // --------------------------------------------------
@@ -71,18 +74,18 @@ pub struct ProcessArgs {
     pub out_dir: Option<PathBuf>,
 
     /// Output directory for JSON import file
-    #[arg(short, long, value_name = "JSON_DIR", default_value = "import_json")]
+    #[arg(short, long, value_name = "JSON_DIR")]
     pub json_dir: Option<PathBuf>,
 
-    /// staging or production
+    /// Server
     #[arg(short, long, value_name = "SERVER", default_value = "staging")]
     pub server: Server,
 }
 
 // --------------------------------------------------
 #[derive(Debug, Parser)]
-#[command(alias = "pr")]
-pub struct ProcessTicketArgs {
+#[command(alias = "ti")]
+pub struct TicketArgs {
     /// Ticket ID
     #[arg(
         short,
@@ -90,21 +93,21 @@ pub struct ProcessTicketArgs {
         value_name = "ID",
         value_parser = clap::value_parser!(u64).range(1..)
     )]
-    ticket_id: u64,
+    pub ticket_id: u64,
 
     /// Script directory
     #[arg(short('S'), long, value_name = "DIR")]
     pub script_dir: Option<PathBuf>,
 
-    /// Output directory for processed files
-    #[arg(short, long, value_name = "OUT_DIR")]
-    pub out_dir: Option<PathBuf>,
+    /// Landing directory for downloaded files
+    #[arg(short, long, value_name = "DIR")]
+    pub landing_dir: Option<PathBuf>,
 
     /// Output directory for JSON import file
-    #[arg(short, long, value_name = "JSON_DIR", default_value = "import_json")]
+    #[arg(short, long, value_name = "JSON_DIR")]
     pub json_dir: Option<PathBuf>,
 
-    /// staging or production
+    /// Server
     #[arg(short, long, value_name = "SERVER", default_value = "staging")]
     pub server: Server,
 }
@@ -134,7 +137,7 @@ pub struct ReprocessArgs {
     #[arg(short, long, value_name = "JSON_DIR", default_value = "import_json")]
     pub json_dir: Option<PathBuf>,
 
-    /// staging or production
+    /// Server
     #[arg(short, long, value_name = "SERVER", default_value = "staging")]
     pub server: Server,
 }
