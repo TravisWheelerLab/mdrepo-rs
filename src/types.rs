@@ -59,24 +59,49 @@ pub enum Command {
 #[command(alias = "pr")]
 pub struct ProcessArgs {
     /// Input directory
-    #[arg(value_name = "DIR")]
+    #[arg(value_name = "IN_DIR")]
     pub dirname: PathBuf,
 
     /// Script directory
-    #[arg(
-        short('S'),
-        long,
-        value_name = "DIR",
-        default_value = "/opt/mdrepo/simulation-processing/python/"
-    )]
+    #[arg(short('S'), long, value_name = "SCRIPTS")]
     pub script_dir: Option<PathBuf>,
 
     /// Output directory for processed files
-    #[arg(short, long, value_name = "OUTDIR")]
+    #[arg(short, long, value_name = "OUT_DIR")]
     pub out_dir: Option<PathBuf>,
 
     /// Output directory for JSON import file
-    #[arg(short, long, value_name = "OUTDIR", default_value = "import_json")]
+    #[arg(short, long, value_name = "JSON_DIR", default_value = "import_json")]
+    pub json_dir: Option<PathBuf>,
+
+    /// staging or production
+    #[arg(short, long, value_name = "SERVER", default_value = "staging")]
+    pub server: Server,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Parser)]
+#[command(alias = "pr")]
+pub struct ProcessTicketArgs {
+    /// Ticket ID
+    #[arg(
+        short,
+        long,
+        value_name = "ID",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    ticket_id: u64,
+
+    /// Script directory
+    #[arg(short('S'), long, value_name = "DIR")]
+    pub script_dir: Option<PathBuf>,
+
+    /// Output directory for processed files
+    #[arg(short, long, value_name = "OUT_DIR")]
+    pub out_dir: Option<PathBuf>,
+
+    /// Output directory for JSON import file
+    #[arg(short, long, value_name = "JSON_DIR", default_value = "import_json")]
     pub json_dir: Option<PathBuf>,
 
     /// staging or production
@@ -93,33 +118,25 @@ pub struct ReprocessArgs {
     pub simulation_id: u32,
 
     /// Script directory
-    #[arg(
-        short('S'),
-        long,
-        value_name = "DIR",
-        default_value = "/opt/mdrepo/simulation-processing/python/"
-    )]
+    #[arg(short('S'), long, value_name = "SCRIPTS")]
     pub script_dir: Option<PathBuf>,
 
     /// Output directory for processed files
     #[arg(
         short,
         long,
-        value_name = "OUTDIR",
+        value_name = "WORK_DIR",
         default_value = "/opt/mdrepo/reprocess"
     )]
     pub work_dir: PathBuf,
 
     /// Output directory for JSON import file
-    #[arg(short, long, value_name = "OUTDIR", default_value = "import_json")]
+    #[arg(short, long, value_name = "JSON_DIR", default_value = "import_json")]
     pub json_dir: Option<PathBuf>,
 
     /// staging or production
     #[arg(short, long, value_name = "SERVER", default_value = "staging")]
     pub server: Server,
-    // File types
-    //#[arg(short, long, value_name = "SERVER", default_value = "staging")]
-    //pub file_type: Server,
 }
 
 // --------------------------------------------------
@@ -224,7 +241,7 @@ pub struct Duration {
 }
 
 // --------------------------------------------------
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UniprotEntry {
     pub uniprot_id: String,
     pub name: String,
