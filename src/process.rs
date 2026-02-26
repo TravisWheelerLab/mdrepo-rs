@@ -23,17 +23,17 @@ use which::which;
 
 // --------------------------------------------------
 pub fn process(args: &ProcessArgs) -> Result<()> {
-    dotenv::dotenv()?;
-    debug!("{args:?}");
+    dbg!(&args);
+
+    // It's OK if there's no .env
+    let _ = dotenv::dotenv();
+
     let input_dir = path::absolute(&args.dirname)?;
     let processed_dir = args
         .out_dir
         .clone()
         .map_or(input_dir.join("processed"), |dir| PathBuf::from(&dir));
-    let script_dir = &args
-        .script_dir
-        .clone()
-        .unwrap_or(PathBuf::from(env::var("SCRIPT_DIR")?));
+    let script_dir = &args.script_dir.clone().unwrap_or(PathBuf::from(env::var("SCRIPT_DIR").map_err(|e| anyhow!("SCRIPT_DIR: {e}"))?));
     debug!("{processed_dir:?}");
 
     let meta_path = input_dir.join("mdrepo-metadata.toml");
