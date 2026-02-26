@@ -1,0 +1,157 @@
+[[contributors]]
+name = "Grzegorz M. Popowicz"
+orcid = "0000-0003-2818-7498"
+email = "grzegorz.popowicz@helmholtz-munich.de"
+institution = "Technical University of Munich"
+
+[[contributors]]
+name = "Till Siebenmorgen"
+orcid = "0009-0008-5160-8100"
+institution = "Technical University of Munich"
+
+[[contributors]]
+name = "Filipe Menezes"
+orcid = "0000-0002-7630-5447"
+institution = "Technical University of Munich"
+
+[[contributors]]
+name = "Sabrina Benassou"
+institution = "Jülich Supercomputing Centre"
+
+[[contributors]]
+name = "Erinc Merdivan"
+institution = "Helmholtz AI"
+
+[[contributors]]
+name = "Kieran Didi"
+orcid = "0000-0001-6839-3320"
+institution = "Cambridge University"
+
+[[contributors]]
+name = "André Santos Dias Mourão"
+institution = "Molecular Targets and Therapeutics Center, Institute of Structural Biology"
+
+[[contributors]]
+name = "Radosław Kitel"
+institution = "Jagiellonian University"
+
+[[contributors]]
+name = "Pietro Liò"
+institution = "Cambridge University"
+
+[[contributors]]
+name = "Stefan Kesselheim"
+orcid = "0000-0003-0940-5752"
+institution = "Jülich Supercomputing Centre"
+
+[[contributors]]
+name = "Marie Piraud"
+institution = "Helmholtz AI"
+
+[[contributors]]
+name = "Fabian J. Theis"
+orcid = "0000-0002-2419-1943"
+institution = "Helmholtz AI"
+
+[[contributors]]
+name = "Michael Sattler"
+orcid = "0000-0002-1594-0527"
+institution = "Molecular Targets and Therapeutics Center, Institute of Structural Biology"
+
+[[contributors]]
+name = "Grzegorz M. Popowicz"
+orcid = "0000-0003-2818-7498"
+institution = "Molecular Targets and Therapeutics Center, Institute of Structural Biology"
+
+[initial]
+short_description = "8 ns simulation of the 5aom PDB entry (P04637), produced via MISATO automated pipeline; sampled to 100 frames"
+description = "An 8 ns simulation of the 5aom PDB entries which includes Uniprot entry: P04637. The simulation was produced using the MISATO automated pipeline. The MISATO dataset provides a large-scale, high-quality resource of ~19,400 experimentally determined protein–ligand complexes curated from PDBbind, each corrected for structural errors with semi-empirical quantum mechanical refinements and enriched with computed quantum chemical properties. To capture conformational flexibility, the authors generated explicit all-atom molecular dynamics simulations in water; each run was 10 ns but only the final 8 ns were saved as trajectories. For every system, Amber restart and topology files are available, along with Gromacs-formatted topology, structure, and PDB files for the full solvated system. The saved trajectories include only protein and ligand atoms, and are accompanied by corresponding `cleaned' Gromacs topology, structure, and PDB files with water and ions removed. Each trajectory contains 100 frames at 800 ps intervals, and per-frame analyses such as buried solvent-accessible surface area (bSASA), protein–ligand center-of-mass distance, interaction energy, and ligand RMSD are available in CSV format. The external link (https://zenodo.org/records/7711953) refers to the location of the full set of MISATO simulations; retrieval of this single simulation from that zenodo record requires download of the entire payload, followed by extract using a script such as those provided at https://github.com/t7morgen/misato-dataset/tree/master/src/data/processing (though MDRepo provides direct access the full contents of all records)."
+lead_contributor_orcid = "0000-0001-9961-144X"
+date = "2025-08-28"
+external_link = "https://zenodo.org/records/7711953"
+simulation_is_restricted = false
+duration_ns = 8
+
+[software]
+name = "AMBER"
+version = "20"
+
+[required_files]
+trajectory_file_name = "5aom.xtc"
+structure_file_name = "5aom_cleaned.pdb"
+topology_file_name = "5aom_gromacs_cleaned.top"
+
+[[additional_files]]
+additional_file_type = "Structure"
+additional_file_name = "5aom_gromacs_cleaned.gro"
+additional_file_description = ".gro format of the structure file"
+
+[[additional_files]]
+additional_file_type = "Structure"
+additional_file_name = "5aom_production_gromacs.gro"
+additional_file_description = ".gro format of the structure file with water and ions"
+
+[[additional_files]]
+additional_file_type = "Structure"
+additional_file_name = "5aom_production.pdb"
+additional_file_description = "PDB file with water and ions"
+
+[[additional_files]]
+additional_file_type = "Topology"
+additional_file_name = "5aom_production_gromacs.top"
+additional_file_description = "Gromacs formatted topology file with water and ions"
+
+[[additional_files]]
+additional_file_type = "Topology"
+additional_file_name = "production.top"
+additional_file_description = "Amber formatted original topology file with water and ions"
+
+[[additional_files]]
+additional_file_type = "Restart"
+additional_file_name = "production.rst"
+additional_file_description = "Amber formatted restart file with water and ions"
+
+[[additional_files]]
+additional_file_type = "Miscellaneous"
+additional_file_name = "5aom_per_frame_features.csv"
+additional_file_description = "SASA, COM distance, Interaction energy and Ligand RMSD for each frame"
+
+[replicates]
+replicate = 1
+total_replicates = 1
+
+[water]
+is_present = false
+model = "TIP3P"
+density = 1000
+water_density_units = "kg/m^3"
+
+[[proteins]]
+molecule_id_type = "Uniprot"
+molecule_id = "P04637"
+
+[[ligands]]
+name = "FY8"
+smiles = 'Oc1ccc(Cl)cc1NC(=O)C2CCNCC2'
+
+[forcefield]
+forcefield = "ff14SB"
+forcefield_comments = "Also gaff2 for ligands"
+
+[temperature]
+temperature = 300
+
+[protonation_method]
+protonation_method = "AutoDockFR"
+
+[timestep_information]
+integration_time_step = 2
+
+[[papers]]
+title = "MISATO: machine learning dataset of protein–ligand complexes for structure-based drug discovery"
+authors = "Till Siebenmorgen, Filipe Menezes, Sabrina Benassou, Erinc Merdivan, Kieran Didi, André Santos Dias Mourão, Radosław Kitel, Pietro Liò, Stefan Kesselheim, Marie Piraud, Fabian J. Theis, Michael Sattler & Grzegorz M. Popowicz"
+journal = "Nature Computational Science"
+year = 2_024
+volume = 4
+pages = "367-378"
+doi = "https://doi.org/10.1038/s43588-024-00627-2"
