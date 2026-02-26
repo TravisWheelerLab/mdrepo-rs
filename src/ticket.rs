@@ -79,23 +79,20 @@ pub fn process(args: &TicketArgs) -> Result<()> {
                 json_dir: None,
                 server: args.server.clone(),
             }) {
-                Ok(()) => {
+                Ok(import_json) => {
                     info!("Success");
-                    let import_json = &entry.join("processed").join("import.json");
-                    if import_json.is_file() {
-                        imports.push(Import {
-                            dirname: entry.clone(),
-                            import_json: import_json.clone(),
-                        });
-                    }
+                    imports.push(Import {
+                        dirname: entry.clone(),
+                        import_json: import_json.clone(),
+                    });
                 }
                 Err(e) => info!("Error: {e}"),
             }
         }
     }
 
+    // TODO: Move "for" loop code into functions of process
     debug!("imports = {imports:?}");
-
     let mut import_results: Vec<ImportResult> = vec![];
     let import_script = script_dir.join("import_preprocessed.py");
     for import in imports {
