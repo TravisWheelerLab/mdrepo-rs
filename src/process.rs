@@ -23,7 +23,8 @@ use std::{
 use which::which;
 
 // --------------------------------------------------
-pub fn process(args: &ProcessArgs) -> Result<()> {
+// Returns the JSON file for importing into the db
+pub fn process(args: &ProcessArgs) -> Result<PathBuf> {
     dotenv::dotenv()?;
     debug!("{args:?}");
     let input_dir = path::absolute(&args.dirname)?;
@@ -41,23 +42,7 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
     let processed_files =
         make_processed_files(&meta_path, &input_dir, &processed_dir, &script_dir)?;
 
-    //let json_dir = &args.json_dir.clone().unwrap_or(processed_dir);
-    //if !json_dir.is_dir() {
-    //    fs::create_dir_all(&json_dir)?;
-    //}
-    //let in_dir_basename = &input_dir.file_name().unwrap().to_string_lossy().to_string();
-    //let import_json = json_dir.join(format!("{in_dir_basename}.json"));
-
-    make_import_json(
-        &meta_path,
-        &input_dir,
-        &script_dir,
-        &processed_files,
-        //&import_json,
-        None,
-    )?;
-
-    Ok(())
+    make_import_json(&meta_path, &input_dir, &script_dir, &processed_files, None)
 }
 
 // --------------------------------------------------
@@ -339,43 +324,19 @@ pub fn make_import_json(
     input_dir: &PathBuf,
     script_dir: &PathBuf,
     processed_files: &ProcessedFiles,
-    //server: &Server,
-    //import_json: &PathBuf,
     simulation_id: Option<u32>,
-) -> Result<()> {
+) -> Result<PathBuf> {
     let meta = Meta::from_file(&meta_path)?;
-
-    //let mut dbh = db_connection(server)?;
-    //println!("Connected to {server:?}");
-
     let topology_path = input_dir.join(&meta.required_files.topology_file_name);
     let topology_hash = get_topology_hash(&topology_path)?;
-    //dbg!(&topology_hash);
-
     let fasta_sequence = get_sequence(&processed_files.full_pdb, &script_dir)?;
-    //dbg!(&sequence);
-
     let rmsd_rmsf = get_rmsd_rmsf(
         &processed_files.min_pdb,
         &processed_files.min_xtc,
         &script_dir,
     )?;
-    //dbg!(&rmsd_rmsf);
-
     let duration =
         get_duration(&processed_files.full_xtc, meta.integration_timestep_fs)?;
-    //dbg!(&duration);
-
-    //let sim_id = find_or_create_simulation(
-    //    &mut dbh,
-    //    &unique_file_hash,
-    //    &meta,
-    //    &sequence,
-    //    &topology_hash,
-    //    &duration,
-    //    &rmsd_rmsf,
-    //)?;
-    //dbg!(&sim_id);
 
     let mut uniprots: HashMap<String, UniprotEntry> = HashMap::new();
     if let Some(uniprot_ids) = &meta.uniprot_ids {
@@ -397,11 +358,11 @@ pub fn make_import_json(
             Ok((pdb_tmp, pdb_uniprots)) => {
                 pdb = Some(pdb_tmp);
 
-                for entry in pdb_uniprots {
-                    if !uniprots.contains_key(&entry.uniprot_id) {
-                        let _ = uniprots.insert(entry.uniprot_id.clone(), entry);
-                    }
-                }
+                //for entry in pdb_uniprots {
+                //    if !uniprots.contains_key(&entry.uniprot_id) {
+                //        let _ = uniprots.insert(entry.uniprot_id.clone(), entry);
+                //    }
+                //}
             }
             Err(e) => info!("{e}"),
         }
@@ -522,7 +483,7 @@ pub fn make_import_json(
     let file = File::create(&import_json)?;
     writeln!(&file, "{}", &serde_json::to_string_pretty(&export)?)?;
 
-    Ok(())
+    Ok(import_json.into())
 }
 
 // --------------------------------------------------
