@@ -397,11 +397,12 @@ pub fn make_import_json(
             Ok((pdb_tmp, pdb_uniprots)) => {
                 pdb = Some(pdb_tmp);
 
-                for entry in pdb_uniprots {
-                    if !uniprots.contains_key(&entry.uniprot_id) {
-                        let _ = uniprots.insert(entry.uniprot_id.clone(), entry);
-                    }
-                }
+                // TODO: Allow this or not?
+                //for entry in pdb_uniprots {
+                //    if !uniprots.contains_key(&entry.uniprot_id) {
+                //        let _ = uniprots.insert(entry.uniprot_id.clone(), entry);
+                //    }
+                //}
             }
             Err(e) => info!("{e}"),
         }
