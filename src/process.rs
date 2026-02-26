@@ -1,10 +1,10 @@
 use crate::{
     common::{file_exists, get_md5},
-    metadata::{Meta, MoleculeType},
+    metadata::{self, Meta},
     types::{
-        Duration, Export, MdContributor, MdFile, MdLigand, MdPaper, MdSimulation,
-        MdSoftware, MdSolvent, PdbEntry, PdbGraphqlResponse, PdbResponse, ProcessArgs,
-        ProcessedFiles, RmsdRmsf, UniprotEntry, UniprotResponse,
+        DoiPaper, Duration, Export, ExportSimulation, MdFile, PdbEntry,
+        PdbGraphqlResponse, PdbResponse, ProcessArgs, ProcessedFiles, RmsdRmsf,
+        UniprotEntry, UniprotResponse,
     },
 };
 use anyhow::{anyhow, bail, Result};
@@ -13,6 +13,7 @@ use log::{debug, info};
 use regex::Regex;
 use sha1::{Digest, Sha1};
 use std::{
+    collections::HashMap,
     env,
     fs::{self, File},
     io::Write,
@@ -361,12 +362,8 @@ pub fn make_import_json(
     )?;
     //dbg!(&rmsd_rmsf);
 
-    let integration_timestep_fs = match &meta.timestep_information {
-        Some(val) => val.integration_time_step.unwrap(),
-        _ => bail!("Missing timestep"),
-    };
-
-    let duration = get_duration(&processed_files.full_xtc, integration_timestep_fs)?;
+    let duration =
+        get_duration(&processed_files.full_xtc, meta.integration_timestep_fs)?;
     //dbg!(&duration);
 
     //let sim_id = find_or_create_simulation(
@@ -380,112 +377,35 @@ pub fn make_import_json(
     //)?;
     //dbg!(&sim_id);
 
-    //dbg!(&meta.proteins);
-    let mut uniprots: Vec<UniprotEntry> = vec![];
-    let mut pdbs: Vec<PdbEntry> = vec![];
-    for protein in &meta.proteins {
-        match (
-            protein.molecule_id_type.clone(),
-            protein.molecule_id.clone(),
-        ) {
-            (Some(MoleculeType::Uniprot), Some(uniprot_id)) => {
-                if !uniprot_present(&uniprot_id, &uniprots) {
-                    match get_uniprot_entry(&uniprot_id) {
-                        Ok(uniprot) => uniprots.push(uniprot),
-                        _ => info!(r#"Failed to get Uniprot entry for "{uniprot_id}""#),
+    let mut uniprots: HashMap<String, UniprotEntry> = HashMap::new();
+    if let Some(uniprot_ids) = &meta.uniprot_ids {
+        for uniprot_id in uniprot_ids {
+            if !uniprots.contains_key(uniprot_id) {
+                match get_uniprot_entry(&uniprot_id) {
+                    Ok(entry) => {
+                        let _ = uniprots.insert(uniprot_id.clone(), entry);
                     }
+                    _ => info!(r#"Failed to get Uniprot entry for "{uniprot_id}""#),
                 }
             }
-            (Some(MoleculeType::PDB), Some(pdb_id)) => match get_pdb_entry(&pdb_id) {
-                Ok((pdb, pdb_uniprots)) => {
-                    if !pdb_present(&pdb.pdb_id, &pdbs) {
-                        pdbs.push(pdb);
-                    }
-                    for uniprot in pdb_uniprots {
-                        if !uniprot_present(&uniprot.uniprot_id, &uniprots) {
-                            uniprots.push(uniprot);
-                        }
-                    }
-                }
-                _ => info!(r#"Failed to get PDB entry for "{pdb_id}""#),
-            },
-            _ => println!("Handle {protein:?}"),
         }
     }
 
+    let mut pdb = None;
     if let Some(pdb_id) = &meta.pdb_id {
-        let (pdb, pdb_uniprots) = get_pdb_entry(&pdb_id)?;
-        if !pdb_present(&pdb.pdb_id, &pdbs) {
-            pdbs.push(pdb);
-        }
+        match get_pdb_entry(&pdb_id) {
+            Ok((pdb_tmp, pdb_uniprots)) => {
+                pdb = Some(pdb_tmp);
 
-        for uniprot in pdb_uniprots {
-            if !uniprot_present(&uniprot.uniprot_id, &uniprots) {
-                uniprots.push(uniprot);
+                for entry in pdb_uniprots {
+                    if !uniprots.contains_key(&entry.uniprot_id) {
+                        let _ = uniprots.insert(entry.uniprot_id.clone(), entry);
+                    }
+                }
             }
+            Err(e) => info!("{e}"),
         }
     }
-
-    if pdbs.len() > 1 {
-        bail!("There cannot be {} PDBs!", pdbs.len());
-    }
-
-    //dbg!(&uniprots);
-    //dbg!(&pdbs);
-
-    let (forcefield, forcefield_comments) = match &meta.forcefield {
-        Some(val) => (val.forcefield.clone(), val.forcefield_comments.clone()),
-        _ => (None, None),
-    };
-
-    let protonation_method = match &meta.protonation_method {
-        Some(val) => val.protonation_method.clone(),
-        _ => None,
-    };
-
-    let temperature = match &meta.temperature {
-        Some(val) => val.temperature.clone(),
-        _ => None,
-    };
-
-    let (includes_water, water_type, water_density, water_density_units) =
-        match &meta.water {
-            Some(val) => (
-                val.is_present.unwrap_or(true),
-                val.model.clone(),
-                val.density,
-                val.water_density_units.clone(),
-            ),
-            _ => (false, None, None, None),
-        };
-
-    let (replicate, total_replicates) = match &meta.replicates {
-        Some(val) => (
-            val.replicate.unwrap_or(1),
-            val.total_replicates.unwrap_or(1),
-        ),
-        _ => bail!("Missing replicates"),
-    };
-
-    let software = MdSoftware {
-        name: meta.software.name.clone(),
-        version: meta.software.version.clone(),
-    };
-
-    let contributors = match &meta.contributors {
-        Some(vals) => vals
-            .iter()
-            .enumerate()
-            .map(|(rank, val)| MdContributor {
-                name: val.name.clone(),
-                orcid: val.orcid.clone(),
-                institution: val.institution.clone(),
-                email: val.email.clone(),
-                rank: (rank + 1) as u32,
-            })
-            .collect::<Vec<_>>(),
-        _ => vec![],
-    };
 
     let mut original_files: Vec<MdFile> = vec![MdFile {
         name: meta_path.file_name().unwrap().to_string_lossy().to_string(),
@@ -552,82 +472,46 @@ pub fn make_import_json(
         })
     }
 
-    let mut ligands = vec![];
-    if let Some(vals) = &meta.ligands {
-        for ligand in vals {
-            ligands.push(MdLigand {
-                name: ligand.name.clone(),
-                smiles: ligand.smiles.clone(),
-            });
+    let mut papers: Vec<metadata::Paper> = meta.papers.clone().unwrap_or_default();
+    if let Some(dois) = &meta.dois {
+        for doi in dois {
+            match get_doi(doi) {
+                Ok(paper) => papers.push(paper),
+                Err(e) => info!("{e}"),
+            }
         }
     }
 
-    let mut solvents = vec![];
-    if let Some(vals) = &meta.solvents {
-        for solvent in vals {
-            solvents.push(MdSolvent {
-                name: solvent.name.clone(),
-                concentration: solvent.ion_concentration.clone(),
-                concentration_units: solvent
-                    .concentration_units
-                    .clone()
-                    .map_or("mol/L".to_string(), |val| val.to_string()),
-            });
-        }
-    }
-
-    let mut papers = vec![];
-    if let Some(vals) = &meta.papers {
-        for paper in vals {
-            papers.push(MdPaper {
-                title: paper.title.clone(),
-                authors: paper.authors.clone(),
-                journal: paper.journal.clone(),
-                volume: paper.volume.to_integer().unwrap(),
-                number: paper.number.clone().map(|val| val.to_string().unwrap()),
-                year: paper.year as i64,
-                pages: paper.pages.clone(),
-                doi: paper.doi.clone(),
-            })
-        }
-    }
-
-    let initial = meta.initial.clone();
-    let simulation = MdSimulation {
+    let simulation = ExportSimulation {
         simulation_id,
-        lead_contributor_orcid: initial.lead_contributor_orcid,
-        unique_file_hash_string: unique_file_hash(&meta, input_dir),
-        description: initial
-            .description
-            .map_or("".to_string(), |val| val.to_string()),
-        short_description: initial.short_description.clone(),
-        run_commands: initial.commands.clone(),
-        software,
-        pdb: pdbs.first().map(|val| val.clone()),
-        uniprots,
+        lead_contributor_orcid: meta.lead_contributor_orcid.clone(),
+        unique_file_hash_string: get_unique_file_hash(&meta, input_dir),
+        user_accession: meta.user_accession.clone(),
+        description: meta.description.clone(),
+        short_description: meta.short_description.clone(),
+        run_commands: meta.commands.clone(),
+        software: meta.software.clone(),
+        pdb,
+        uniprots: uniprots.into_values().collect::<Vec<_>>(),
         duration: duration.totaltime_ns,
         sampling_frequency: duration.sampling_frequency_ns,
-        integration_timestep_fs,
-        external_link: initial.external_link.clone(),
-        forcefield,
-        forcefield_comments,
-        protonation_method,
+        integration_timestep_fs: meta.integration_timestep_fs.clone(),
+        external_links: meta.external_links.unwrap_or_default(),
+        forcefield: meta.forcefield.clone(),
+        forcefield_comments: meta.forcefield_comments.clone(),
+        protonation_method: meta.protonation_method.clone(),
         rmsd_values: rmsd_rmsf.rmsd,
         rmsf_values: rmsd_rmsf.rmsf,
-        temperature,
+        temperature_kelvin: meta.temperature_kelvin.clone(),
         fasta_sequence,
-        replicate,
-        total_replicates,
-        includes_water,
-        water_density,
-        water_density_units,
-        water_type,
+        replicate_id: meta.replicate_id.clone(),
+        water: meta.water.clone(),
         topology_hash,
-        contributors,
+        contributors: meta.contributors.unwrap_or_default(),
         original_files,
         processed_files: processed_export,
-        ligands,
-        solvents,
+        ligands: meta.ligands.unwrap_or_default(),
+        solvents: meta.solvents.unwrap_or_default(),
         papers,
     };
 
@@ -773,11 +657,41 @@ pub fn get_topology_hash(topology: &PathBuf) -> Result<String> {
 }
 
 // --------------------------------------------------
+pub fn get_doi(doi: &str) -> Result<metadata::Paper> {
+    let url = format!("https://citation.doi.org/metadata?doi={doi}");
+    let resp = reqwest::blocking::get(&url)?;
+    if !resp.status().is_success() {
+        bail!(r#"Failed to GET "{url}" ({})""#, resp.status());
+    }
+
+    let doi_paper: DoiPaper = resp
+        .json()
+        .map_err(|e| anyhow!("Failed to parse DOI response: {e}"))?;
+
+    let authors: Vec<String> = doi_paper
+        .author
+        .iter()
+        .map(|author| format!("{} {}", author.given, author.family))
+        .collect();
+
+    Ok(metadata::Paper {
+        title: doi_paper.title.clone(),
+        authors: authors.join(", "),
+        journal: doi_paper.journal.clone(),
+        volume: metadata::Numlike::Stringy(doi_paper.volume),
+        number: None,
+        year: doi_paper.published.date_parts.first().unwrap().clone(),
+        pages: Some(doi_paper.page.clone()),
+        doi: Some(doi.to_string()),
+    })
+}
+
+// --------------------------------------------------
 pub fn get_uniprot_entry(uniprot_id: &str) -> Result<UniprotEntry> {
     let url = format!("https://rest.uniprot.org/uniprotkb/{uniprot_id}.json");
     let resp = reqwest::blocking::get(&url)?;
     if !resp.status().is_success() {
-        bail!("Failed to GET \"{url}\" ({})", resp.status());
+        bail!(r#"Failed to GET "{url}" ({})""#, resp.status());
     }
     let uniprot: UniprotResponse = resp
         .json()
@@ -907,7 +821,7 @@ pub fn get_pdb_entry(pdb_id: &str) -> Result<(PdbEntry, Vec<UniprotEntry>)> {
 //}
 
 // --------------------------------------------------
-pub fn unique_file_hash(meta: &Meta, input_dir: &PathBuf) -> String {
+pub fn get_unique_file_hash(meta: &Meta, input_dir: &PathBuf) -> String {
     let mut input_files = vec![
         meta.required_files.trajectory_file_name.to_string(),
         meta.required_files.structure_file_name.to_string(),
@@ -928,16 +842,4 @@ pub fn unique_file_hash(meta: &Meta, input_dir: &PathBuf) -> String {
     md5s.sort();
 
     md5s.join(",")
-}
-
-// --------------------------------------------------
-fn uniprot_present(uniprot_id: &str, uniprots: &Vec<UniprotEntry>) -> bool {
-    let ids: Vec<_> = uniprots.iter().map(|u| u.uniprot_id.as_str()).collect();
-    return ids.contains(&uniprot_id);
-}
-
-// --------------------------------------------------
-fn pdb_present(pdb_id: &str, pdbs: &Vec<PdbEntry>) -> bool {
-    let ids: Vec<_> = pdbs.iter().map(|p| p.pdb_id.as_str()).collect();
-    return ids.contains(&pdb_id);
 }
