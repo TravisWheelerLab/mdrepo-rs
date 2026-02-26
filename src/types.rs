@@ -1,3 +1,4 @@
+use crate::metadata;
 use clap::{builder::PossibleValue, Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
 use std::{fmt, path::PathBuf};
@@ -364,23 +365,24 @@ pub struct RcsbUniprotProteinName {
 // --------------------------------------------------
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Export {
-    pub simulation: MdSimulation,
+    pub simulation: ExportSimulation,
 }
 
 // --------------------------------------------------
 #[derive(Debug, Deserialize, Serialize)]
-pub struct MdSimulation {
+pub struct ExportSimulation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub simulation_id: Option<u32>,
     pub lead_contributor_orcid: String,
     pub unique_file_hash_string: String,
-    pub description: String,
-    pub short_description: Option<String>,
-    pub software: MdSoftware,
+    pub user_accession: Option<String>,
+    pub short_description: String,
+    pub description: Option<String>,
+    pub software: metadata::Software,
     pub run_commands: Option<String>,
     pub pdb: Option<PdbEntry>,
     pub uniprots: Vec<UniprotEntry>,
-    pub external_link: Option<String>,
+    pub external_links: Vec<metadata::ExternalLink>,
     pub forcefield: Option<String>,
     pub forcefield_comments: Option<String>,
     pub protonation_method: Option<String>,
@@ -389,56 +391,17 @@ pub struct MdSimulation {
     pub duration: u32,
     pub sampling_frequency: f32,
     pub integration_timestep_fs: f64,
-    pub temperature: Option<u32>,
+    pub temperature_kelvin: u32,
     pub fasta_sequence: String,
-    pub replicate: u32,
-    pub total_replicates: u32,
-    pub includes_water: bool,
-    pub water_type: Option<String>,
-    pub water_density: Option<f32>,
-    pub water_density_units: Option<String>,
+    pub replicate_id: Option<String>,
+    pub water: Option<metadata::Water>,
     pub topology_hash: String,
-    pub contributors: Vec<MdContributor>,
+    pub contributors: Vec<metadata::Contributor>,
     pub original_files: Vec<MdFile>,
     pub processed_files: Vec<MdFile>,
-    pub ligands: Vec<MdLigand>,
-    pub solvents: Vec<MdSolvent>,
-    pub papers: Vec<MdPaper>,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct MdPaper {
-    pub title: String,
-
-    pub authors: String,
-
-    pub journal: String,
-
-    pub volume: i64,
-
-    pub number: Option<String>,
-
-    pub year: i64,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pages: Option<String>,
-
-    pub doi: Option<String>,
-}
-
-// --------------------------------------------------
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct MdSolvent {
-    pub name: String,
-    pub concentration: f64,
-    pub concentration_units: String,
-}
-
-// --------------------------------------------------
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct MdLigand {
-    pub name: String,
-    pub smiles: String,
+    pub ligands: Vec<metadata::Ligand>,
+    pub solvents: Vec<metadata::Solvent>,
+    pub papers: Vec<metadata::Paper>,
 }
 
 // --------------------------------------------------
@@ -449,32 +412,6 @@ pub struct MdFile {
     pub size: u64,
     pub md5_sum: String,
     pub description: Option<String>,
-}
-
-// --------------------------------------------------
-#[derive(Debug, Deserialize, Serialize)]
-pub struct MdSoftware {
-    pub name: String,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
-}
-
-// --------------------------------------------------
-#[derive(Debug, Deserialize, Serialize)]
-pub struct MdContributor {
-    pub name: String,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub orcid: Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub email: Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub institution: Option<String>,
-
-    pub rank: u32,
 }
 
 // --------------------------------------------------
@@ -500,4 +437,29 @@ pub struct PushResult {
     pub src: String,
     pub dest: String,
     pub size: u32,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DoiPaper {
+    pub title: String,
+    pub author: Vec<DoiAuthor>,
+    pub journal: String,
+    pub volume: String,
+    pub page: String,
+    pub published: DoiPublishedDateParts,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DoiAuthor {
+    pub family: String,
+    pub given: String,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DoiPublishedDateParts {
+    #[serde(alias = "date-parts")]
+    pub date_parts: Vec<u32>,
 }
