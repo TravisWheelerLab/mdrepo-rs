@@ -50,8 +50,8 @@ fn run(args: Cli) -> Result<()> {
             Ok(())
         }
         Some(Command::MetaCheck(args)) => {
-            let _meta = Meta::from_file(&args.filename)?;
-            //dbg!(&meta);
+            let meta = Meta::from_file(&args.filename)?;
+            dbg!(&meta);
             println!("{} OK", args.filename.display());
             Ok(())
         }
