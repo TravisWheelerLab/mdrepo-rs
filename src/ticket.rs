@@ -1,15 +1,10 @@
 use crate::{
-    common::read_file,
     process,
-    types::{Import, ImportResult, ProcessArgs, PushResult, TicketArgs},
+    types::{ProcessArgs, TicketArgs},
 };
 use anyhow::{anyhow, bail, Result};
 use log::{debug, info};
-use std::{
-    env, fs,
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::{env, fs, path::PathBuf, process::Command};
 use which::which;
 
 // --------------------------------------------------
