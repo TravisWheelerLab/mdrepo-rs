@@ -16,7 +16,7 @@ use std::{
     env,
     fs::{self, File},
     io::Write,
-    path::{self, PathBuf},
+    path::{self, Path, PathBuf},
     process::Command,
 };
 use which::which;
@@ -121,7 +121,7 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
 pub fn make_thumbnail(
     thumbnail: &PathBuf,
     sampled_trajectory: &PathBuf,
-    min_pdb: &PathBuf,
+    min_pdb: &Path,
     script_dir: &PathBuf,
 ) -> Result<()> {
     let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
@@ -194,15 +194,18 @@ pub fn make_processed_files(
             "--traj",
             in_dir
                 .join(&meta.trajectory_file_name)
-                .to_string_lossy().as_ref(),
+                .to_string_lossy()
+                .as_ref(),
             "--coord",
             in_dir
                 .join(&meta.structure_file_name)
-                .to_string_lossy().as_ref(),
+                .to_string_lossy()
+                .as_ref(),
             "--top",
             in_dir
                 .join(&meta.topology_file_name)
-                .to_string_lossy().as_ref(),
+                .to_string_lossy()
+                .as_ref(),
             "--outdir",
             processed_dir.to_string_lossy().as_ref(),
         ]);
@@ -466,7 +469,8 @@ pub fn make_import_json(
             if original_files
                 .iter()
                 .filter(|f| f.md5_sum == md5_sum)
-                .collect::<Vec<_>>().is_empty()
+                .collect::<Vec<_>>()
+                .is_empty()
             {
                 original_files.push(MdFile {
                     name: file.file_name.to_string(),
