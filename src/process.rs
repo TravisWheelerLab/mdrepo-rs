@@ -49,24 +49,24 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
     let import_script = script_dir.join("import_preprocessed.py");
     info!(r#"Import "{}""#, import_json.display());
     let out_file = &processed_dir.join("imported.json");
-    let cmd = Command::new(&uv)
-        .current_dir(script_dir)
-        .args([
-            "run",
-            import_script.to_string_lossy().as_ref(),
-            "--file",
-            import_json.to_string_lossy().as_ref(),
-            "--data-dir",
-            input_dir.to_string_lossy().as_ref(),
-            "--server",
-            &args.server.to_string(),
-            "--out-file",
-            out_file.to_string_lossy().as_ref(),
-        ])
-        .output()?;
+    let mut cmd = Command::new(&uv);
+    cmd.current_dir(script_dir).args([
+        "run",
+        import_script.to_string_lossy().as_ref(),
+        "--file",
+        import_json.to_string_lossy().as_ref(),
+        "--data-dir",
+        input_dir.to_string_lossy().as_ref(),
+        "--server",
+        &args.server.to_string(),
+        "--out-file",
+        out_file.to_string_lossy().as_ref(),
+    ]);
+    debug!("Running {cmd:?}");
+    let output = cmd.output()?;
 
-    if !cmd.status.success() {
-        bail!(str::from_utf8(&cmd.stderr)?.to_string());
+    if !output.status.success() {
+        bail!(str::from_utf8(&output.stderr)?.to_string());
     }
 
     // The ticket directory should have been created by the fetch
@@ -84,26 +84,26 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
     );
 
     let out_file = processed_dir.join("pushed.json");
-    let cmd = Command::new(&uv)
-        .current_dir(script_dir)
-        .args([
-            "run",
-            push_script.to_string_lossy().as_ref(),
-            "--file",
-            &import_result.filename,
-            "--simulation-id",
-            &import_result.simulation_id.to_string(),
-            "--server",
-            &args.server.to_string(),
-            "--data-dir",
-            input_dir.to_string_lossy().as_ref(),
-            "--out-file",
-            out_file.to_string_lossy().as_ref(),
-        ])
-        .output()?;
+    let mut cmd = Command::new(&uv);
+    cmd.current_dir(script_dir).args([
+        "run",
+        push_script.to_string_lossy().as_ref(),
+        "--file",
+        &import_result.filename,
+        "--simulation-id",
+        &import_result.simulation_id.to_string(),
+        "--server",
+        &args.server.to_string(),
+        "--data-dir",
+        input_dir.to_string_lossy().as_ref(),
+        "--out-file",
+        out_file.to_string_lossy().as_ref(),
+    ]);
+    debug!("Running {cmd:?}");
 
-    if !cmd.status.success() {
-        bail!(str::from_utf8(&cmd.stderr)?.to_string());
+    let output = cmd.output()?;
+    if !output.status.success() {
+        bail!(str::from_utf8(&output.stderr)?.to_string());
     }
 
     if !out_file.is_file() {
@@ -120,7 +120,7 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
 // --------------------------------------------------
 pub fn make_thumbnail(
     thumbnail: &PathBuf,
-    sampled_trajectory: &PathBuf,
+    sampled_trajectory: &Path,
     min_pdb: &Path,
     script_dir: &PathBuf,
 ) -> Result<()> {
@@ -160,8 +160,8 @@ pub fn make_thumbnail(
 // --------------------------------------------------
 pub fn make_processed_files(
     meta_path: &PathBuf,
-    in_dir: &PathBuf,
-    processed_dir: &PathBuf,
+    in_dir: &Path,
+    processed_dir: &Path,
     script_dir: &PathBuf,
 ) -> Result<ProcessedFiles> {
     let meta = Meta::from_file(meta_path)?;
@@ -254,8 +254,8 @@ pub fn make_processed_files(
 
 // --------------------------------------------------
 pub fn get_rmsd_rmsf(
-    min_pdb: &PathBuf,
-    min_xtc: &PathBuf,
+    min_pdb: &Path,
+    min_xtc: &Path,
     script_dir: &PathBuf,
 ) -> Result<RmsdRmsf> {
     let processed_dir = min_pdb.parent().unwrap();
@@ -299,7 +299,7 @@ pub fn get_rmsd_rmsf(
 }
 
 // --------------------------------------------------
-pub fn get_sequence(full_pdb: &PathBuf, script_dir: &PathBuf) -> Result<String> {
+pub fn get_sequence(full_pdb: &Path, script_dir: &PathBuf) -> Result<String> {
     let processed_dir = full_pdb.parent().unwrap();
     let sequence_file = processed_dir.join("sequence.fa");
 
@@ -337,8 +337,8 @@ pub fn get_sequence(full_pdb: &PathBuf, script_dir: &PathBuf) -> Result<String> 
 
 // --------------------------------------------------
 pub fn sample_trajectory(
-    min_xtc: &PathBuf,
-    min_pdb: &PathBuf,
+    min_xtc: &Path,
+    min_pdb: &Path,
     out_file: &PathBuf,
     script_dir: &PathBuf,
 ) -> Result<()> {
@@ -392,7 +392,7 @@ pub fn sample_trajectory(
 // --------------------------------------------------
 pub fn make_import_json(
     meta_path: &PathBuf,
-    input_dir: &PathBuf,
+    input_dir: &Path,
     script_dir: &PathBuf,
     processed_files: &ProcessedFiles,
     simulation_id: Option<u32>,
@@ -558,10 +558,7 @@ pub fn make_import_json(
 }
 
 // --------------------------------------------------
-pub fn get_duration(
-    full_xtc: &PathBuf,
-    integration_timestep_fs: f64,
-) -> Result<Duration> {
+pub fn get_duration(full_xtc: &Path, integration_timestep_fs: f64) -> Result<Duration> {
     let processed_dir = full_xtc.parent().unwrap();
     let out_file = processed_dir.join("duration.json");
 
@@ -853,7 +850,7 @@ pub fn get_pdb_entry(pdb_id: &str) -> Result<(PdbEntry, Vec<UniprotEntry>)> {
 //}
 
 // --------------------------------------------------
-pub fn get_unique_file_hash(meta: &Meta, input_dir: &PathBuf) -> String {
+pub fn get_unique_file_hash(meta: &Meta, input_dir: &Path) -> String {
     let mut input_files = vec![
         meta.trajectory_file_name.to_string(),
         meta.structure_file_name.to_string(),
