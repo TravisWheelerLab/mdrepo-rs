@@ -11,35 +11,35 @@ pub enum Numlike {
     TomlVal(TomlValue),
 }
 
-impl Numlike {
-    pub fn from_integer(val: i64) -> Self {
-        Numlike::TomlVal(TomlValue::Integer(val))
-    }
+//impl Numlike {
+//    pub fn from_integer(val: i64) -> Self {
+//        Numlike::TomlVal(TomlValue::Integer(val))
+//    }
 
-    pub fn to_integer(&self) -> Option<i64> {
-        match self {
-            Numlike::Stringy(val) => val.parse().ok(),
-            Numlike::TomlVal(toml_val) => match toml_val {
-                TomlValue::String(val) => val.parse().ok(),
-                TomlValue::Integer(val) => Some(val.clone()),
-                TomlValue::Float(val) => format!("{}", val.round()).parse::<i64>().ok(),
-                _ => None,
-            },
-        }
-    }
+//    pub fn to_integer(&self) -> Option<i64> {
+//        match self {
+//            Numlike::Stringy(val) => val.parse().ok(),
+//            Numlike::TomlVal(toml_val) => match toml_val {
+//                TomlValue::String(val) => val.parse().ok(),
+//                TomlValue::Integer(val) => Some(val.clone()),
+//                TomlValue::Float(val) => format!("{}", val.round()).parse::<i64>().ok(),
+//                _ => None,
+//            },
+//        }
+//    }
 
-    pub fn to_string(&self) -> Option<String> {
-        match self {
-            Numlike::Stringy(val) => Some(val.clone()),
-            Numlike::TomlVal(toml_val) => match toml_val {
-                TomlValue::String(val) => Some(val.clone()),
-                TomlValue::Integer(val) => Some(val.to_string()),
-                TomlValue::Float(val) => Some(val.to_string()),
-                _ => None,
-            },
-        }
-    }
-}
+//    pub fn to_string(&self) -> Option<String> {
+//        match self {
+//            Numlike::Stringy(val) => Some(val.clone()),
+//            Numlike::TomlVal(toml_val) => match toml_val {
+//                TomlValue::String(val) => Some(val.clone()),
+//                TomlValue::Integer(val) => Some(val.to_string()),
+//                TomlValue::Float(val) => Some(val.to_string()),
+//                _ => None,
+//            },
+//        }
+//    }
+//}
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
