@@ -127,8 +127,6 @@ pub fn validate(dir: &PathBuf) -> Result<()> {
     let meta = Meta::from_file(&meta_toml)?;
     dbg!(&meta);
 
-    let reqd_file = meta.required_files;
-    println!("{reqd_file:?}");
     let uploaded_file_names: Vec<_> = completed
         .files
         .into_iter()
@@ -136,9 +134,9 @@ pub fn validate(dir: &PathBuf) -> Result<()> {
         .collect();
 
     for (file_type, file) in &[
-        ("trajectory_file_name", reqd_file.trajectory_file_name),
-        ("structure_file_name", reqd_file.structure_file_name),
-        ("topology_file_name", reqd_file.topology_file_name),
+        ("trajectory_file_name", meta.trajectory_file_name),
+        ("structure_file_name", meta.structure_file_name),
+        ("topology_file_name", meta.topology_file_name),
     ] {
         if !uploaded_file_names.contains(file) {
             bail!(r#"Metadata is missing "initial.{file_type}" file "{file}""#);
