@@ -1,10 +1,10 @@
 use crate::{
-    common::{file_exists, get_md5},
+    common::{file_exists, get_md5, read_file},
     metadata::{self, Meta},
     types::{
-        DoiPaper, Duration, Export, ExportSimulation, MdFile, PdbEntry,
-        PdbGraphqlResponse, PdbResponse, ProcessArgs, ProcessedFiles, RmsdRmsf,
-        UniprotEntry, UniprotResponse,
+        DoiPaper, Duration, Export, ExportSimulation, ImportResult, MdFile, PdbEntry,
+        PdbGraphqlResponse, PdbResponse, ProcessArgs, ProcessedFiles, PushResult,
+        RmsdRmsf, UniprotEntry, UniprotResponse,
     },
 };
 use anyhow::{anyhow, bail, Result};
@@ -23,7 +23,7 @@ use which::which;
 
 // --------------------------------------------------
 // Returns the JSON file for importing into the db
-pub fn process(args: &ProcessArgs) -> Result<PathBuf> {
+pub fn process(args: &ProcessArgs) -> Result<()> {
     debug!("{args:?}");
 
     // It's OK if there's no .env
@@ -42,7 +42,79 @@ pub fn process(args: &ProcessArgs) -> Result<PathBuf> {
     let processed_files =
         make_processed_files(&meta_path, &input_dir, &processed_dir, &script_dir)?;
 
-    make_import_json(&meta_path, &input_dir, &script_dir, &processed_files, None)
+    let import_json =
+        make_import_json(&meta_path, &input_dir, &script_dir, &processed_files, None)?;
+
+    let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
+    let import_script = script_dir.join("import_preprocessed.py");
+    info!(r#"Import "{}""#, import_json.display());
+    let out_file = &processed_dir.join("imported.json");
+    let cmd = Command::new(&uv)
+        .current_dir(&script_dir)
+        .args([
+            "run",
+            &import_script.to_string_lossy().to_string(),
+            "--file",
+            &import_json.to_string_lossy().to_string(),
+            "--data-dir",
+            &input_dir.to_string_lossy().to_string(),
+            "--server",
+            &args.server.to_string(),
+            "--out-file",
+            &out_file.to_string_lossy().to_string(),
+        ])
+        .output()?;
+
+    if !cmd.status.success() {
+        bail!(str::from_utf8(&cmd.stderr)?.to_string());
+    }
+
+    // The ticket directory should have been created by the fetch
+    if !out_file.is_file() {
+        bail!(r#"Failed to create "{}""#, out_file.display());
+    }
+
+    let import_result: ImportResult = serde_json::from_str(&read_file(&out_file)?)
+        .map_err(|e| anyhow!(r#"Failed to parse "{}": {e}"#, out_file.display()))?;
+
+    let push_script = script_dir.join("push_sim_files.py");
+    info!(
+        r#"Push files for "{}" -> simuation "{}""#,
+        import_result.filename, import_result.simulation_id
+    );
+
+    let out_file = processed_dir.join("pushed.json");
+    let cmd = Command::new(&uv)
+        .current_dir(&script_dir)
+        .args([
+            "run",
+            &push_script.to_string_lossy().to_string(),
+            "--file",
+            &import_result.filename,
+            "--simulation-id",
+            &import_result.simulation_id.to_string(),
+            "--server",
+            &args.server.to_string(),
+            "--data-dir",
+            &input_dir.to_string_lossy().to_string(),
+            "--out-file",
+            &out_file.to_string_lossy().to_string(),
+        ])
+        .output()?;
+
+    if !cmd.status.success() {
+        bail!(str::from_utf8(&cmd.stderr)?.to_string());
+    }
+
+    if !out_file.is_file() {
+        bail!(r#"Failed to create "{}""#, out_file.display());
+    }
+
+    let push_res: Vec<PushResult> = serde_json::from_str(&read_file(&out_file)?)
+        .map_err(|e| anyhow!(r#"Failed to parse "{}": {e}"#, out_file.display()))?;
+    debug!("{push_res:?}");
+
+    Ok(())
 }
 
 // --------------------------------------------------
@@ -93,7 +165,6 @@ pub fn make_processed_files(
     script_dir: &PathBuf,
 ) -> Result<ProcessedFiles> {
     let meta = Meta::from_file(&meta_path)?;
-    let reqd_file = &meta.required_files;
     let full_min_files = &[
         "full.gro",
         "full.pdb",
@@ -122,17 +193,17 @@ pub fn make_processed_files(
             &cpp_traj.to_string_lossy().to_string(),
             "--traj",
             &in_dir
-                .join(&reqd_file.trajectory_file_name)
+                .join(&meta.trajectory_file_name)
                 .to_string_lossy()
                 .to_string(),
             "--coord",
             &in_dir
-                .join(&reqd_file.structure_file_name)
+                .join(&meta.structure_file_name)
                 .to_string_lossy()
                 .to_string(),
             "--top",
             &in_dir
-                .join(&reqd_file.topology_file_name)
+                .join(&meta.topology_file_name)
                 .to_string_lossy()
                 .to_string(),
             "--outdir",
@@ -327,7 +398,7 @@ pub fn make_import_json(
     simulation_id: Option<u32>,
 ) -> Result<PathBuf> {
     let meta = Meta::from_file(&meta_path)?;
-    let topology_path = input_dir.join(&meta.required_files.topology_file_name);
+    let topology_path = input_dir.join(&meta.topology_file_name);
     let topology_hash = get_topology_hash(&topology_path)?;
     let fasta_sequence = get_sequence(&processed_files.full_pdb, &script_dir)?;
     let rmsd_rmsf = get_rmsd_rmsf(
@@ -377,9 +448,9 @@ pub fn make_import_json(
     }];
 
     for (file_type, filename) in &[
-        ("Trajectory", &meta.required_files.trajectory_file_name),
-        ("Structure", &meta.required_files.structure_file_name),
-        ("Topology", &meta.required_files.topology_file_name),
+        ("Trajectory", &meta.trajectory_file_name),
+        ("Structure", &meta.structure_file_name),
+        ("Topology", &meta.topology_file_name),
     ] {
         let path = input_dir.join(filename);
         original_files.push(MdFile {
@@ -451,7 +522,8 @@ pub fn make_import_json(
         description: meta.description.clone(),
         short_description: meta.short_description.clone(),
         run_commands: meta.commands.clone(),
-        software: meta.software.clone(),
+        software_name: meta.software_name.clone(),
+        software_version: meta.software_version.clone(),
         pdb,
         uniprots: uniprots.into_values().collect::<Vec<_>>(),
         duration: duration.totaltime_ns,
@@ -784,9 +856,9 @@ pub fn get_pdb_entry(pdb_id: &str) -> Result<(PdbEntry, Vec<UniprotEntry>)> {
 // --------------------------------------------------
 pub fn get_unique_file_hash(meta: &Meta, input_dir: &PathBuf) -> String {
     let mut input_files = vec![
-        meta.required_files.trajectory_file_name.to_string(),
-        meta.required_files.structure_file_name.to_string(),
-        meta.required_files.topology_file_name.to_string(),
+        meta.trajectory_file_name.to_string(),
+        meta.structure_file_name.to_string(),
+        meta.topology_file_name.to_string(),
     ];
 
     if let Some(addl_files) = &meta.additional_files {
