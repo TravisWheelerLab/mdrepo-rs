@@ -58,12 +58,8 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
 
     let processed_dir = &data_dir.join("processed");
     let script_dir = &args.script_dir.clone().unwrap();
-    let processed_files = process::make_processed_files(
-        meta_path,
-        data_dir,
-        processed_dir,
-        script_dir,
-    )?;
+    let processed_files =
+        process::make_processed_files(meta_path, data_dir, processed_dir, script_dir)?;
     dbg!(&processed_files);
 
     //let import_json = data_dir.join(format!("{mdrepo_id}.json"));
@@ -80,7 +76,7 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
 }
 
 // --------------------------------------------------
-fn irods_fetch(irods_path: &PathBuf, local_path: &PathBuf) -> Result<()> {
+fn irods_fetch(irods_path: &Path, local_path: &PathBuf) -> Result<()> {
     if !file_exists(local_path) {
         debug!(
             r#"Get "{}" -> "{}""#,
