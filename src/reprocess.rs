@@ -39,11 +39,10 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
     //let topology_path = &data_dir.join(&topology_filename);
     //irods_fetch(&irods_dir.join(&topology_filename), &topology_path)?;
 
-    let reqd = &meta.required_files;
     for filename in &[
-        &reqd.trajectory_file_name,
-        &reqd.structure_file_name,
-        &reqd.topology_file_name,
+        &meta.trajectory_file_name,
+        &meta.structure_file_name,
+        &meta.topology_file_name,
     ] {
         irods_fetch(&irods_dir.join(&filename), &data_dir.join(&filename))?;
     }
