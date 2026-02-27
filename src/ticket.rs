@@ -20,9 +20,9 @@ pub fn process(args: &TicketArgs) -> Result<()> {
         .landing_dir
         .clone()
         .unwrap_or(PathBuf::from(env::var("LANDING_DIR")?));
-    let landing_dir = &landing_dir.join(&args.server.to_string());
+    let landing_dir = &landing_dir.join(args.server.to_string());
     if !landing_dir.is_dir() {
-        fs::create_dir_all(&landing_dir)?;
+        fs::create_dir_all(landing_dir)?;
     }
 
     let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
@@ -36,16 +36,16 @@ pub fn process(args: &TicketArgs) -> Result<()> {
     );
 
     let cmd = Command::new(&uv)
-        .current_dir(&script_dir)
+        .current_dir(script_dir)
         .args([
             "run",
-            &fetch.to_string_lossy().to_string(),
+            fetch.to_string_lossy().as_ref(),
             "--server",
             &args.server.to_string(),
             "--ticket-id",
             &args.ticket_id.to_string(),
             "--landing-dir",
-            &landing_dir.to_string_lossy().to_string(),
+            landing_dir.to_string_lossy().as_ref(),
         ])
         .output()?;
 
@@ -62,7 +62,7 @@ pub fn process(args: &TicketArgs) -> Result<()> {
     }
 
     let mut ticket_dirs = vec![];
-    for entry in fs::read_dir(&ticket_dir)? {
+    for entry in fs::read_dir(ticket_dir)? {
         let entry = entry?;
         let entry = entry.path();
         if entry.is_dir() {

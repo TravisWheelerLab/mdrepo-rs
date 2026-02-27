@@ -18,10 +18,9 @@ pub fn validate(dir: &PathBuf) -> Result<()> {
 
     info!(r#"Processing input directory "{}""#, dir.display());
 
-    let mut files: Vec<String> = fs::read_dir(&dir)?
-        .into_iter()
+    let mut files: Vec<String> = fs::read_dir(dir)?
         .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().map_or(false, |t| t.is_file()))
+        .filter(|entry| entry.file_type().is_ok_and(|t| t.is_file()))
         .map(|entry| entry.file_name().to_string_lossy().to_string())
         .collect();
     files.sort();

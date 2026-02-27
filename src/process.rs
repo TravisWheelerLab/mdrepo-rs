@@ -40,28 +40,28 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
 
     let meta_path = input_dir.join("mdrepo-metadata.toml");
     let processed_files =
-        make_processed_files(&meta_path, &input_dir, &processed_dir, &script_dir)?;
+        make_processed_files(&meta_path, &input_dir, &processed_dir, script_dir)?;
 
     let import_json =
-        make_import_json(&meta_path, &input_dir, &script_dir, &processed_files, None)?;
+        make_import_json(&meta_path, &input_dir, script_dir, &processed_files, None)?;
 
     let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
     let import_script = script_dir.join("import_preprocessed.py");
     info!(r#"Import "{}""#, import_json.display());
     let out_file = &processed_dir.join("imported.json");
     let cmd = Command::new(&uv)
-        .current_dir(&script_dir)
+        .current_dir(script_dir)
         .args([
             "run",
-            &import_script.to_string_lossy().to_string(),
+            import_script.to_string_lossy().as_ref(),
             "--file",
-            &import_json.to_string_lossy().to_string(),
+            import_json.to_string_lossy().as_ref(),
             "--data-dir",
-            &input_dir.to_string_lossy().to_string(),
+            input_dir.to_string_lossy().as_ref(),
             "--server",
             &args.server.to_string(),
             "--out-file",
-            &out_file.to_string_lossy().to_string(),
+            out_file.to_string_lossy().as_ref(),
         ])
         .output()?;
 
@@ -74,7 +74,7 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
         bail!(r#"Failed to create "{}""#, out_file.display());
     }
 
-    let import_result: ImportResult = serde_json::from_str(&read_file(&out_file)?)
+    let import_result: ImportResult = serde_json::from_str(&read_file(out_file)?)
         .map_err(|e| anyhow!(r#"Failed to parse "{}": {e}"#, out_file.display()))?;
 
     let push_script = script_dir.join("push_sim_files.py");
@@ -85,10 +85,10 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
 
     let out_file = processed_dir.join("pushed.json");
     let cmd = Command::new(&uv)
-        .current_dir(&script_dir)
+        .current_dir(script_dir)
         .args([
             "run",
-            &push_script.to_string_lossy().to_string(),
+            push_script.to_string_lossy().as_ref(),
             "--file",
             &import_result.filename,
             "--simulation-id",
@@ -96,9 +96,9 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
             "--server",
             &args.server.to_string(),
             "--data-dir",
-            &input_dir.to_string_lossy().to_string(),
+            input_dir.to_string_lossy().as_ref(),
             "--out-file",
-            &out_file.to_string_lossy().to_string(),
+            out_file.to_string_lossy().as_ref(),
         ])
         .output()?;
 
@@ -125,32 +125,32 @@ pub fn make_thumbnail(
     script_dir: &PathBuf,
 ) -> Result<()> {
     let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
-    if file_exists(&thumbnail) {
+    if file_exists(thumbnail) {
         info!("Thumbnail exists");
     } else {
         info!("Creating thumbnail");
         let preview = script_dir.join("create_preview.py");
         let cmd = Command::new(&uv)
-            .current_dir(&script_dir)
+            .current_dir(script_dir)
             .args([
                 "run",
-                &preview.to_string_lossy().to_string(),
+                preview.to_string_lossy().as_ref(),
                 "--trajectory",
-                &sampled_trajectory.to_string_lossy().to_string(),
+                sampled_trajectory.to_string_lossy().as_ref(),
                 "--structure",
-                &min_pdb.to_string_lossy().to_string(),
+                min_pdb.to_string_lossy().as_ref(),
                 "--out-file",
-                &thumbnail.to_string_lossy().to_string(),
+                thumbnail.to_string_lossy().as_ref(),
             ])
             .output()?;
 
-        info!("{}", str::from_utf8(&cmd.stdout)?.to_string());
+        info!("{}", str::from_utf8(&cmd.stdout)?);
 
         if !cmd.status.success() {
             bail!(str::from_utf8(&cmd.stderr)?.to_string());
         }
 
-        if !file_exists(&thumbnail) {
+        if !file_exists(thumbnail) {
             bail!(r#"Failed to create "{}""#, thumbnail.display());
         }
     }
@@ -164,7 +164,7 @@ pub fn make_processed_files(
     processed_dir: &PathBuf,
     script_dir: &PathBuf,
 ) -> Result<ProcessedFiles> {
-    let meta = Meta::from_file(&meta_path)?;
+    let meta = Meta::from_file(meta_path)?;
     let full_min_files = &[
         "full.gro",
         "full.pdb",
@@ -190,24 +190,21 @@ pub fn make_processed_files(
             "run",
             "-n",
             "simproc",
-            &cpp_traj.to_string_lossy().to_string(),
+            cpp_traj.to_string_lossy().as_ref(),
             "--traj",
-            &in_dir
+            in_dir
                 .join(&meta.trajectory_file_name)
-                .to_string_lossy()
-                .to_string(),
+                .to_string_lossy().as_ref(),
             "--coord",
-            &in_dir
+            in_dir
                 .join(&meta.structure_file_name)
-                .to_string_lossy()
-                .to_string(),
+                .to_string_lossy().as_ref(),
             "--top",
-            &in_dir
+            in_dir
                 .join(&meta.topology_file_name)
-                .to_string_lossy()
-                .to_string(),
+                .to_string_lossy().as_ref(),
             "--outdir",
-            &processed_dir.to_string_lossy().to_string(),
+            processed_dir.to_string_lossy().as_ref(),
         ]);
         debug!("{cmd:?}");
         let output = cmd.output()?;
@@ -237,8 +234,8 @@ pub fn make_processed_files(
     let sampled_xtc = processed_dir.join("sampled.xtc");
     let thumbnail_png = processed_dir.join("thumbnail.png");
 
-    sample_trajectory(&min_xtc, &min_pdb, &sampled_xtc, &script_dir)?;
-    make_thumbnail(&thumbnail_png, &sampled_xtc, &min_pdb, &script_dir)?;
+    sample_trajectory(&min_xtc, &min_pdb, &sampled_xtc, script_dir)?;
+    make_thumbnail(&thumbnail_png, &sampled_xtc, &min_pdb, script_dir)?;
 
     Ok(ProcessedFiles {
         full_gro,
@@ -268,20 +265,20 @@ pub fn get_rmsd_rmsf(
         let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
         let script = script_dir.join("get_rmsd_rmsf.py");
         let cmd = Command::new(&uv)
-            .current_dir(&script_dir)
+            .current_dir(script_dir)
             .args([
                 "run",
-                &script.to_string_lossy().to_string(),
+                script.to_string_lossy().as_ref(),
                 "--out-file",
-                &out_file.to_string_lossy().to_string(),
+                out_file.to_string_lossy().as_ref(),
                 "--structure",
-                &min_pdb.to_string_lossy().to_string(),
+                min_pdb.to_string_lossy().as_ref(),
                 "--trajectory",
-                &min_xtc.to_string_lossy().to_string(),
+                min_xtc.to_string_lossy().as_ref(),
             ])
             .output()?;
 
-        info!("{}", str::from_utf8(&cmd.stdout)?.to_string());
+        info!("{}", str::from_utf8(&cmd.stdout)?);
 
         if !cmd.status.success() {
             bail!(str::from_utf8(&cmd.stderr)?.to_string());
@@ -310,17 +307,17 @@ pub fn get_sequence(full_pdb: &PathBuf, script_dir: &PathBuf) -> Result<String> 
         let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
         let script = script_dir.join("get_sequence_from_pdb.py");
         let cmd = Command::new(&uv)
-            .current_dir(&script_dir)
+            .current_dir(script_dir)
             .args([
                 "run",
-                &script.to_string_lossy().to_string(),
+                script.to_string_lossy().as_ref(),
                 "--out-file",
-                &sequence_file.to_string_lossy().to_string(),
-                &full_pdb.to_string_lossy().to_string(),
+                sequence_file.to_string_lossy().as_ref(),
+                full_pdb.to_string_lossy().as_ref(),
             ])
             .output()?;
 
-        info!("{}", str::from_utf8(&cmd.stdout)?.to_string());
+        info!("{}", str::from_utf8(&cmd.stdout)?);
 
         if !cmd.status.success() {
             bail!(str::from_utf8(&cmd.stderr)?.to_string());
@@ -342,33 +339,33 @@ pub fn sample_trajectory(
     out_file: &PathBuf,
     script_dir: &PathBuf,
 ) -> Result<()> {
-    if file_exists(&out_file) {
+    if file_exists(out_file) {
         info!("Sampled trajectory exists");
     } else {
         info!("Creating sampled trajectory");
         let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
         let sampler = script_dir.join("sample_trajectory.py");
         let cmd = Command::new(&uv)
-            .current_dir(&script_dir)
+            .current_dir(script_dir)
             .args([
                 "run",
-                &sampler.to_string_lossy().to_string(),
+                sampler.to_string_lossy().as_ref(),
                 "--trajectory",
-                &min_xtc.to_string_lossy().to_string(),
+                min_xtc.to_string_lossy().as_ref(),
                 "--structure",
-                &min_pdb.to_string_lossy().to_string(),
+                min_pdb.to_string_lossy().as_ref(),
                 "--outfile",
-                &out_file.to_string_lossy().to_string(),
+                out_file.to_string_lossy().as_ref(),
             ])
             .output()?;
 
-        info!("{}", str::from_utf8(&cmd.stdout)?.to_string());
+        info!("{}", str::from_utf8(&cmd.stdout)?);
 
         if !cmd.status.success() {
             bail!(str::from_utf8(&cmd.stderr)?.to_string());
         }
 
-        if !file_exists(&out_file) {
+        if !file_exists(out_file) {
             bail!(r#"Failed to create "{}""#, out_file.display());
         }
     }
@@ -397,14 +394,14 @@ pub fn make_import_json(
     processed_files: &ProcessedFiles,
     simulation_id: Option<u32>,
 ) -> Result<PathBuf> {
-    let meta = Meta::from_file(&meta_path)?;
+    let meta = Meta::from_file(meta_path)?;
     let topology_path = input_dir.join(&meta.topology_file_name);
     let topology_hash = get_topology_hash(&topology_path)?;
-    let fasta_sequence = get_sequence(&processed_files.full_pdb, &script_dir)?;
+    let fasta_sequence = get_sequence(&processed_files.full_pdb, script_dir)?;
     let rmsd_rmsf = get_rmsd_rmsf(
         &processed_files.min_pdb,
         &processed_files.min_xtc,
-        &script_dir,
+        script_dir,
     )?;
     let duration =
         get_duration(&processed_files.full_xtc, meta.integration_timestep_fs)?;
@@ -413,7 +410,7 @@ pub fn make_import_json(
     if let Some(uniprot_ids) = &meta.uniprot_ids {
         for uniprot_id in uniprot_ids {
             if !uniprots.contains_key(uniprot_id) {
-                match get_uniprot_entry(&uniprot_id) {
+                match get_uniprot_entry(uniprot_id) {
                     Ok(entry) => {
                         let _ = uniprots.insert(uniprot_id.clone(), entry);
                     }
@@ -425,7 +422,7 @@ pub fn make_import_json(
 
     let mut pdb = None;
     if let Some(pdb_id) = &meta.pdb_id {
-        match get_pdb_entry(&pdb_id) {
+        match get_pdb_entry(pdb_id) {
             Ok((pdb_tmp, _pdb_uniprots)) => {
                 pdb = Some(pdb_tmp);
 
@@ -469,9 +466,7 @@ pub fn make_import_json(
             if original_files
                 .iter()
                 .filter(|f| f.md5_sum == md5_sum)
-                .collect::<Vec<_>>()
-                .len()
-                == 0
+                .collect::<Vec<_>>().is_empty()
             {
                 original_files.push(MdFile {
                     name: file.file_name.to_string(),
@@ -499,7 +494,7 @@ pub fn make_import_json(
             name: path.file_name().unwrap().to_string_lossy().to_string(),
             file_type: file_type.to_string(),
             size: path.metadata()?.len(),
-            md5_sum: get_md5(&path)?,
+            md5_sum: get_md5(path)?,
             description: None,
         })
     }
@@ -528,14 +523,14 @@ pub fn make_import_json(
         uniprots: uniprots.into_values().collect::<Vec<_>>(),
         duration: duration.totaltime_ns,
         sampling_frequency: duration.sampling_frequency_ns,
-        integration_timestep_fs: meta.integration_timestep_fs.clone(),
+        integration_timestep_fs: meta.integration_timestep_fs,
         external_links: meta.external_links.unwrap_or_default(),
         forcefield: meta.forcefield.clone(),
         forcefield_comments: meta.forcefield_comments.clone(),
         protonation_method: meta.protonation_method.clone(),
         rmsd_values: rmsd_rmsf.rmsd,
         rmsf_values: rmsd_rmsf.rmsf,
-        temperature_kelvin: meta.temperature_kelvin.clone(),
+        temperature_kelvin: meta.temperature_kelvin,
         fasta_sequence,
         replicate_id: meta.replicate_id.clone(),
         water: meta.water.clone(),
@@ -552,7 +547,7 @@ pub fn make_import_json(
 
     let import_json = &input_dir.join("processed").join("import.json");
     info!(r#"Writing JSON to "{}""#, &import_json.display());
-    let file = File::create(&import_json)?;
+    let file = File::create(import_json)?;
     writeln!(&file, "{}", &serde_json::to_string_pretty(&export)?)?;
 
     Ok(import_json.into())
@@ -571,7 +566,7 @@ pub fn get_duration(
     } else {
         info!("Creating duration file");
         let cmd = Command::new("molly")
-            .args(["--info", &full_xtc.to_string_lossy().to_string()])
+            .args(["--info", full_xtc.to_string_lossy().as_ref()])
             .output()?;
 
         if !cmd.status.success() {
@@ -640,7 +635,7 @@ pub fn get_duration(
         // inflated by 1000x (a known issue with some MD engines).
         if nstxout > 1e7 {
             let corrected_nstxout = nstxout / 1000.0;
-            if corrected_nstxout >= 1e3 && corrected_nstxout <= 1e7 {
+            if (1e3..=1e7).contains(&corrected_nstxout) {
                 info!(
                     "XTC timestamps appear inflated by 1000x \
                          (nstxout={nstxout:.0}, corrected={corrected_nstxout:.0}). \
@@ -684,7 +679,7 @@ pub fn get_duration(
 
 // --------------------------------------------------
 pub fn get_topology_hash(topology: &PathBuf) -> Result<String> {
-    let contents = fs::read(&topology)?;
+    let contents = fs::read(topology)?;
     let digest = Sha1::digest(&contents);
     Ok(format!("{digest:x}"))
 }
@@ -713,7 +708,7 @@ pub fn get_doi(doi: &str) -> Result<metadata::Paper> {
         journal: doi_paper.journal.clone(),
         volume: metadata::Numlike::Stringy(doi_paper.volume),
         number: None,
-        year: doi_paper.published.date_parts.first().unwrap().clone(),
+        year: *doi_paper.published.date_parts.first().unwrap(),
         pages: Some(doi_paper.page.clone()),
         doi: Some(doi.to_string()),
     })

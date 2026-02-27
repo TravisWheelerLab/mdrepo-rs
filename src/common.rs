@@ -32,7 +32,7 @@ pub fn get_md5(path: &PathBuf) -> Result<String> {
 
     if !file_exists(&md5_file) {
         let md5_prg = which("md5sum")?;
-        let cmd = Command::new(&md5_prg).arg(&path).output()?;
+        let cmd = Command::new(&md5_prg).arg(path).output()?;
         if !cmd.status.success() {
             bail!(str::from_utf8(&cmd.stderr)?.to_string());
         }
@@ -40,7 +40,7 @@ pub fn get_md5(path: &PathBuf) -> Result<String> {
         let stdout = stdout.trim_end();
         let re = Regex::new(r"^([a-f0-9]{32})\s+").unwrap();
         let caps = re
-            .captures(&stdout)
+            .captures(stdout)
             .ok_or(anyhow!(r#"Unexpected MD5: {stdout}"#))?;
         let digest = caps.get(1).unwrap().as_str();
 

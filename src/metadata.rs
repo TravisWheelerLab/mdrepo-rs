@@ -132,7 +132,7 @@ impl Meta {
     pub fn fix(&mut self) {
         if let Some(papers) = &self.papers {
             let new_papers: Vec<_> = papers
-                .into_iter()
+                .iter()
                 .map(|paper| {
                     let volume = if let Numlike::TomlVal(val) = &paper.volume {
                         match val {
@@ -147,15 +147,15 @@ impl Meta {
 
                     let number = paper.number.clone().map(|val| {
                         if let Numlike::TomlVal(n) = val {
-                            let new_number = match n {
+                            
+                            match n {
                                 TomlValue::String(v) => Numlike::Stringy(v.to_string()),
                                 TomlValue::Integer(v) => {
                                     Numlike::Stringy(v.to_string())
                                 }
                                 TomlValue::Float(v) => Numlike::Stringy(v.to_string()),
                                 _ => Numlike::Stringy("".to_string()),
-                            };
-                            new_number
+                            }
                         } else {
                             val.clone()
                         }

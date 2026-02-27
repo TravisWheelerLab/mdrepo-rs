@@ -14,7 +14,7 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
     debug!("Reprocessing simulation ID {mdrepo_id}");
     let data_dir = &args.work_dir.join(&mdrepo_id);
     if !data_dir.is_dir() {
-        fs::create_dir_all(&data_dir)?;
+        fs::create_dir_all(data_dir)?;
     }
 
     let server = &args.server;
@@ -22,10 +22,10 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
         &format!("/iplant/home/shared/mdrepo/{server}/release/{mdrepo_id}/original");
     let irods_dir = Path::new(&irods_dir);
     let meta_filename = "mdrepo-metadata.toml";
-    let meta_irods = &irods_dir.join(&meta_filename);
-    let meta_path = &data_dir.join(&meta_filename);
-    irods_fetch(&meta_irods, &meta_path)?;
-    let meta = Meta::from_file(&meta_path)?;
+    let meta_irods = &irods_dir.join(meta_filename);
+    let meta_path = &data_dir.join(meta_filename);
+    irods_fetch(meta_irods, meta_path)?;
+    let meta = Meta::from_file(meta_path)?;
 
     //let trajectory_filename = meta.required_files.trajectory_file_name;
     //let trajectory_path = &data_dir.join(&trajectory_filename);
@@ -44,7 +44,7 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
         &meta.structure_file_name,
         &meta.topology_file_name,
     ] {
-        irods_fetch(&irods_dir.join(&filename), &data_dir.join(&filename))?;
+        irods_fetch(&irods_dir.join(filename), &data_dir.join(filename))?;
     }
 
     if let Some(addl_files) = meta.additional_files {
@@ -59,18 +59,18 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
     let processed_dir = &data_dir.join("processed");
     let script_dir = &args.script_dir.clone().unwrap();
     let processed_files = process::make_processed_files(
-        &meta_path,
-        &data_dir,
-        &processed_dir,
-        &script_dir,
+        meta_path,
+        data_dir,
+        processed_dir,
+        script_dir,
     )?;
     dbg!(&processed_files);
 
     //let import_json = data_dir.join(format!("{mdrepo_id}.json"));
     process::make_import_json(
-        &meta_path,
-        &data_dir,
-        &script_dir,
+        meta_path,
+        data_dir,
+        script_dir,
         &processed_files,
         //&import_json,
         Some(simulation_id),
@@ -81,7 +81,7 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
 
 // --------------------------------------------------
 fn irods_fetch(irods_path: &PathBuf, local_path: &PathBuf) -> Result<()> {
-    if !file_exists(&local_path) {
+    if !file_exists(local_path) {
         debug!(
             r#"Get "{}" -> "{}""#,
             irods_path.display(),
@@ -90,8 +90,8 @@ fn irods_fetch(irods_path: &PathBuf, local_path: &PathBuf) -> Result<()> {
         let cmd = Command::new("gocmd")
             .args([
                 "get",
-                &irods_path.to_string_lossy().to_string(),
-                &local_path.to_string_lossy().to_string(),
+                irods_path.to_string_lossy().as_ref(),
+                local_path.to_string_lossy().as_ref(),
             ])
             .output()?;
         if !cmd.status.success() {

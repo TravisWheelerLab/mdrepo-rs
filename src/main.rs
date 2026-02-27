@@ -42,11 +42,11 @@ fn run(args: Cli) -> Result<()> {
     match &args.command {
         Some(Command::Process(args)) => {
             //validate::validate(&args.dirname)?;
-            process::process(&args)?;
+            process::process(args)?;
             Ok(())
         }
         Some(Command::Reprocess(args)) => {
-            reprocess::reprocess(&args)?;
+            reprocess::reprocess(args)?;
             Ok(())
         }
         Some(Command::MetaCheck(args)) => {
@@ -56,7 +56,7 @@ fn run(args: Cli) -> Result<()> {
             Ok(())
         }
         Some(Command::Ticket(args)) => {
-            ticket::process(&args)?;
+            ticket::process(args)?;
             Ok(())
         }
         Some(Command::Validate(args)) => {
