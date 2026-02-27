@@ -41,17 +41,6 @@ impl Numlike {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-pub enum MoleculeType {
-    #[serde(alias = "Pdb")]
-    PDB,
-
-    #[serde(alias = "UNIPROT")]
-    Uniprot,
-
-    Other(String),
-}
-
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Meta {
@@ -59,15 +48,22 @@ pub struct Meta {
 
     pub lead_contributor_orcid: String,
 
-    pub software: Software,
+    pub trajectory_file_name: String,
 
-    pub required_files: RequiredFile,
+    pub structure_file_name: String,
+
+    pub topology_file_name: String,
 
     pub temperature_kelvin: u32,
 
     pub integration_timestep_fs: f64,
 
     pub short_description: String,
+
+    pub software_name: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub software_version: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -234,21 +230,6 @@ pub struct Paper {
 pub struct Ligand {
     pub name: String,
     pub smiles: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct RequiredFile {
-    pub trajectory_file_name: String,
-    pub structure_file_name: String,
-    pub topology_file_name: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct Software {
-    pub name: String,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
