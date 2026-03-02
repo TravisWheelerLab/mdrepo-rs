@@ -56,7 +56,7 @@ pub struct Meta {
 
     pub temperature_kelvin: u32,
 
-    pub integration_timestep_fs: f64,
+    pub integration_timestep_fs: u32,
 
     pub short_description: String,
 
@@ -147,7 +147,6 @@ impl Meta {
 
                     let number = paper.number.clone().map(|val| {
                         if let Numlike::TomlVal(n) = val {
-                            
                             match n {
                                 TomlValue::String(v) => Numlike::Stringy(v.to_string()),
                                 TomlValue::Integer(v) => {
