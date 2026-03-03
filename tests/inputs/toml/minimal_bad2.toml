@@ -1,0 +1,17 @@
+lead_contributor_orcid = "0000-0001-9961-144X"
+
+trajectory_file_name = "5aom.xtc"
+
+structure_file_name = "5aom_cleaned.pdb"
+
+topology_file_name = "5aom_gromacs_cleaned.top"
+
+temperature_kelvin = "300"
+
+integration_timestep_fs = 2.4
+
+software_name = "AMBER"
+
+software_version = 1
+
+short_description = "8 ns simulation of the 5aom PDB entry (P04637), produced via MISATO automated pipeline; sampled to 100 frames"

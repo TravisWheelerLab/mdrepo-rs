@@ -1,18 +1,13 @@
-mod common;
-mod constants;
-mod metadata;
-mod process;
-mod reprocess;
-mod ticket;
-mod types;
-mod validate;
-
 use anyhow::Result;
 use clap::Parser;
-//use diesel::prelude::*;
-use metadata::Meta;
+use mdr::{
+    metadata::Meta,
+    process, reprocess, ticket,
+    types::{Cli, Command, LogLevel},
+    validate,
+};
 use std::{fs::File, io::BufWriter};
-use types::{Cli, Command, LogLevel};
+//use validator::Validate;
 
 // --------------------------------------------------
 fn main() {
@@ -50,9 +45,27 @@ fn run(args: Cli) -> Result<()> {
             Ok(())
         }
         Some(Command::MetaCheck(args)) => {
-            let meta = Meta::from_file(&args.filename)?;
-            dbg!(&meta);
-            println!("{} OK", args.filename.display());
+            let messages = match Meta::from_file(&args.filename) {
+                Ok(meta) => meta.check(),
+                Err(e) => vec![format!(
+                    "Unable to parse {}: {}",
+                    args.filename.display(),
+                    e.to_string()
+                )],
+                //Ok(meta) => match meta.validate() {
+                //    Ok(()) => vec![],
+                //    Err(errors) => {
+                //        dbg!(&errors);
+                //        let mut ret = vec![];
+                //        for (field, _val) in errors.errors() {
+                //            ret.push(format!("{field}"));
+                //        }
+                //        ret
+                //    }
+                //},
+            };
+
+            println!("{}", messages.join("\n"));
             Ok(())
         }
         Some(Command::Ticket(args)) => {

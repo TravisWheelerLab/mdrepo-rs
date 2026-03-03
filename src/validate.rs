@@ -1,8 +1,8 @@
 use crate::{
     common::{get_md5, read_file},
     constants::MAX_FILE_SIZE_BYTES,
+    metadata::Meta,
     types::SubmissionCompleteJson,
-    Meta,
 };
 use anyhow::{anyhow, bail, Result};
 use log::info;

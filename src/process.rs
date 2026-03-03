@@ -415,7 +415,7 @@ pub fn make_import_json(
             if !uniprots.contains_key(uniprot_id) {
                 match get_uniprot_entry(uniprot_id) {
                     Ok(entry) => {
-                        let _ = uniprots.insert(uniprot_id.clone(), entry);
+                        let _ = uniprots.insert(uniprot_id.to_string(), entry);
                     }
                     _ => info!(r#"Failed to get Uniprot entry for "{uniprot_id}""#),
                 }
@@ -452,12 +452,12 @@ pub fn make_import_json(
         ("Structure", &meta.structure_file_name),
         ("Topology", &meta.topology_file_name),
     ] {
-        let path = input_dir.join(filename);
+        let local_path = input_dir.join(&filename);
         original_files.push(MdFile {
             name: filename.to_string(),
             file_type: file_type.to_string(),
-            size: path.metadata()?.len(),
-            md5_sum: get_md5(&path)?,
+            size: local_path.metadata()?.len(),
+            md5_sum: get_md5(&local_path)?,
             description: None,
         })
     }
@@ -520,7 +520,7 @@ pub fn make_import_json(
         user_accession: meta.user_accession.clone(),
         description: meta.description.clone(),
         short_description: meta.short_description.clone(),
-        run_commands: meta.commands.clone(),
+        run_commands: meta.run_commands.clone(),
         software_name: meta.software_name.clone(),
         software_version: meta.software_version.clone(),
         pdb,
@@ -558,7 +558,7 @@ pub fn make_import_json(
 }
 
 // --------------------------------------------------
-pub fn get_duration(full_xtc: &Path, integration_timestep_fs: f64) -> Result<Duration> {
+pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Duration> {
     let processed_dir = full_xtc.parent().unwrap();
     let out_file = processed_dir.join("duration.json");
 
@@ -628,8 +628,7 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: f64) -> Result<Dur
 
         // Sanity check: compute nstxout (output steps per frame)
         // using the integration timestep from metadata.
-        let dt_ps = integration_timestep_fs / 1000.0;
-        let nstxout = sampling_ps / dt_ps;
+        let nstxout = sampling_ps / (integration_timestep_fs as f64 / 1000.0);
 
         // A reasonable nstxout is 1e3..1e7. If it's way too large
         // but dividing by 1000 fixes it, the XTC timestamps are
@@ -707,7 +706,7 @@ pub fn get_doi(doi: &str) -> Result<metadata::Paper> {
         title: doi_paper.title.clone(),
         authors: authors.join(", "),
         journal: doi_paper.journal.clone(),
-        volume: metadata::Numlike::Stringy(doi_paper.volume),
+        volume: doi_paper.volume,
         number: None,
         year: *doi_paper.published.date_parts.first().unwrap(),
         pages: Some(doi_paper.page.clone()),
@@ -794,60 +793,6 @@ pub fn get_pdb_entry(pdb_id: &str) -> Result<(PdbEntry, Vec<UniprotEntry>)> {
         uniprots,
     ))
 }
-
-// --------------------------------------------------
-//fn find_or_create_simulation(
-//    dbh: &mut postgres::Client,
-//    unique_file_hash: &str,
-//    _meta: &Meta,
-//    _sequence: &ProteinSequence,
-//    topology_hash: &str,
-//    _duration: &Duration,
-//    _rmsd_rmsf: &RmsdRmsf,
-//) -> Result<u64> {
-//    let replicate_group_id = find_or_create_replicate_group(dbh, topology_hash)?;
-//    dbg!(&replicate_group_id);
-
-//    let res = dbh.query(
-//        "select id from md_simulation where unique_file_hash_string=$1",
-//        &[&unique_file_hash],
-//    )?;
-
-//    if res.is_empty() {}
-//    dbg!(&res);
-//    Ok(0)
-//}
-
-// --------------------------------------------------
-//fn find_or_create_replicate_group(
-//    dbh: &mut postgres::Client,
-//    topology_hash: &str,
-//) -> Result<i64> {
-//    let res = dbh.query(
-//        "select id from md_simulation_replicate_group where psf_hash=$1",
-//        &[&topology_hash],
-//    )?;
-
-//    if let Some(first) = res.first() {
-//        return Ok(first.get::<usize, i64>(0));
-//    }
-
-//    let res = dbh.query(
-//        "
-//        insert
-//        into   md_simulation_replicate_group (psf_hash)
-//        values ($1)
-//        returning id;
-//        ",
-//        &[&topology_hash],
-//    )?;
-
-//    if let Some(first) = res.first() {
-//        return Ok(first.get::<usize, i64>(0));
-//    }
-
-//    Ok(0)
-//}
 
 // --------------------------------------------------
 pub fn get_unique_file_hash(meta: &Meta, input_dir: &Path) -> String {

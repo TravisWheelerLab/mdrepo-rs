@@ -1,0 +1,17 @@
+lead_contributor_orcid = ""
+
+trajectory_file_name = ""
+
+structure_file_name = ""
+
+topology_file_name = ""
+
+temperature_kelvin = 0
+
+integration_timestep_fs = 0
+
+software_name = ""
+
+software_version = ""
+
+short_description = ""

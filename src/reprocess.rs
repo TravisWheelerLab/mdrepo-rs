@@ -47,14 +47,14 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
         irods_fetch(&irods_dir.join(filename), &data_dir.join(filename))?;
     }
 
-    if let Some(addl_files) = meta.additional_files {
-        for file in addl_files {
-            irods_fetch(
-                &irods_dir.join(&file.file_name),
-                &data_dir.join(&file.file_name),
-            )?;
-        }
-    }
+    //if let Some(addl_files) = meta.additional_files {
+    //    for file in addl_files {
+    //        irods_fetch(
+    //            &irods_dir.join(&file.file_name),
+    //            &data_dir.join(&file.file_name),
+    //        )?;
+    //    }
+    //}
 
     let processed_dir = &data_dir.join("processed");
     let script_dir = &args.script_dir.clone().unwrap();

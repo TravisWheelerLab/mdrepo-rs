@@ -1,0 +1,5 @@
+[initial]
+foo = "bar"
+
+[required_files]
+trajectory = "ABC"
