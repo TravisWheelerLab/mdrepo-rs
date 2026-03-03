@@ -450,7 +450,6 @@ mod tests {
     fn meta_check_bad() -> Result<()> {
         let meta = Meta::from_file(&PathBuf::from(TOML_BAD1))?;
         let errors = &meta.check();
-        assert_eq!(errors.len(), 20);
         let expected = vec![
             r#"contributors[1].orcid: value "0000-2819-749X" invalid"#,
             r#"contributors[1].email: value "alex" invalid"#,
@@ -470,9 +469,10 @@ mod tests {
             r#"water.density_kg_m3: value 1000000.0 must be >= 900.0 and <= 1100.0"#,
             r#"lead_contributor_orcid: value "0000-0001-9961-144" invalid"#,
             r#"structure_file_name: value " " invalid"#,
-            r#"integration_timestep_fs: value 2000 must be >= 0 and <= 4"#,
+            r#"integration_timestep_fs: value 2000 must be >= 1 and <= 5"#,
             r#"toml_version: value 4 must be = 2"#,
         ];
+        assert_eq!(errors.len(), expected.len());
         for message in expected {
             assert!(errors.contains(&message.to_string()));
         }
