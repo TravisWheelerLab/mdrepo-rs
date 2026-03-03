@@ -23,8 +23,8 @@ pub const WATER_DENSITY_MAX: f32 = 1100.;
 pub const METADATA_TOML_VERSION: u32 = 2;
 pub const TEMP_K_MIN: u32 = 275;
 pub const TEMP_K_MAX: u32 = 700;
-pub const TIMESTEP_FS_MIN: u32 = 0;
-pub const TIMESTEP_FS_MAX: u32 = 4;
+pub const TIMESTEP_FS_MIN: u32 = 1;
+pub const TIMESTEP_FS_MAX: u32 = 5;
 pub const VALID_WATER_MODEL: &[&str] = &[
     "AMOEBA",
     "BF",
