@@ -119,6 +119,10 @@ impl Meta {
             .map_err(|e| anyhow!(r#"Failed to parse "{}": {e}"#, path.display()))
     }
 
+    pub fn from_string(contents: &str) -> Result<Self> {
+        toml::from_str(&contents).map_err(|e| anyhow!(r#"Failed to parse input: {e}"#))
+    }
+
     pub fn check(&self) -> Vec<String> {
         let mut messages = vec![];
         if let Err(e) = self.validate() {
