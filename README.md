@@ -1,33 +1,41 @@
 # Project
 
-**REPLACE:** One sentence description of the project.
-
-## About
-
-**REPLACE:** Describe your project in more detail. What does it do? Who are the intended
-users? Why is it important or meaningful? How does it improve upon similar
-software? Is it a component of or extension to a larger piece of software?
+MDRepo Rust tools
 
 ## Installation
 
-**REPLACE:** How does on install the software? What are the dependencies, if any? Is there a
-Docker image or installation package of some sort?
+* Install Rust (https://rust-lang.org/tools/install/)
+* `cargo build`
 
 ## Usage
 
-**REPLACE:** How is the software run (or consumed, for libraries)? Are there any command line
-flags the user should know about? What do they do, exactly? What do the input
-data look like? Are there special file formats in use, what are they? What does
-the output look like?
+```
+$ cargo run --quiet --bin mdr -- -h
+Usage: mdr [OPTIONS] [COMMAND]
 
-## Development
+Commands:
+  validate    Validate simulation directory
+  meta-check  Check metadata
+  process     Process simulation directory
+  reprocess   Reprocess an existing simulation
+  ticket      Use ticket ID to download and process
+  help        Print this message or the help of the given subcommand(s)
 
-**REPLACE:** What language(s) are in use? What does a user need to install for development
-purposes? This might include build systems, Docker, a particular compiler or
-runtime version, test libraries or tools, linters, code formatters, or other
-tools. Are there any special requirements, like processor architecture? What
-commands should developers use to accomplish common tasks like building, running
-the test suite, and so on?
+Options:
+  -l, --log <LOG>            Log level [possible values: info, debug]
+      --log-file <LOG_FILE>  Log file
+  -h, --help                 Print help
+  -V, --version              Print version
+
+$ cargo run --quiet --bin mdr-toml -- -h
+Usage: mdr-toml <FILENAME>
+
+Arguments:
+  <FILENAME>
+
+Options:
+  -h, --help  Print help
+```
 
 ## Contributing
 
@@ -50,7 +58,6 @@ See `LICENSE` for details.
 
 ## Authors
 
-**REPLACE:** Who should people contact with questions?
+* Ken Youens-Clark <kyclark@arizona.edu>
 
 See `AUTHORS` the full list of authors.
-
