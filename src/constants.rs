@@ -10,8 +10,9 @@ pub static ORCID_REGEX: LazyLock<Regex> =
 pub static PDB_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[A-Za-z0-9]{4}$").unwrap());
 
-pub static DOI_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(10\.\d{4,5}\/[\S]+[^;,.\s])$").unwrap());
+pub static DOI_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:https://doi.org/)?(10\.\d{4,5}\/[\S]+[^;,.\s])$").unwrap()
+});
 
 pub static NOT_WHITESPACE_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\S+").unwrap());
