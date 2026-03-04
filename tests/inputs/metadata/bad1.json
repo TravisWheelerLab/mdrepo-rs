@@ -1,0 +1,82 @@
+{
+  "lead_contributor_orcid": "0000-0001-9961-144",
+  "trajectory_file_name": " ",
+  "structure_file_name": " ",
+  "topology_file_name": " ",
+  "temperature_kelvin": 0,
+  "integration_timestep_fs": 2000,
+  "short_description": " ",
+  "software_name": "AMBER",
+  "software_version": "20",
+  "description": "An 8 ns simulation of the 5aom PDB entries which includes Uniprot entry: P04637. The simulation was produced using the MISATO automated pipeline. The MISATO dataset provides a large-scale, high-quality resource of ~19,400 experimentally determined protein–ligand complexes curated from PDBbind, each corrected for structural errors with semi-empirical quantum mechanical refinements and enriched with computed quantum chemical properties. To capture conformational flexibility, the authors generated explicit all-atom molecular dynamics simulations in water; each run was 10 ns but only the final 8 ns were saved as trajectories. For every system, Amber restart and topology files are available, along with Gromacs-formatted topology, structure, and PDB files for the full solvated system. The saved trajectories include only protein and ligand atoms, and are accompanied by corresponding `cleaned' Gromacs topology, structure, and PDB files with water and ions removed. Each trajectory contains 100 frames at 800 ps intervals, and per-frame analyses such as buried solvent-accessible surface area (bSASA), protein–ligand center-of-mass distance, interaction energy, and ligand RMSD are available in CSV format. The external link (https://zenodo.org/records/7711953) refers to the location of the full set of MISATO simulations; retrieval of this single simulation from that zenodo record requires download of the entire payload, followed by extract using a script such as those provided at https://github.com/t7morgen/misato-dataset/tree/master/src/data/processing (though MDRepo provides direct access the full contents of all records).",
+  "toml_version": 4,
+  "user_accession": "ABC123",
+  "external_links": [
+    {
+      "url": "zenodo.org/records/7711953",
+      "label": " "
+    }
+  ],
+  "run_commands": "gmx_mpi mdrun -s fname.tpr -deffnm fname -v -c fname.pdb -cpi fname.cpt -maxh clock_time -noappend -update gpu -bonded gpu -pme gpu -pmefft gpu -nb gpu",
+  "additional_files": [
+    {
+      "file_type": " ",
+      "file_name": " ",
+      "description": " "
+    }
+  ],
+  "forcefield": " ",
+  "protonation_method": "AutoDockFR",
+  "replicate_id": "XYZ",
+  "pdb_id": "5am",
+  "uniprot_ids": [
+    "P04637",
+    "Q9Y5S2"
+  ],
+  "water": {
+    "model": "XYZ",
+    "density_kg_m3": 1000000.0
+  },
+  "ligands": [
+    {
+      "name": "FY8",
+      "smiles": "Oc1ccc(Cl)cc1NC(=O)C2CCNCC2"
+    },
+    {
+      "name": "AQE",
+      "smiles": "C1CC[C@@]2(CCCN(C2)c3ccnc4[nH]cc(c5sccn5)c34)NC1"
+    }
+  ],
+  "solvents": [
+    {
+      "name": " ",
+      "concentration_mol_liter": 0.0
+    },
+    {
+      "name": "Cl",
+      "concentration_mol_liter": 0.15
+    }
+  ],
+  "papers": [
+    {
+      "title": "MISATO: machine learning dataset of protein–ligand complexes for structure-based drug discovery",
+      "authors": "Till Siebenmorgen, Filipe Menezes, Sabrina Benassou, Erinc Merdivan, Kieran Didi, André Santos Dias Mourão, Radosław Kitel, Pietro Liò, Stefan Kesselheim, Marie Piraud, Fabian J. Theis, Michael Sattler & Grzegorz M. Popowicz",
+      "journal": "Nature Computational Science",
+      "volume": 4,
+      "year": 2024,
+      "pages": "367-378",
+      "doi": "https://doi.org/10.1038/s43588-024-00627-2"
+    }
+  ],
+  "dois": [
+    "1038/s43588-024-00627-2"
+  ],
+  "contributors": [
+    {
+      "name": "Alex Leifson",
+      "orcid": "0000-2819-749X",
+      "email": "alex",
+      "institution": "University of Montreal"
+    }
+  ]
+}

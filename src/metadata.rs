@@ -1,5 +1,5 @@
 use crate::{common::read_file, constants};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow::Borrowed, path::PathBuf};
 use validator::{Validate, ValidationError, ValidationErrorsKind};
@@ -7,8 +7,6 @@ use validator::{Validate, ValidationError, ValidationErrorsKind};
 #[derive(Debug, Deserialize, Serialize, Validate)]
 #[serde(deny_unknown_fields)]
 pub struct Meta {
-    pub mdrepo_id: Option<String>,
-
     #[validate(regex(path = *constants::ORCID_REGEX))]
     pub lead_contributor_orcid: String,
 
@@ -24,7 +22,9 @@ pub struct Meta {
     #[validate(range(min = constants::TEMP_K_MIN, max = constants::TEMP_K_MAX))]
     pub temperature_kelvin: u32,
 
-    #[validate(range(min = constants::TIMESTEP_FS_MIN, max = constants::TIMESTEP_FS_MAX))]
+    #[validate(
+        range(min = constants::TIMESTEP_FS_MIN, max = constants::TIMESTEP_FS_MAX)
+    )]
     pub integration_timestep_fs: u32,
 
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
@@ -35,6 +35,9 @@ pub struct Meta {
 
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
     pub software_version: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mdrepo_id: Option<String>,
 
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -54,17 +57,9 @@ pub struct Meta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_accession: Option<String>,
 
-    #[validate(nested)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub external_links: Option<Vec<ExternalLink>>,
-
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_commands: Option<String>,
-
-    #[validate(nested)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub additional_files: Option<Vec<AdditionalFile>>,
 
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -91,6 +86,10 @@ pub struct Meta {
 
     #[validate(nested)]
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub additional_files: Option<Vec<AdditionalFile>>,
+
+    #[validate(nested)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub water: Option<Water>,
 
     #[validate(nested)]
@@ -100,12 +99,16 @@ pub struct Meta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub solvents: Option<Vec<Solvent>>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub papers: Option<Vec<Paper>>,
-
     #[validate(custom(function = "validate_dois"))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dois: Option<Vec<String>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub papers: Option<Vec<Paper>>,
+
+    #[validate(nested)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_links: Option<Vec<ExternalLink>>,
 
     #[validate(nested)]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -113,16 +116,6 @@ pub struct Meta {
 }
 
 impl Meta {
-    pub fn from_file(path: &PathBuf) -> Result<Self> {
-        let contents = read_file(path)?;
-        toml::from_str(&contents)
-            .map_err(|e| anyhow!(r#"Failed to parse "{}": {e}"#, path.display()))
-    }
-
-    pub fn from_string(contents: &str) -> Result<Self> {
-        toml::from_str(&contents).map_err(|e| anyhow!(r#"Failed to parse input: {e}"#))
-    }
-
     pub fn check(&self) -> Vec<String> {
         let mut messages = vec![];
         if let Err(e) = self.validate() {
@@ -133,6 +126,94 @@ impl Meta {
             }
         }
         messages
+    }
+
+    pub fn from_file(path: &PathBuf) -> Result<Self> {
+        match path.extension() {
+            Some(ext) => {
+                let contents = read_file(path)?;
+                if contents.is_empty() {
+                    bail!("File is empty")
+                }
+                let meta = match ext.to_str() {
+                    Some("json") => Self::from_json(&contents)?,
+                    Some("toml") => Self::from_toml(&contents)?,
+                    _ => bail!(r#"Unknown file extension "{}""#, ext.display()),
+                };
+                Ok(meta)
+            }
+            _ => bail!("No file extension"),
+        }
+    }
+
+    pub fn from_toml(contents: &str) -> Result<Self> {
+        toml::from_str(&contents).map_err(|e| anyhow!(r#"Failed to parse input: {e}"#))
+    }
+
+    pub fn from_json(json: &str) -> Result<Self> {
+        serde_json::from_str(json).map_err(|e| anyhow!(r#"Failed to parse input: {e}"#))
+    }
+
+    pub fn to_toml(&self) -> Result<String> {
+        toml::to_string_pretty(&self).map_err(Into::into)
+    }
+
+    pub fn to_json(&self) -> Result<String> {
+        serde_json::to_string_pretty(&self).map_err(Into::into)
+    }
+
+    pub fn example() -> Self {
+        Meta {
+            mdrepo_id: None,
+            lead_contributor_orcid: "0000-0000-0000-123X".to_string(),
+            trajectory_file_name: "traj.xtc".to_string(),
+            structure_file_name: "struct.pdb".to_string(),
+            topology_file_name: "topology.gro".to_string(),
+            temperature_kelvin: 300,
+            integration_timestep_fs: 2,
+            short_description: "short description".to_string(),
+            description: Some("longer description".to_string()),
+            software_name: "GROMACS".to_string(),
+            software_version: "2024.5".to_string(),
+            toml_version: Some(2),
+            user_accession: Some("ABC123".to_string()),
+            external_links: Some(vec![ExternalLink {
+                url: "http://aol.com".to_string(),
+                label: Some("My Link".to_string()),
+            }]),
+            run_commands: Some("".to_string()),
+            additional_files: None,
+            forcefield: Some("CHARMM36m".to_string()),
+            forcefield_comments: Some(
+                "ligand params: CGenFF and SwissParam".to_string(),
+            ),
+            protonation_method: Some("PropKa".to_string()),
+            replicate_id: Some("MyReplicateGroupABC".to_string()),
+            pdb_id: Some("5emo".to_string()),
+            uniprot_ids: Some(vec!["A0A0H2UWN8".to_string(), "S8G8I1".to_string()]),
+            water: Some(Water {
+                model: "TIP3P".to_string(),
+                density_kg_m3: 986.,
+            }),
+            ligands: Some(vec![Ligand {
+                name: "Foropafant".to_string(),
+                smiles:
+                    "CC(C)C1=CC(=C(C(=C1)C(C)C)C2=CSC(=N2)N(CCN(C)C)CC3=CN=CC=C3)C(C)C"
+                        .to_string(),
+            }]),
+            solvents: Some(vec![Solvent {
+                name: "Na".to_string(),
+                concentration_mol_liter: 0.15,
+            }]),
+            papers: None,
+            dois: Some(vec!["10.1017/j.str.2019.08.032".to_string()]),
+            contributors: Some(vec![Contributor {
+                name: "Barbara McClintock".to_string(),
+                institution: Some("Cold Spring Harbor Laboratory".to_string()),
+                email: Some("barb@cshl.edu".to_string()),
+                orcid: Some("0000-0002-6897-9608".to_string()),
+            }]),
+        }
     }
 }
 
@@ -322,18 +403,31 @@ fn format_validation_error(err: &ValidationError) -> String {
     format!("value {given} {message}")
 }
 
+// --------------------------------------------------
 #[cfg(test)]
 mod tests {
-    const TOML_OK1: &str = "tests/inputs/toml/ok1.toml";
-    const TOML_BAD1: &str = "tests/inputs/toml/bad1.toml";
+    const TOML_OK1: &str = "tests/inputs/metadata/ok1.toml";
+    const TOML_BAD1: &str = "tests/inputs/metadata/bad1.toml";
+    const JSON_OK1: &str = "tests/inputs/metadata/ok1.json";
+    const JSON_BAD1: &str = "tests/inputs/metadata/bad1.json";
+
     use super::Meta;
     use anyhow::Result;
     use std::path::PathBuf;
     use validator::Validate;
 
     #[test]
-    fn meta_ok() -> Result<()> {
-        let meta = Meta::from_file(&PathBuf::from(TOML_OK1))?;
+    fn meta_toml_ok() -> Result<()> {
+        meta_ok(TOML_OK1)
+    }
+
+    #[test]
+    fn meta_json_ok() -> Result<()> {
+        meta_ok(JSON_OK1)
+    }
+
+    fn meta_ok(filename: &str) -> Result<()> {
+        let meta = Meta::from_file(&PathBuf::from(filename))?;
         assert_eq!(meta.lead_contributor_orcid, "0000-0001-9961-144X");
         assert_eq!(meta.trajectory_file_name, "5aom.xtc");
         assert_eq!(meta.structure_file_name, "5aom_cleaned.pdb");
@@ -439,8 +533,17 @@ mod tests {
     }
 
     #[test]
-    fn meta_validate_bad() -> Result<()> {
-        let meta = Meta::from_file(&PathBuf::from(TOML_BAD1))?;
+    fn meta_validate_toml_bad() -> Result<()> {
+        meta_validate_bad(TOML_BAD1)
+    }
+
+    #[test]
+    fn meta_validate_json_bad() -> Result<()> {
+        meta_validate_bad(JSON_BAD1)
+    }
+
+    fn meta_validate_bad(filename: &str) -> Result<()> {
+        let meta = Meta::from_file(&PathBuf::from(filename))?;
         let errors = &meta.validate();
         assert!(errors.is_err());
         Ok(())
