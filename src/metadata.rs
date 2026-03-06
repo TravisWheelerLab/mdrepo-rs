@@ -86,11 +86,11 @@ pub struct Meta {
 
     #[validate(nested)]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub additional_files: Option<Vec<AdditionalFile>>,
+    pub water: Option<Water>,
 
     #[validate(nested)]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub water: Option<Water>,
+    pub additional_files: Option<Vec<AdditionalFile>>,
 
     #[validate(nested)]
     #[serde(skip_serializing_if = "Option::is_none")]

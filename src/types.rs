@@ -436,7 +436,7 @@ pub struct ImportResult {
 pub struct PushResult {
     pub src: String,
     pub dest: String,
-    pub size: u32,
+    pub size: u64,
 }
 
 // --------------------------------------------------
