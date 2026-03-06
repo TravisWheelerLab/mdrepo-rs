@@ -39,6 +39,17 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
     debug!("{processed_dir:?}");
 
     let meta_path = input_dir.join("mdrepo-metadata.toml");
+    let meta = Meta::from_file(&meta_path)?;
+    let errors = meta.check();
+    if !errors.is_empty() {
+        bail!(
+            "Found {} error{} in mdrepo-metadata.toml:\n{}",
+            errors.len(),
+            if errors.len() == 1 { "" } else { "s" },
+            errors.join("\n")
+        )
+    }
+
     let processed_files =
         make_processed_files(&meta_path, &input_dir, &processed_dir, script_dir)?;
 
