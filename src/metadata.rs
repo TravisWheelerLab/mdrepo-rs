@@ -58,6 +58,7 @@ pub struct Meta {
     pub user_accession: Option<String>,
 
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
+    #[serde(alias = "commands")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_commands: Option<String>,
 
