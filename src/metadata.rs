@@ -96,6 +96,7 @@ pub struct Meta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ligands: Option<Vec<Ligand>>,
 
+    #[validate(nested)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub solvents: Option<Vec<Solvent>>,
 
@@ -103,6 +104,7 @@ pub struct Meta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dois: Option<Vec<String>>,
 
+    #[validate(nested)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub papers: Option<Vec<Paper>>,
 
@@ -554,26 +556,27 @@ mod tests {
         let meta = Meta::from_file(&PathBuf::from(TOML_BAD1))?;
         let errors = &meta.check();
         let expected = vec![
+            r#"structure_file_name: value " " invalid"#,
+            r#"trajectory_file_name: value " " invalid"#,
+            r#"pdb_id: value "5am" invalid"#,
+            r#"additional_files[1].description: value " " invalid"#,
+            r#"additional_files[1].file_name: value " " invalid"#,
+            r#"additional_files[1].file_type: value " " invalid"#,
             r#"contributors[1].orcid: value "0000-2819-749X" invalid"#,
             r#"contributors[1].email: value "alex" invalid"#,
-            r#"additional_files[1].file_type: value " " invalid"#,
-            r#"additional_files[1].file_name: value " " invalid"#,
-            r#"additional_files[1].description: value " " invalid"#,
-            r#"topology_file_name: value " " invalid"#,
-            r#"short_description: value " " invalid"#,
-            r#"temperature_kelvin: value 0 must be >= 275 and <= 700"#,
-            r#"dois: value ["1038/s43588-024-00627-2"] invalid"#,
-            r#"trajectory_file_name: value " " invalid"#,
-            r#"external_links[1].url: value "zenodo.org/records/7711953" invalid"#,
-            r#"external_links[1].label: value " " invalid"#,
-            r#"forcefield: value " " invalid"#,
-            r#"pdb_id: value "5am" invalid"#,
-            r#"water.model: value "XYZ" invalid"#,
             r#"water.density_kg_m3: value 1000000.0 must be >= 900.0 and <= 1100.0"#,
-            r#"lead_contributor_orcid: value "0000-0001-9961-144" invalid"#,
-            r#"structure_file_name: value " " invalid"#,
-            r#"integration_timestep_fs: value 2000 must be >= 1 and <= 5"#,
+            r#"water.model: value "XYZ" invalid"#,
             r#"toml_version: value 4 must be = 2"#,
+            r#"forcefield: value " " invalid"#,
+            r#"solvents[1].name: value " " invalid"#,
+            r#"topology_file_name: value " " invalid"#,
+            r#"lead_contributor_orcid: value "0000-0001-9961-144" invalid"#,
+            r#"integration_timestep_fs: value 2000 must be >= 1 and <= 5"#,
+            r#"dois: value ["1038/s43588-024-00627-2"] invalid"#,
+            r#"external_links[1].label: value " " invalid"#,
+            r#"external_links[1].url: value "zenodo.org/records/7711953" invalid"#,
+            r#"temperature_kelvin: value 0 must be >= 275 and <= 700"#,
+            r#"short_description: value " " invalid"#,
         ];
         assert_eq!(errors.len(), expected.len());
         for message in expected {
