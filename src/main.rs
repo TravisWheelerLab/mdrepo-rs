@@ -38,10 +38,12 @@ fn run(args: Cli) -> Result<()> {
         Some(Command::Process(args)) => {
             //validate::validate(&args.dirname)?;
             process::process(args)?;
+            println!("Success");
             Ok(())
         }
         Some(Command::Reprocess(args)) => {
             reprocess::reprocess(args)?;
+            println!("Success");
             Ok(())
         }
         Some(Command::MetaCheck(args)) => {
@@ -52,17 +54,6 @@ fn run(args: Cli) -> Result<()> {
                     args.filename.display(),
                     e.to_string()
                 )],
-                //Ok(meta) => match meta.validate() {
-                //    Ok(()) => vec![],
-                //    Err(errors) => {
-                //        dbg!(&errors);
-                //        let mut ret = vec![];
-                //        for (field, _val) in errors.errors() {
-                //            ret.push(format!("{field}"));
-                //        }
-                //        ret
-                //    }
-                //},
             };
 
             println!("{}", messages.join("\n"));
@@ -70,6 +61,7 @@ fn run(args: Cli) -> Result<()> {
         }
         Some(Command::Ticket(args)) => {
             ticket::process(args)?;
+            println!("Success");
             Ok(())
         }
         Some(Command::Validate(args)) => {
