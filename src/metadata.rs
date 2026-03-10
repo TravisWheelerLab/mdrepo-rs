@@ -1,7 +1,11 @@
 use crate::{common::read_file, constants};
 use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
-use std::{borrow::Cow::Borrowed, path::PathBuf};
+use std::{
+    borrow::Cow::Borrowed,
+    ffi::OsStr,
+    path::{Path, PathBuf},
+};
 use validator::{Validate, ValidationError, ValidationErrorsKind};
 
 #[derive(Debug, Deserialize, Serialize, Validate)]
@@ -125,6 +129,35 @@ impl Meta {
                 for message in handle_validation_error_kind(field, val) {
                     messages.push(message);
                 }
+            }
+        }
+
+        let is_gromacs = self.software_name.to_lowercase().contains("gromacs");
+        if is_gromacs
+            && Path::new(&self.topology_file_name).extension()
+                == Some(OsStr::new("top"))
+        {
+            let exts: Vec<String> = match &self.additional_files {
+                Some(files) => files
+                    .iter()
+                    .filter_map(|f| {
+                        Path::new(&f.file_name)
+                            .extension()
+                            .map(|e| e.to_string_lossy().to_string())
+                    })
+                    .collect(),
+                _ => vec![],
+            };
+
+            if !&["tpr", "gro"]
+                .iter()
+                .any(|ext| exts.contains(&ext.to_string()))
+            {
+                messages.push(
+                    "GROMACS topology \".top\" file requires \
+                    additional \".tpr\" or \".gro\""
+                        .to_string(),
+                );
             }
         }
         messages
