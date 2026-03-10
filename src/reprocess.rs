@@ -1,10 +1,16 @@
 use crate::{
+    common::file_exists,
+    metadata::Meta,
     process,
     types::{ProcessArgs, ReprocessArgs},
 };
 use anyhow::{bail, Result};
 use log::{debug, info};
-use std::{fs, process::Command};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 // --------------------------------------------------
 pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
@@ -14,13 +20,17 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
     debug!("Reprocessing simulation ID {mdrepo_id}");
 
     let data_dir = &args.work_dir.join(&mdrepo_id);
-    if !args.data_dir.is_dir() {
+    if !data_dir.is_dir() {
         fs::create_dir_all(&args.work_dir)?;
     }
 
     let server = &args.server;
     let irods_dir =
-        &format!("/iplant/home/shared/mdrepo/{server}/release/{mdrepo_id}/original");
+        format!("/iplant/home/shared/mdrepo/{server}/release/{mdrepo_id}/original");
+    let irods_dir = Path::new(&irods_dir);
+
+    let meta_path = data_dir.join("mdrepo-metadata.toml");
+    let meta = Meta::from_file(&meta_path)?;
 
     for filename in &[
         &meta.trajectory_file_name,
