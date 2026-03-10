@@ -10,16 +10,15 @@ use which::which;
 // --------------------------------------------------
 pub fn process(args: &TicketArgs) -> Result<()> {
     debug!("{args:?}");
-    dotenv::dotenv()?;
-    let script_dir = &args
-        .script_dir
-        .clone()
-        .unwrap_or(PathBuf::from(env::var("SCRIPT_DIR")?));
+    let _ = dotenv::dotenv();
+    let script_dir = &args.script_dir.clone().unwrap_or(PathBuf::from(
+        env::var("SCRIPT_DIR").map_err(|e| anyhow!("SCRIPT_DIR: {e}"))?,
+    ));
 
-    let landing_dir = &args
-        .landing_dir
-        .clone()
-        .unwrap_or(PathBuf::from(env::var("LANDING_DIR")?));
+    let landing_dir = &args.script_dir.clone().unwrap_or(PathBuf::from(
+        env::var("LANDING_DIR").map_err(|e| anyhow!("LANDING_DIR: {e}"))?,
+    ));
+
     let landing_dir = &landing_dir.join(args.server.to_string());
     if !landing_dir.is_dir() {
         fs::create_dir_all(landing_dir)?;
