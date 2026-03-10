@@ -63,6 +63,7 @@ pub struct Meta {
 
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "commands")]
     pub run_commands: Option<String>,
 
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]

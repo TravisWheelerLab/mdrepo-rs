@@ -120,7 +120,7 @@ fn run(args: Args) -> Result<()> {
                 authors: v.authors,
                 journal: v.journal,
                 volume: v.volume.to_integer().unwrap() as u32,
-                number: v.number.unwrap().to_string(),
+                number: v.number.map(|v| v.to_string().unwrap()),
                 year: v.year,
                 pages: v.pages,
                 doi: v.doi,
