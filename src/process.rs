@@ -22,7 +22,6 @@ use std::{
 use which::which;
 
 // --------------------------------------------------
-// Returns the JSON file for importing into the db
 pub fn process(args: &ProcessArgs) -> Result<()> {
     debug!("{args:?}");
 
@@ -53,26 +52,36 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
     let processed_files =
         make_processed_files(&meta_path, &input_dir, &processed_dir, script_dir)?;
 
-    let import_json =
-        make_import_json(&meta_path, &input_dir, script_dir, &processed_files, None)?;
+    let import_json = make_import_json(
+        &meta_path,
+        &input_dir,
+        script_dir,
+        &processed_files,
+        args.simulation_id,
+    )?;
 
     let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
     let import_script = script_dir.join("import_preprocessed.py");
     info!(r#"Import "{}""#, import_json.display());
     let out_file = &processed_dir.join("imported.json");
     let mut cmd = Command::new(&uv);
-    cmd.current_dir(script_dir).args([
-        "run",
-        import_script.to_string_lossy().as_ref(),
-        "--file",
-        import_json.to_string_lossy().as_ref(),
-        "--data-dir",
-        input_dir.to_string_lossy().as_ref(),
-        "--server",
-        &args.server.to_string(),
-        "--out-file",
-        out_file.to_string_lossy().as_ref(),
-    ]);
+    let mut import_args = vec![
+        "run".to_string(),
+        import_script.to_string_lossy().to_string(),
+        "--file".to_string(),
+        import_json.to_string_lossy().to_string(),
+        "--data-dir".to_string(),
+        input_dir.to_string_lossy().to_string(),
+        "--server".to_string(),
+        args.server.to_string(),
+        "--out-file".to_string(),
+        out_file.to_string_lossy().to_string(),
+    ];
+    if let Some(sim_id) = args.simulation_id {
+        import_args
+            .extend_from_slice(&["--simulation-id".to_string(), sim_id.to_string()]);
+    }
+    cmd.current_dir(script_dir).args(&import_args);
     debug!("Running {cmd:?}");
     let output = cmd.output()?;
 
@@ -96,20 +105,27 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
 
     let out_file = processed_dir.join("pushed.json");
     let mut cmd = Command::new(&uv);
-    cmd.current_dir(script_dir).args([
-        "run",
-        push_script.to_string_lossy().as_ref(),
-        "--file",
-        &import_result.filename,
-        "--simulation-id",
-        &import_result.simulation_id.to_string(),
-        "--server",
-        &args.server.to_string(),
-        "--data-dir",
-        input_dir.to_string_lossy().as_ref(),
-        "--out-file",
-        out_file.to_string_lossy().as_ref(),
-    ]);
+    let mut push_args = vec![
+        "run".to_string(),
+        push_script.to_string_lossy().to_string(),
+        "--file".to_string(),
+        import_result.filename,
+        "--simulation-id".to_string(),
+        import_result.simulation_id.to_string(),
+        "--server".to_string(),
+        args.server.to_string(),
+        "--data-dir".to_string(),
+        input_dir.to_string_lossy().to_string(),
+        "--out-file".to_string(),
+        out_file.to_string_lossy().to_string(),
+    ];
+
+    // We should remove existing "processed" directory
+    if args.simulation_id.is_some() {
+        push_args.push("--remove-processed-dir".to_string());
+    }
+
+    cmd.current_dir(script_dir).args(&push_args);
     debug!("Running {cmd:?}");
 
     let output = cmd.output()?;
