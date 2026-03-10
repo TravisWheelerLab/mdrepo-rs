@@ -81,6 +81,10 @@ pub struct ProcessArgs {
     /// Server
     #[arg(short, long, value_name = "SERVER", default_value = "staging")]
     pub server: Server,
+
+    /// Simulation ID
+    #[arg(long, value_name = "SIMULATION_ID")]
+    pub simulation_id: Option<u32>,
 }
 
 // --------------------------------------------------
@@ -125,6 +129,7 @@ pub struct ReprocessArgs {
     #[arg(short('S'), long, value_name = "SCRIPTS")]
     pub script_dir: Option<PathBuf>,
 
+    // TODO: Think of adding "server" to this path?
     /// Output directory for processed files
     #[arg(
         short,
