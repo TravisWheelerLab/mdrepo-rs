@@ -1,5 +1,6 @@
 use crate::{common::read_file, constants};
 use anyhow::{anyhow, bail, Result};
+use multiset::HashMultiSet;
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow::Borrowed,
@@ -130,6 +131,25 @@ impl Meta {
                 for message in handle_validation_error_kind(field, val) {
                     messages.push(message);
                 }
+            }
+        }
+
+        let mut file_count = HashMultiSet::new();
+        file_count.insert(self.trajectory_file_name.clone());
+        file_count.insert(self.topology_file_name.clone());
+        file_count.insert(self.structure_file_name.clone());
+        if let Some(addl_files) = &self.additional_files {
+            for file in addl_files {
+                file_count.insert(file.file_name.clone());
+            }
+        }
+
+        for filename in file_count.distinct_elements() {
+            let count = file_count.count_of(filename);
+            if count > 1 {
+                messages.push(format!(
+                    r#"Filename "{filename}" is duplicated {count} times"#
+                ));
             }
         }
 
