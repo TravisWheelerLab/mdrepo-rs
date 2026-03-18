@@ -93,8 +93,8 @@ pub struct ToTomlArgs {
 #[command(alias = "ch")]
 pub struct CheckArgs {
     /// Input filename or "-" for STDIN
-    #[arg(value_name = "FILE")]
-    pub filename: String,
+    #[arg(value_name = "FILE", num_args = 1..)]
+    pub filenames: Vec<String>,
 }
 
 // --------------------------------------------------
@@ -109,8 +109,16 @@ fn main() {
 fn run(args: Cli) -> Result<()> {
     match &args.command {
         Some(Command::Check(args)) => {
-            let meta = parse_file(&args.filename)?;
-            println!("{}", meta.check().join("\n"));
+            let num_files = args.filenames.len();
+            for filename in &args.filenames {
+                if num_files > 1 {
+                    println!("==> {filename} <==")
+                }
+                match parse_file(filename) {
+                    Ok(meta) => println!("{}", meta.check().join("\n")),
+                    Err(e) => println!("{e}"),
+                }
+            }
             ()
         }
         Some(Command::Example(args)) => {
