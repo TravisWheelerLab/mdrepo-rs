@@ -632,6 +632,7 @@ mod tests {
             r#"external_links[1].url: value "zenodo.org/records/7711953" invalid"#,
             r#"temperature_kelvin: value 0 must be >= 275 and <= 700"#,
             r#"short_description: value " " invalid"#,
+            r#"Filename " " is duplicated 4 times"#,
         ];
         assert_eq!(errors.len(), expected.len());
         for message in expected {
