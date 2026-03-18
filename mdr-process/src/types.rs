@@ -1,5 +1,5 @@
-use crate::metadata;
 use clap::{builder::PossibleValue, Parser, ValueEnum};
+use libmdrepo::metadata;
 use serde::{Deserialize, Serialize};
 use std::{fmt, path::PathBuf};
 

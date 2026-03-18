@@ -1,13 +1,12 @@
 use anyhow::Result;
 use clap::Parser;
-use mdr::{
-    metadata::Meta,
+use libmdrepo::metadata::Meta;
+use mdr_process::{
     process, reprocess, ticket,
     types::{Cli, Command, LogLevel},
     validate,
 };
 use std::{fs::File, io::BufWriter};
-//use validator::Validate;
 
 // --------------------------------------------------
 fn main() {
@@ -36,7 +35,7 @@ fn run(args: Cli) -> Result<()> {
 
     match &args.command {
         Some(Command::Process(args)) => {
-            //validate::validate(&args.dirname)?;
+            validate::validate(&args.dirname)?;
             process::process(args)?;
             println!("Success");
             Ok(())

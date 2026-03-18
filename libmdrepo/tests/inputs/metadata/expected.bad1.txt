@@ -1,0 +1,22 @@
+additional_files[1].description: value " " invalid
+additional_files[1].file_name: value " " invalid
+additional_files[1].file_type: value " " invalid
+contributors[1].email: value "alex" invalid
+contributors[1].orcid: value "0000-2819-749X" invalid
+dois: value ["1038/s43588-024-00627-2"] invalid
+external_links[1].label: value " " invalid
+external_links[1].url: value "zenodo.org/records/7711953" invalid
+forcefield: value " " invalid
+integration_timestep_fs: value 2000 must be >= 1 and <= 5
+lead_contributor_orcid: value "0000-0001-9961-144" invalid
+pdb_id: value "5am" invalid
+short_description: value " " invalid
+solvents[1].name: value " " invalid
+structure_file_name: value " " invalid
+temperature_kelvin: value 0 must be >= 275 and <= 700
+toml_version: value 4 must be = 2
+topology_file_name: value " " invalid
+trajectory_file_name: value " " invalid
+water.density_kg_m3: value 1000000.0 must be >= 900.0 and <= 1100.0
+water.model: value "XYZ" invalid
+Filename " " is duplicated 4 times

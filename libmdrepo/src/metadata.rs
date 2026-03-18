@@ -133,6 +133,7 @@ impl Meta {
                 }
             }
         }
+        messages.sort();
 
         let mut file_count = HashMultiSet::new();
         file_count.insert(self.trajectory_file_name.clone());

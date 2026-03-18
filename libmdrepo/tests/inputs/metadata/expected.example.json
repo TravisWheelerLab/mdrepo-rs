@@ -1,0 +1,57 @@
+{
+  "lead_contributor_orcid": "0000-0000-0000-123X",
+  "trajectory_file_name": "traj.xtc",
+  "structure_file_name": "struct.pdb",
+  "topology_file_name": "topology.gro",
+  "temperature_kelvin": 300,
+  "integration_timestep_fs": 2,
+  "short_description": "short description",
+  "software_name": "GROMACS",
+  "software_version": "2024.5",
+  "description": "longer description",
+  "toml_version": 2,
+  "user_accession": "ABC123",
+  "run_commands": "",
+  "forcefield": "CHARMM36m",
+  "forcefield_comments": "ligand params: CGenFF and SwissParam",
+  "protonation_method": "PropKa",
+  "replicate_id": "MyReplicateGroupABC",
+  "pdb_id": "5emo",
+  "uniprot_ids": [
+    "A0A0H2UWN8",
+    "S8G8I1"
+  ],
+  "water": {
+    "model": "TIP3P",
+    "density_kg_m3": 986.0
+  },
+  "ligands": [
+    {
+      "name": "Foropafant",
+      "smiles": "CC(C)C1=CC(=C(C(=C1)C(C)C)C2=CSC(=N2)N(CCN(C)C)CC3=CN=CC=C3)C(C)C"
+    }
+  ],
+  "solvents": [
+    {
+      "name": "Na",
+      "concentration_mol_liter": 0.15
+    }
+  ],
+  "dois": [
+    "10.1017/j.str.2019.08.032"
+  ],
+  "external_links": [
+    {
+      "url": "http://aol.com",
+      "label": "My Link"
+    }
+  ],
+  "contributors": [
+    {
+      "name": "Barbara McClintock",
+      "orcid": "0000-0002-6897-9608",
+      "email": "barb@cshl.edu",
+      "institution": "Cold Spring Harbor Laboratory"
+    }
+  ]
+}

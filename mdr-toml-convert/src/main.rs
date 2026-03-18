@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use clap::Parser;
-use mdr::{
+use libmdrepo::{
     metadata::{self, Meta},
     metadatav1::{self, MetaV1},
 };

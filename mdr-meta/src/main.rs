@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{builder::PossibleValue, Parser, ValueEnum};
-use mdr::metadata::Meta;
+use libmdrepo::metadata::Meta;
 use std::{
     fs::File,
     io::{self, Write},

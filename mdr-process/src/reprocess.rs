@@ -1,10 +1,9 @@
 use crate::{
-    common::file_exists,
-    metadata::Meta,
     process,
     types::{ProcessArgs, ReprocessArgs},
 };
 use anyhow::{bail, Result};
+use libmdrepo::{common::file_exists, metadata::Meta};
 use log::{debug, info};
 use std::{
     fs,
