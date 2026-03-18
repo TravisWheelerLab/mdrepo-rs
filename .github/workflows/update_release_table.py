@@ -90,7 +90,7 @@ def extract_os_arch_from_filename(filename) -> Optional[ReleaseInfo]:
         stem = match.group(1)
         _, arch, os = stem.split("-", 2)
 
-        if os == "macos-latest" or os == "apple-darwin":
+        if os in ["macos-latest", "apple-darwin", "x86_64-apple-darwin"]:
             os = "MacOS"
         elif os == "ubuntu-latest":
             os = "Ubuntu"
@@ -130,7 +130,7 @@ def generate_markdown_table(release) -> str:
     table += (
         "\n***(For Macs) To address the Mac binary signing restriction, use the following command:\n"
         "\n```\n"
-        "sudo xattr -dr com.apple.quarantine <path to file>/mdr\n"
+        "sudo xattr -dr com.apple.quarantine <path to file>/mdr-meta\n"
         "```\n"
     )
 
