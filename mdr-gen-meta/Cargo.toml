@@ -1,0 +1,11 @@
+[package]
+name = "mdr-gen-meta"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+mdr-db = { path = "../mdr-db" }
+libmdrepo = { path = "../libmdrepo" }
+anyhow = "1.0.102"
+clap = { version = "4.6.0", features = ["derive"] }
+dotenvy = "0.15.7"

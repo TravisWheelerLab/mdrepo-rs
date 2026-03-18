@@ -1,3 +1,5 @@
 [workspace]
-members = ["libmdrepo","mdr-meta", "mdr-toml-convert", "mdr-process"]
+members = [
+    "libmdrepo","mdr-meta", "mdr-toml-convert", "mdr-process", "mdr-gen-meta", "mdr-db"
+]
 resolver = "2"
