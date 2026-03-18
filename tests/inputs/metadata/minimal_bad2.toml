@@ -2,7 +2,7 @@ lead_contributor_orcid = "0000-0001-9961-144X"
 
 trajectory_file_name = "5aom.xtc"
 
-structure_file_name = "5aom_cleaned.pdb"
+structure_file_name = "5aom.xtc"
 
 topology_file_name = "5aom_gromacs_cleaned.top"
 
