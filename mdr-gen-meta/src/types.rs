@@ -15,14 +15,9 @@ pub struct Args {
     #[arg(short, long, value_name = "DSN")]
     pub dsn: Option<String>,
 
-    /// Output filename
-    #[arg(
-        short,
-        long,
-        value_name = "FILE",
-        default_value = "mdrepo-metadata.toml"
-    )]
-    pub out_file: String,
+    /// Output filename ("-" for STDOUT)
+    #[arg(short, long, value_name = "FILE", default_value = "-")]
+    pub outfile: String,
 
     /// Output format
     #[arg(short, long, value_name = "FORMAT")]
