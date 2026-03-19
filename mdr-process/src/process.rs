@@ -472,6 +472,7 @@ pub fn make_import_json(
         size: meta_path.metadata()?.len(),
         md5_sum: get_md5(meta_path)?,
         description: None,
+        is_primary: None,
     }];
 
     for (file_type, filename) in &[
@@ -486,6 +487,7 @@ pub fn make_import_json(
             size: local_path.metadata()?.len(),
             md5_sum: get_md5(&local_path)?,
             description: None,
+            is_primary: Some(true),
         })
     }
 
@@ -505,6 +507,7 @@ pub fn make_import_json(
                     size: path.metadata()?.len(),
                     md5_sum,
                     description: file.description.clone(),
+                    is_primary: None,
                 })
             }
         }
@@ -527,6 +530,7 @@ pub fn make_import_json(
             size: path.metadata()?.len(),
             md5_sum: get_md5(path)?,
             description: None,
+            is_primary: None,
         })
     }
 
