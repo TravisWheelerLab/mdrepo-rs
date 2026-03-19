@@ -414,18 +414,19 @@ pub struct ExportSimulation {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MdFile {
     pub name: String,
-    pub file_type: String,
-    pub size: u64,
-    pub md5_sum: String,
-    pub description: Option<String>,
-}
 
-// --------------------------------------------------
-//#[derive(Debug)]
-//pub struct Import {
-//    pub dirname: PathBuf,
-//    pub import_json: PathBuf,
-//}
+    pub file_type: String,
+
+    pub size: u64,
+
+    pub md5_sum: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_primary: Option<bool>,
+}
 
 // --------------------------------------------------
 #[derive(Debug, Deserialize, Serialize)]
