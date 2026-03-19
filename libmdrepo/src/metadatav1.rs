@@ -372,7 +372,7 @@ pub struct Water {
     pub model: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub density: Option<f32>,
+    pub density: Option<f64>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub water_density_units: Option<String>,
