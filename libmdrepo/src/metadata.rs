@@ -375,7 +375,7 @@ pub struct Water {
     #[validate(
        range(min = constants::WATER_DENSITY_MIN, max = constants::WATER_DENSITY_MAX)
     )]
-    pub density_kg_m3: f32,
+    pub density_kg_m3: f64,
 }
 
 fn validate_dois(dois: &Vec<String>) -> Result<(), ValidationError> {
