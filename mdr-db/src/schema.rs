@@ -270,6 +270,7 @@ diesel::table! {
         local_file_path -> Varchar,
         file_size_bytes -> Nullable<Int8>,
         md5_hash -> Nullable<Varchar>,
+        is_primary -> Bool,
     }
 }
 

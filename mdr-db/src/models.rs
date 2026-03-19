@@ -734,6 +734,7 @@ pub struct UploadedFile {
     pub local_file_path: String,
     pub file_size_bytes: Option<i64>,
     pub md5_hash: Option<String>,
+    pub is_primary: bool,
 }
 
 #[derive(Debug, Insertable, Deserialize)]
@@ -746,6 +747,7 @@ pub struct NewUploadedFile {
     pub local_file_path: String,
     pub file_size_bytes: Option<i64>,
     pub md5_hash: Option<String>,
+    pub is_primary: bool,
 }
 
 #[derive(Debug, AsChangeset, Default, Deserialize)]
@@ -758,6 +760,7 @@ pub struct UploadedFileUpdate {
     pub local_file_path: Option<String>,
     pub file_size_bytes: Option<Option<i64>>,
     pub md5_hash: Option<Option<String>>,
+    pub is_primary: Option<bool>,
 }
 
 // ── md_user ───────────────────────────────────────────────────────────────────
