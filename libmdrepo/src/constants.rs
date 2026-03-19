@@ -19,8 +19,8 @@ pub static NOT_WHITESPACE_REGEX: LazyLock<Regex> =
 
 pub const SOLVENT_CONCENTRATION_MIN: f64 = 0.;
 pub const SOLVENT_CONCENTRATION_MAX: f64 = 1.;
-pub const WATER_DENSITY_MIN: f32 = 900.;
-pub const WATER_DENSITY_MAX: f32 = 1100.;
+pub const WATER_DENSITY_MIN: f64 = 900.;
+pub const WATER_DENSITY_MAX: f64 = 1100.;
 pub const METADATA_TOML_VERSION: u32 = 2;
 pub const TEMP_K_MIN: u32 = 275;
 pub const TEMP_K_MAX: u32 = 700;
