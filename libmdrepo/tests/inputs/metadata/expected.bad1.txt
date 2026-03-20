@@ -12,10 +12,13 @@ lead_contributor_orcid: value "0000-0001-9961-144" invalid
 pdb_id: value "5am" invalid
 short_description: value " " invalid
 solvents[1].name: value " " invalid
+structure_file_name: Filename is missing extension
 structure_file_name: value " " invalid
 temperature_kelvin: value 0 must be >= 275 and <= 700
 toml_version: value 4 must be = 2
+topology_file_name: Filename is missing extension
 topology_file_name: value " " invalid
+trajectory_file_name: Filename is missing extension
 trajectory_file_name: value " " invalid
 water.density_kg_m3: value 1000000.0 must be >= 900.0 and <= 1100.0
 water.model: value "XYZ" invalid

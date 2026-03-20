@@ -37,7 +37,6 @@ fn run(args: RunArgs) -> Result<()> {
     }
     dbg!(&cmd);
     let output = cmd.output()?;
-    dbg!(&output);
 
     if let Some(expected_file) = args.stdout {
         let expected = fs::read_to_string(&input_path(expected_file))?;
@@ -78,7 +77,7 @@ fn check_bad1() -> Result<()> {
 #[test]
 fn example_toml() -> Result<()> {
     run(RunArgs {
-        args: &["example".to_string()],
+        args: &["eg".to_string()],
         stdout: Some("expected.example.toml"),
         stderr: None,
     })
@@ -88,7 +87,7 @@ fn example_toml() -> Result<()> {
 #[test]
 fn example_json() -> Result<()> {
     run(RunArgs {
-        args: &["example".to_string(), "-f".to_string(), "json".to_string()],
+        args: &["eg".to_string(), "-f".to_string(), "json".to_string()],
         stdout: Some("expected.example.json"),
         stderr: None,
     })

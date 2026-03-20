@@ -27,8 +27,8 @@
   },
   "additional_files": [
     {
-      "file_type": "Structure",
       "file_name": "5aom_gromacs_cleaned.gro",
+      "file_type": "Structure",
       "description": ".gro format of the structure file"
     }
   ],

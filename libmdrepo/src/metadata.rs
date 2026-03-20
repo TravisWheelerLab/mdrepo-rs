@@ -133,8 +133,45 @@ impl Meta {
                 }
             }
         }
+
+        // Check file extensions of required files
+        let ext_checks = [
+            (
+                "trajectory_file_name",
+                &self.trajectory_file_name,
+                constants::TRAJECTORY_FILE_EXTS,
+            ),
+            (
+                "structure_file_name",
+                &self.structure_file_name,
+                constants::STRUCTURE_FILE_EXTS,
+            ),
+            (
+                "topology_file_name",
+                &self.topology_file_name,
+                constants::TOPOLOGY_FILE_EXTS,
+            ),
+        ];
+
+        for (field, filename, valid_exts) in ext_checks {
+            if let Some(ext) = Path::new(filename).extension() {
+                let ext = ext.to_string_lossy().to_string();
+                if !valid_exts.contains(&ext.as_str()) {
+                    messages.push(format!(
+                        r#"{field}: Invalid extension "{ext}"; choose from {}"#,
+                        valid_exts.join(", ")
+                    ))
+                }
+            } else {
+                messages.push(format!(r#"{field}: Filename is missing extension"#))
+            }
+        }
+
+        // All the messages up to this point start with "field_name: "
+        // , so sort to put all the field errors together.
         messages.sort();
 
+        // Ensure that each filename is present only once
         let mut file_count = HashMultiSet::new();
         file_count.insert(self.trajectory_file_name.clone());
         file_count.insert(self.topology_file_name.clone());
@@ -154,6 +191,7 @@ impl Meta {
             }
         }
 
+        // Special check for GROMACS with only a ".top" file
         let is_gromacs = self.software_name.to_lowercase().contains("gromacs");
         if is_gromacs
             && Path::new(&self.topology_file_name).extension()
@@ -176,12 +214,13 @@ impl Meta {
                 .any(|ext| exts.contains(&ext.to_string()))
             {
                 messages.push(
-                    "GROMACS topology \".top\" file requires \
+                    "topology_file_name: GROMACS topology \".top\" file requires \
                     additional \".tpr\" or \".gro\""
                         .to_string(),
                 );
             }
         }
+
         messages
     }
 
@@ -222,14 +261,14 @@ impl Meta {
     pub fn example() -> Self {
         Meta {
             mdrepo_id: None,
-            lead_contributor_orcid: "0000-0000-0000-123X".to_string(),
+            lead_contributor_orcid: "0000-0000-0000-0000".to_string(),
             trajectory_file_name: "traj.xtc".to_string(),
             structure_file_name: "struct.pdb".to_string(),
             topology_file_name: "topology.gro".to_string(),
             temperature_kelvin: 300,
             integration_timestep_fs: 2,
-            short_description: "short description".to_string(),
-            description: Some("longer description".to_string()),
+            short_description: "<short_description> (required)".to_string(),
+            description: Some("<longer description>".to_string()),
             software_name: "GROMACS".to_string(),
             software_version: "2024.5".to_string(),
             toml_version: Some(2),
@@ -238,7 +277,7 @@ impl Meta {
                 url: "http://aol.com".to_string(),
                 label: Some("My Link".to_string()),
             }]),
-            run_commands: Some("".to_string()),
+            run_commands: Some("gmx_mpi mdrun".to_string()),
             additional_files: None,
             forcefield: Some("CHARMM36m".to_string()),
             forcefield_comments: Some(
@@ -272,6 +311,39 @@ impl Meta {
             }]),
         }
     }
+
+    pub fn example_minimal() -> Self {
+        Meta {
+            mdrepo_id: None,
+            lead_contributor_orcid: "0000-0000-0000-0000".to_string(),
+            trajectory_file_name: "traj.xtc".to_string(),
+            structure_file_name: "struct.pdb".to_string(),
+            topology_file_name: "topology.gro".to_string(),
+            temperature_kelvin: 300,
+            integration_timestep_fs: 2,
+            short_description: "<short_description> (required)".to_string(),
+            description: None,
+            software_name: "GROMACS".to_string(),
+            software_version: "2024.5".to_string(),
+            toml_version: Some(2),
+            user_accession: None,
+            external_links: None,
+            run_commands: None,
+            additional_files: None,
+            forcefield: None,
+            forcefield_comments: None,
+            protonation_method: None,
+            replicate_id: None,
+            pdb_id: None,
+            uniprot_ids: None,
+            water: None,
+            ligands: None,
+            solvents: None,
+            papers: None,
+            dois: None,
+            contributors: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Validate)]
@@ -287,10 +359,10 @@ pub struct ExternalLink {
 #[derive(Debug, Deserialize, Serialize, Validate)]
 pub struct AdditionalFile {
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
-    pub file_type: String,
+    pub file_name: String,
 
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
-    pub file_name: String,
+    pub file_type: String,
 
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -611,27 +683,30 @@ mod tests {
         let meta = Meta::from_file(&PathBuf::from(TOML_BAD1))?;
         let errors = &meta.check();
         let expected = vec![
-            r#"structure_file_name: value " " invalid"#,
-            r#"trajectory_file_name: value " " invalid"#,
-            r#"pdb_id: value "5am" invalid"#,
             r#"additional_files[1].description: value " " invalid"#,
             r#"additional_files[1].file_name: value " " invalid"#,
             r#"additional_files[1].file_type: value " " invalid"#,
-            r#"contributors[1].orcid: value "0000-2819-749X" invalid"#,
             r#"contributors[1].email: value "alex" invalid"#,
-            r#"water.density_kg_m3: value 1000000.0 must be >= 900.0 and <= 1100.0"#,
-            r#"water.model: value "XYZ" invalid"#,
-            r#"toml_version: value 4 must be = 2"#,
-            r#"forcefield: value " " invalid"#,
-            r#"solvents[1].name: value " " invalid"#,
-            r#"topology_file_name: value " " invalid"#,
-            r#"lead_contributor_orcid: value "0000-0001-9961-144" invalid"#,
-            r#"integration_timestep_fs: value 2000 must be >= 1 and <= 5"#,
+            r#"contributors[1].orcid: value "0000-2819-749X" invalid"#,
             r#"dois: value ["1038/s43588-024-00627-2"] invalid"#,
             r#"external_links[1].label: value " " invalid"#,
             r#"external_links[1].url: value "zenodo.org/records/7711953" invalid"#,
-            r#"temperature_kelvin: value 0 must be >= 275 and <= 700"#,
+            r#"forcefield: value " " invalid"#,
+            r#"integration_timestep_fs: value 2000 must be >= 1 and <= 5"#,
+            r#"lead_contributor_orcid: value "0000-0001-9961-144" invalid"#,
+            r#"pdb_id: value "5am" invalid"#,
             r#"short_description: value " " invalid"#,
+            r#"solvents[1].name: value " " invalid"#,
+            r#"structure_file_name: Filename is missing extension"#,
+            r#"structure_file_name: value " " invalid"#,
+            r#"temperature_kelvin: value 0 must be >= 275 and <= 700"#,
+            r#"toml_version: value 4 must be = 2"#,
+            r#"topology_file_name: Filename is missing extension"#,
+            r#"topology_file_name: value " " invalid"#,
+            r#"trajectory_file_name: Filename is missing extension"#,
+            r#"trajectory_file_name: value " " invalid"#,
+            r#"water.density_kg_m3: value 1000000.0 must be >= 900.0 and <= 1100.0"#,
+            r#"water.model: value "XYZ" invalid"#,
             r#"Filename " " is duplicated 4 times"#,
         ];
         assert_eq!(errors.len(), expected.len());

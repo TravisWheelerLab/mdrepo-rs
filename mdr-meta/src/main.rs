@@ -1,106 +1,21 @@
-use anyhow::Result;
-use clap::{builder::PossibleValue, Parser, ValueEnum};
-use libmdrepo::metadata::Meta;
+use anyhow::{bail, Result};
+use clap::Parser;
+use libmdrepo::{
+    constants::{STRUCTURE_FILE_EXTS, TOPOLOGY_FILE_EXTS, TRAJECTORY_FILE_EXTS},
+    metadata::{AdditionalFile, Contributor, Meta},
+};
+use mdr_meta::types::{Cli, Command, FileFormat};
 use std::{
-    fs::File,
+    env,
+    fs::{self, File},
     io::{self, Write},
     path::{Path, PathBuf},
 };
 
 // --------------------------------------------------
-#[derive(Parser, Debug)]
-#[command(arg_required_else_help = true, version, about)]
-pub struct Cli {
-    #[command(subcommand)]
-    pub command: Option<Command>,
-}
-
-// --------------------------------------------------
-#[derive(Parser, Debug)]
-pub enum Command {
-    /// Check TOML
-    Check(CheckArgs),
-
-    /// Generate a full example file
-    Example(ExampleArgs),
-
-    /// Print metadata in JSON format
-    ToJson(ToJsonArgs),
-
-    /// Print metadata in TOML format
-    ToToml(ToTomlArgs),
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub enum FileFormat {
-    Json,
-    Toml,
-}
-
-impl ValueEnum for FileFormat {
-    fn value_variants<'a>() -> &'a [Self] {
-        &[FileFormat::Json, FileFormat::Toml]
-    }
-
-    fn to_possible_value<'a>(&self) -> Option<PossibleValue> {
-        Some(match self {
-            FileFormat::Json => PossibleValue::new("json"),
-            FileFormat::Toml => PossibleValue::new("toml"),
-        })
-    }
-}
-
-#[derive(Debug, Parser)]
-pub struct ExampleArgs {
-    /// Output format
-    #[arg(
-        short,
-        long,
-        value_name = "FORMAT",
-        value_parser(clap::value_parser!(FileFormat)),
-    )]
-    format: Option<FileFormat>,
-
-    /// Output filename
-    #[arg(short, long, value_name = "OUTPUT", default_value = "-")]
-    outfile: String,
-}
-
-#[derive(Debug, Parser)]
-pub struct ToJsonArgs {
-    /// Input filename
-    #[arg(value_name = "FILE")]
-    filename: String,
-
-    /// Output filename
-    #[arg(short, long, value_name = "OUTPUT", default_value = "-")]
-    outfile: String,
-}
-
-#[derive(Debug, Parser)]
-pub struct ToTomlArgs {
-    /// Input filename
-    #[arg(value_name = "FILE")]
-    filename: String,
-
-    /// Output filename
-    #[arg(short, long, value_name = "OUTPUT", default_value = "-")]
-    outfile: String,
-}
-
-// --------------------------------------------------
-#[derive(Parser, Debug)]
-#[command(alias = "ch")]
-pub struct CheckArgs {
-    /// Input filename or "-" for STDIN
-    #[arg(value_name = "FILE", num_args = 1..)]
-    pub filenames: Vec<String>,
-}
-
-// --------------------------------------------------
 fn main() {
     if let Err(e) = run(Cli::parse()) {
-        eprintln!("{e}");
+        eprintln!("Error: {e}");
         std::process::exit(1);
     }
 }
@@ -121,10 +36,28 @@ fn run(args: Cli) -> Result<()> {
             }
             ()
         }
-        Some(Command::Example(args)) => {
+        Some(Command::Eg(args)) => {
             let mut out_file = open_outfile(&args.outfile)?;
             let format = args.format.clone().unwrap_or(guess_format(&args.outfile));
-            let meta = Meta::example();
+            let meta = if args.minimal {
+                Meta::example_minimal()
+            } else {
+                Meta::example()
+            };
+            write!(
+                out_file,
+                "{}",
+                if format == FileFormat::Json {
+                    meta.to_json()?
+                } else {
+                    meta.to_toml()?
+                }
+            )?;
+        }
+        Some(Command::Gen(args)) => {
+            let mut out_file = open_outfile(&args.outfile)?;
+            let format = args.format.clone().unwrap_or(guess_format(&args.outfile));
+            let meta = meta_from_dir(args.directory.clone())?;
             write!(
                 out_file,
                 "{}",
@@ -175,7 +108,13 @@ fn parse_file(filename: &str) -> Result<Meta> {
 fn open_outfile(filename: &str) -> Result<Box<dyn Write>> {
     match filename {
         "-" => Ok(Box::new(io::stdout())),
-        out_name => Ok(Box::new(File::create(out_name)?)),
+        out_name => {
+            if Path::new(out_name).exists() {
+                bail!(r#"--outfile "{filename}" already exists"#);
+            } else {
+                Ok(Box::new(File::create(out_name)?))
+            }
+        }
     }
 }
 
@@ -195,4 +134,75 @@ fn guess_format(filename: &str) -> FileFormat {
             _ => FileFormat::Toml,
         }
     }
+}
+
+// --------------------------------------------------
+fn meta_from_dir(dir: Option<String>) -> Result<Meta> {
+    let dir = dir.map_or(env::current_dir()?, |val| PathBuf::from(&val));
+    let mut trajectory: Option<String> = None;
+    let mut structure: Option<String> = None;
+    let mut topology: Option<String> = None;
+    let mut additional_files = vec![];
+
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        let file_name = path.file_name().unwrap().to_string_lossy().to_string();
+        match path.extension() {
+            Some(ext) => {
+                let ext = ext.to_string_lossy().to_string();
+                if TRAJECTORY_FILE_EXTS.contains(&ext.as_str()) {
+                    trajectory = Some(file_name);
+                } else if STRUCTURE_FILE_EXTS.contains(&ext.as_str()) {
+                    structure = Some(file_name);
+                } else if TOPOLOGY_FILE_EXTS.contains(&ext.as_str()) {
+                    topology = Some(file_name);
+                } else {
+                    additional_files.push(file_name);
+                }
+            }
+            _ => additional_files.push(file_name),
+        }
+    }
+    additional_files.sort();
+
+    let mut meta = Meta::example_minimal();
+
+    meta.trajectory_file_name =
+        trajectory.unwrap_or("<trajectory> (required)".to_string());
+
+    meta.structure_file_name =
+        structure.unwrap_or("<structure> (required)".to_string());
+
+    meta.topology_file_name = topology.unwrap_or("<topology> (required)".to_string());
+
+    meta.software_name = "<software_name> (required)".to_string();
+
+    meta.software_version = "<software_version> (required)".to_string();
+
+    meta.contributors = Some(vec![Contributor {
+        name: "<Your Name>".to_string(),
+        institution: Some("<institution> (optional)".to_string()),
+        email: Some("<email> (optional)".to_string()),
+        orcid: Some("<orcid> (optional)".to_string()),
+    }]);
+
+    if !additional_files.is_empty() {
+        meta.additional_files = Some(
+            additional_files
+                .iter()
+                .map(|name| AdditionalFile {
+                    file_name: name.to_string(),
+                    file_type: "<file_type> (required)".to_string(),
+                    description: Some("<description> (optional)".to_string()),
+                })
+                .collect::<Vec<_>>(),
+        )
+    };
+
+    Ok(meta)
 }
