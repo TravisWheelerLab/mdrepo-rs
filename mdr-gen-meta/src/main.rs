@@ -92,28 +92,53 @@ fn run(args: Args) -> Result<()> {
     let mut trajectory_file_name: Option<String> = None;
     let mut structure_file_name: Option<String> = None;
     let mut topology_file_name: Option<String> = None;
-    for up_file in up_files.iter().filter(|f| f.is_primary) {
-        match up_file.file_type.as_str() {
-            "Trajectory" => trajectory_file_name = Some(up_file.filename.clone()),
-            "Structure" => structure_file_name = Some(up_file.filename.clone()),
-            "Topology" => topology_file_name = Some(up_file.filename.clone()),
-            _ => additional_files.push(metadata::AdditionalFile {
-                file_name: up_file.filename.clone(),
-                file_type: up_file.file_type.clone(),
-                description: up_file.description.clone(),
-            }),
+
+    for file in up_files {
+        if file.is_primary {
+            match file.file_type.as_str() {
+                "Trajectory" => {
+                    if trajectory_file_name.is_none() {
+                        trajectory_file_name = Some(file.filename.clone())
+                    } else {
+                        bail!("Found multiple primary trajectory files");
+                    }
+                }
+                "Structure" => {
+                    if structure_file_name.is_none() {
+                        structure_file_name = Some(file.filename.clone())
+                    } else {
+                        bail!("Found multiple primary structure files");
+                    }
+                }
+                "Topology" => {
+                    if topology_file_name.is_none() {
+                        topology_file_name = Some(file.filename.clone())
+                    } else {
+                        bail!("Found multiple primary topology files");
+                    }
+                }
+                _ => bail!(
+                    r#"Primary file type "{}" is not Trajectory/Structure/Topology"#,
+                    file.file_type
+                ),
+            }
+        } else {
+            additional_files.push(metadata::AdditionalFile {
+                file_name: file.filename.clone(),
+                file_type: file.file_type.clone(),
+                description: file.description.clone(),
+            })
         }
     }
 
-    if ![
-        &trajectory_file_name,
-        &structure_file_name,
-        &topology_file_name,
-    ]
-    .iter()
-    .all(|val| val.is_some())
-    {
-        bail!("Missing one of required files!")
+    for (field, val) in [
+        ("trajectory_file_name", &trajectory_file_name),
+        ("structure_file_name", &structure_file_name),
+        ("topology_file_name", &topology_file_name),
+    ] {
+        if val.is_none() {
+            bail!(r#""{field}" has no value"#)
+        }
     }
 
     let (_, ligands_res) =
@@ -257,6 +282,11 @@ fn run(args: Args) -> Result<()> {
         external_links,
         contributors,
     };
+
+    let errors = meta.check();
+    if !errors.is_empty() {
+        bail!("Errors!\n{}", errors.join("\n"));
+    }
 
     let mut out_file = open_outfile(&args.outfile)?;
     let format = args.format.clone().unwrap_or(guess_format(&args.outfile));
