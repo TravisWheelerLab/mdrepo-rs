@@ -4,6 +4,7 @@ use crate::types::{
     UniprotEntry, UniprotResponse,
 };
 use anyhow::{anyhow, bail, Result};
+use dotenvy::dotenv;
 use libmdrepo::{
     common::{file_exists, get_md5, read_file},
     metadata::{self, Meta},
@@ -24,9 +25,7 @@ use which::which;
 // --------------------------------------------------
 pub fn process(args: &ProcessArgs) -> Result<()> {
     debug!("{args:?}");
-
-    // It's OK if there's no .env
-    let _ = dotenv::dotenv();
+    dotenv().ok();
     let input_dir = path::absolute(&args.dirname)?;
     let processed_dir = args
         .out_dir
@@ -402,19 +401,6 @@ pub fn sample_trajectory(
 
     Ok(())
 }
-
-// --------------------------------------------------
-//pub fn db_connection(server: &Server) -> Result<postgres::Client> {
-//    dotenv().ok();
-//    let env_key = match server {
-//        Server::Production => "PRODUCTION_DB_URL",
-//        Server::Staging => "STAGING_DB_URL",
-//    };
-//    dbg!(&env_key);
-//    let db_url = env::var(env_key).expect(&format!("{env_key} must be set"));
-//    postgres::Client::connect(&db_url, postgres::NoTls)
-//        .map_err(|_| anyhow!("Failed db connection"))
-//}
 
 // --------------------------------------------------
 pub fn make_import_json(

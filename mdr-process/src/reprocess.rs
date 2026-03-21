@@ -3,6 +3,7 @@ use crate::{
     types::{ProcessArgs, ReprocessArgs},
 };
 use anyhow::{bail, Result};
+use dotenvy::dotenv;
 use libmdrepo::{common::file_exists, metadata::Meta};
 use log::{debug, info};
 use std::{
@@ -13,24 +14,27 @@ use std::{
 
 // --------------------------------------------------
 pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
-    let _ = dotenv::dotenv();
+    dotenv().ok();
     let simulation_id = args.simulation_id;
     let mdrepo_id = format!("MDR{simulation_id:08}");
     debug!("Reprocessing simulation ID {mdrepo_id}");
 
     let data_dir = &args.work_dir.join(&mdrepo_id);
     if !data_dir.is_dir() {
-        fs::create_dir_all(&args.work_dir)?;
+        fs::create_dir_all(&data_dir)?;
     }
 
     let server = &args.server;
     let irods_dir =
         format!("/iplant/home/shared/mdrepo/{server}/release/{mdrepo_id}/original");
     let irods_dir = Path::new(&irods_dir);
+    debug!(r#"irods_dir = "{}""#, irods_dir.display());
 
-    let meta_path = data_dir.join("mdrepo-metadata.toml");
-    let meta = Meta::from_file(&meta_path)?;
+    let meta_filename = "mdrepo-metadata.toml";
+    let meta_local_path = data_dir.join(meta_filename);
+    irods_fetch(&irods_dir.join(meta_filename), &meta_local_path)?;
 
+    let meta = Meta::from_file(&meta_local_path)?;
     for filename in &[
         &meta.trajectory_file_name,
         &meta.structure_file_name,
@@ -67,21 +71,26 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
 
 // --------------------------------------------------
 fn irods_fetch(irods_path: &Path, local_path: &PathBuf) -> Result<()> {
-    if !file_exists(local_path) {
-        debug!(
-            r#"Get "{}" -> "{}""#,
-            irods_path.display(),
-            local_path.display()
-        );
-        let cmd = Command::new("gocmd")
-            .args([
-                "get",
-                irods_path.to_string_lossy().as_ref(),
-                local_path.to_string_lossy().as_ref(),
-            ])
-            .output()?;
-        if !cmd.status.success() {
-            bail!(str::from_utf8(&cmd.stderr)?.to_string());
+    debug!(
+        r#"Get "{}" -> "{}""#,
+        irods_path.display(),
+        local_path.display()
+    );
+
+    if file_exists(local_path) {
+        debug!("Already downloaded");
+    } else {
+        let mut cmd = Command::new("gocmd");
+        cmd.args([
+            "get",
+            irods_path.to_string_lossy().as_ref(),
+            local_path.to_string_lossy().as_ref(),
+        ]);
+        debug!("Running {cmd:?}");
+        let output = cmd.output()?;
+
+        if !output.status.success() {
+            bail!(str::from_utf8(&output.stderr)?.to_string());
         }
     }
     Ok(())
