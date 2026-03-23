@@ -122,11 +122,11 @@ pub struct TicketArgs {
 #[command(alias = "re")]
 pub struct ReprocessArgs {
     /// Simulation ID
-    #[arg(value_name = "INT")]
+    #[arg(short, long, value_name = "INT")]
     pub simulation_id: u32,
 
     /// Script directory
-    #[arg(short('S'), long, value_name = "SCRIPTS")]
+    #[arg(long, value_name = "SCRIPTS")]
     pub script_dir: Option<PathBuf>,
 
     // TODO: Think of adding "server" to this path?
@@ -144,7 +144,7 @@ pub struct ReprocessArgs {
     pub json_dir: Option<PathBuf>,
 
     /// Server
-    #[arg(short, long, value_name = "SERVER", default_value = "staging")]
+    #[arg(short('S'), long, value_name = "SERVER", default_value = "staging")]
     pub server: Server,
 }
 

@@ -7,7 +7,7 @@ use crate::schema::*;
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 fn limit(n: Option<i64>) -> i64 {
-    n.unwrap_or(20).min(1000)
+    n.unwrap_or(200).min(1000)
 }
 
 // ── md_contribution ───────────────────────────────────────────────────────────
@@ -1695,7 +1695,10 @@ pub fn list_social_accounts(
     Ok((count, results))
 }
 
-pub fn get_social_account(conn: &mut PgConnection, rid: i32) -> QueryResult<SocialAccount> {
+pub fn get_social_account(
+    conn: &mut PgConnection,
+    rid: i32,
+) -> QueryResult<SocialAccount> {
     socialaccount_socialaccount::table
         .find(rid)
         .select(SocialAccount::as_select())
@@ -1766,7 +1769,10 @@ pub fn get_social_app(conn: &mut PgConnection, rid: i32) -> QueryResult<SocialAp
         .first(conn)
 }
 
-pub fn insert_social_app(conn: &mut PgConnection, new: NewSocialApp) -> QueryResult<SocialApp> {
+pub fn insert_social_app(
+    conn: &mut PgConnection,
+    new: NewSocialApp,
+) -> QueryResult<SocialApp> {
     diesel::insert_into(socialaccount_socialapp::table)
         .values(&new)
         .returning(SocialApp::as_returning())
@@ -1818,7 +1824,10 @@ pub fn list_social_app_sites(
     Ok((count, results))
 }
 
-pub fn get_social_app_site(conn: &mut PgConnection, rid: i64) -> QueryResult<SocialAppSite> {
+pub fn get_social_app_site(
+    conn: &mut PgConnection,
+    rid: i64,
+) -> QueryResult<SocialAppSite> {
     socialaccount_socialapp_sites::table
         .find(rid)
         .select(SocialAppSite::as_select())

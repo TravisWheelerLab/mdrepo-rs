@@ -3,6 +3,7 @@ use crate::{
     types::{ProcessArgs, TicketArgs},
 };
 use anyhow::{anyhow, bail, Result};
+use dotenvy::dotenv;
 use log::{debug, info};
 use std::{env, fs, path::PathBuf, process::Command};
 use which::which;
@@ -10,7 +11,7 @@ use which::which;
 // --------------------------------------------------
 pub fn process(args: &TicketArgs) -> Result<()> {
     debug!("{args:?}");
-    let _ = dotenv::dotenv();
+    dotenv().ok();
     let script_dir = &args.script_dir.clone().unwrap_or(PathBuf::from(
         env::var("SCRIPT_DIR").map_err(|e| anyhow!("SCRIPT_DIR: {e}"))?,
     ));

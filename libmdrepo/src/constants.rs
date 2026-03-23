@@ -154,7 +154,7 @@ pub const TRAJECTORY_FILE_EXTS: &[&str] = &[
 // - .vasp / POSCAR — VASP structure format
 // - .config / .cfg — DL_POLY config file
 // - .lmp — LAMMPS structure (alternate extension)
-pub const STRUCTURE_FILE_EXTS: &[&str] = &["pdb"];
+pub const STRUCTURE_FILE_EXTS: &[&str] = &["pdb", "gro"];
 
 // Here are common topology file extensions used in molecular dynamics simulations:
 // GROMACS
