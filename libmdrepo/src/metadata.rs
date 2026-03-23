@@ -325,7 +325,7 @@ impl Meta {
             description: None,
             software_name: "GROMACS".to_string(),
             software_version: "2024.5".to_string(),
-            toml_version: Some(2),
+            toml_version: None,
             user_accession: None,
             external_links: None,
             run_commands: None,
