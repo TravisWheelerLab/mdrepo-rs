@@ -32,7 +32,7 @@ pub struct Meta {
     )]
     pub integration_timestep_fs: u32,
 
-    #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
+    #[validate(length(max = 250), regex(path = *constants::NOT_WHITESPACE_REGEX))]
     pub short_description: String,
 
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
@@ -503,6 +503,7 @@ fn handle_validation_error_kind(
     messages
 }
 
+// --------------------------------------------------
 fn format_validation_error(err: &ValidationError) -> String {
     let given = match err.params.get("value") {
         Some(val) => serde_json::to_string(val).unwrap_or("".to_string()),
@@ -510,6 +511,22 @@ fn format_validation_error(err: &ValidationError) -> String {
     };
 
     let message = match err.code {
+        Borrowed("length") => {
+            let min = err.params.get("min");
+            let max = err.params.get("max");
+            match (min, max) {
+                (Some(x), None) => format!("length must be >= {x}"),
+                (None, Some(x)) => format!("length must be <= {x}"),
+                (Some(x), Some(y)) => {
+                    if x == y {
+                        format!("length must be = {x}")
+                    } else {
+                        format!("length must be >= {x} and <= {y}")
+                    }
+                }
+                _ => "".to_string(),
+            }
+        }
         Borrowed("range") => {
             let min = err.params.get("min");
             let max = err.params.get("max");
