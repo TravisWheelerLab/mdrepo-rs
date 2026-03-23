@@ -32,7 +32,7 @@ pub struct Meta {
     )]
     pub integration_timestep_fs: u32,
 
-    #[validate(length(max = 250), regex(path = *constants::NOT_WHITESPACE_REGEX))]
+    #[validate(length(max = 300), regex(path = *constants::NOT_WHITESPACE_REGEX))]
     pub short_description: String,
 
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
