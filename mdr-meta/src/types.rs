@@ -127,3 +127,10 @@ pub enum FileType {
     Topology,
     Other,
 }
+
+// --------------------------------------------------
+pub struct FileInfo {
+    pub file_name: String,
+    pub file_type: FileType,
+    pub size: u64,
+}
