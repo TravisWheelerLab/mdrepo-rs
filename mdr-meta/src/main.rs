@@ -4,8 +4,9 @@ use libmdrepo::{
     constants::{STRUCTURE_FILE_EXTS, TOPOLOGY_FILE_EXTS, TRAJECTORY_FILE_EXTS},
     metadata::{AdditionalFile, Contributor, Meta},
 };
-use mdr_meta::types::{Cli, Command, FileFormat, FileType::*, GenArgs};
+use mdr_meta::types::{Cli, Command, FileFormat, FileInfo, FileType, GenArgs};
 use std::{
+    collections::HashSet,
     env,
     fs::{self, File},
     io::{self, Write},
@@ -142,12 +143,9 @@ fn meta_from_dir(args: &GenArgs) -> Result<Meta> {
         .directory
         .clone()
         .map_or(env::current_dir()?, |val| PathBuf::from(&val));
-    let mut trajectory = args.trajectory.clone();
-    let mut structure = args.structure.clone();
-    let mut topology = args.topology.clone();
-    let mut additional_files = vec![];
 
-    for entry in fs::read_dir(dir)? {
+    let mut files = vec![];
+    for entry in fs::read_dir(&dir)? {
         let entry = entry?;
         let path = entry.path();
         if !path.is_file() {
@@ -155,51 +153,55 @@ fn meta_from_dir(args: &GenArgs) -> Result<Meta> {
         }
 
         let file_name = path.file_name().unwrap().to_string_lossy().to_string();
-        match path.extension() {
-            Some(ext) => {
-                let ext = ext.to_string_lossy().to_string();
-                let file_type = if TRAJECTORY_FILE_EXTS.contains(&ext.as_str()) {
-                    Trajectory
-                } else if STRUCTURE_FILE_EXTS.contains(&ext.as_str()) {
-                    Structure
-                } else if TOPOLOGY_FILE_EXTS.contains(&ext.as_str()) {
-                    Topology
-                } else {
-                    Other
-                };
+        let ext = path
+            .extension()
+            .map_or("".to_string(), |val| val.to_string_lossy().to_string());
 
-                if file_type == Trajectory && trajectory.is_none() {
-                    trajectory = Some(file_name);
-                } else if file_type == Structure && structure.is_none() {
-                    structure = Some(file_name);
-                } else if file_type == Topology && topology.is_none() {
-                    topology = Some(file_name);
-                } else {
-                    additional_files.push(AdditionalFile {
-                        file_name,
-                        file_type: file_type.to_string(),
-                        description: None,
-                    });
-                }
-            }
-            _ => additional_files.push(AdditionalFile {
-                file_name,
-                file_type: Other.to_string(),
-                description: None,
-            }),
-        }
+        let file_type = if TRAJECTORY_FILE_EXTS.contains(&ext.as_str()) {
+            FileType::Trajectory
+        } else if STRUCTURE_FILE_EXTS.contains(&ext.as_str()) {
+            FileType::Structure
+        } else if TOPOLOGY_FILE_EXTS.contains(&ext.as_str()) {
+            FileType::Topology
+        } else {
+            FileType::Other
+        };
+        let metadata = entry.metadata()?;
+        files.push(FileInfo {
+            file_name,
+            file_type,
+            size: metadata.len(),
+        });
     }
-    //additional_files.sort();
+
+    let trajectory =
+        select_candidate(&args.trajectory, FileType::Trajectory, &files, &dir)?;
+
+    let structure =
+        select_candidate(&args.structure, FileType::Structure, &files, &dir)?;
+
+    let topology = select_candidate(&args.topology, FileType::Topology, &files, &dir)?;
+
+    let taken = HashSet::from([&trajectory, &structure, &topology]);
+
+    let mut additional_files: Vec<_> = files
+        .iter()
+        .filter(|f| !taken.contains(&f.file_name))
+        .map(|f| AdditionalFile {
+            file_name: f.file_name.to_string(),
+            file_type: f.file_type.to_string(),
+            description: None,
+        })
+        .collect();
+    additional_files.sort_by_key(|f| f.file_name.to_string());
 
     let mut meta = Meta::example_minimal();
 
-    meta.trajectory_file_name =
-        trajectory.unwrap_or("<trajectory> (required)".to_string());
+    meta.trajectory_file_name = trajectory;
 
-    meta.structure_file_name =
-        structure.unwrap_or("<structure> (required)".to_string());
+    meta.structure_file_name = structure;
 
-    meta.topology_file_name = topology.unwrap_or("<topology> (required)".to_string());
+    meta.topology_file_name = topology;
 
     meta.software_name = "<software_name> (required)".to_string();
 
@@ -217,4 +219,39 @@ fn meta_from_dir(args: &GenArgs) -> Result<Meta> {
     };
 
     Ok(meta)
+}
+
+// --------------------------------------------------
+fn select_candidate(
+    wanted_name: &Option<String>,
+    file_type: FileType,
+    files: &Vec<FileInfo>,
+    directory: &Path,
+) -> Result<String> {
+    match wanted_name {
+        Some(name) => {
+            let path = directory.join(&name);
+            if path.is_file() {
+                Ok(name.to_string())
+            } else {
+                bail!(r#"{file_type} file "{name}" does not exist"#);
+            }
+        }
+        _ => {
+            let mut candidates: Vec<_> =
+                files.iter().filter(|f| f.file_type == file_type).collect();
+
+            // To select the largest
+            candidates.sort_by_key(|f| f.size);
+
+            if let Some(file) = candidates.last() {
+                Ok(file.file_name.to_string())
+            } else {
+                Ok(format!(
+                    "<{}_file_name> (required)",
+                    file_type.to_string().to_lowercase()
+                ))
+            }
+        }
+    }
 }
