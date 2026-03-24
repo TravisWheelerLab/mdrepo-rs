@@ -4,7 +4,7 @@ use libmdrepo::{
     constants::{STRUCTURE_FILE_EXTS, TOPOLOGY_FILE_EXTS, TRAJECTORY_FILE_EXTS},
     metadata::{AdditionalFile, Contributor, Meta},
 };
-use mdr_meta::types::{Cli, Command, FileFormat};
+use mdr_meta::types::{Cli, Command, FileFormat, FileType::*, GenArgs};
 use std::{
     env,
     fs::{self, File},
@@ -57,7 +57,7 @@ fn run(args: Cli) -> Result<()> {
         Some(Command::Gen(args)) => {
             let mut out_file = open_outfile(&args.outfile)?;
             let format = args.format.clone().unwrap_or(guess_format(&args.outfile));
-            let meta = meta_from_dir(args.directory.clone())?;
+            let meta = meta_from_dir(args)?;
             write!(
                 out_file,
                 "{}",
@@ -137,11 +137,14 @@ fn guess_format(filename: &str) -> FileFormat {
 }
 
 // --------------------------------------------------
-fn meta_from_dir(dir: Option<String>) -> Result<Meta> {
-    let dir = dir.map_or(env::current_dir()?, |val| PathBuf::from(&val));
-    let mut trajectory: Option<String> = None;
-    let mut structure: Option<String> = None;
-    let mut topology: Option<String> = None;
+fn meta_from_dir(args: &GenArgs) -> Result<Meta> {
+    let dir = args
+        .directory
+        .clone()
+        .map_or(env::current_dir()?, |val| PathBuf::from(&val));
+    let mut trajectory = args.trajectory.clone();
+    let mut structure = args.structure.clone();
+    let mut topology = args.topology.clone();
     let mut additional_files = vec![];
 
     for entry in fs::read_dir(dir)? {
@@ -155,20 +158,38 @@ fn meta_from_dir(dir: Option<String>) -> Result<Meta> {
         match path.extension() {
             Some(ext) => {
                 let ext = ext.to_string_lossy().to_string();
-                if TRAJECTORY_FILE_EXTS.contains(&ext.as_str()) {
-                    trajectory = Some(file_name);
+                let file_type = if TRAJECTORY_FILE_EXTS.contains(&ext.as_str()) {
+                    Trajectory
                 } else if STRUCTURE_FILE_EXTS.contains(&ext.as_str()) {
-                    structure = Some(file_name);
+                    Structure
                 } else if TOPOLOGY_FILE_EXTS.contains(&ext.as_str()) {
+                    Topology
+                } else {
+                    Other
+                };
+
+                if file_type == Trajectory && trajectory.is_none() {
+                    trajectory = Some(file_name);
+                } else if file_type == Structure && structure.is_none() {
+                    structure = Some(file_name);
+                } else if file_type == Topology && topology.is_none() {
                     topology = Some(file_name);
                 } else {
-                    additional_files.push(file_name);
+                    additional_files.push(AdditionalFile {
+                        file_name,
+                        file_type: file_type.to_string(),
+                        description: None,
+                    });
                 }
             }
-            _ => additional_files.push(file_name),
+            _ => additional_files.push(AdditionalFile {
+                file_name,
+                file_type: Other.to_string(),
+                description: None,
+            }),
         }
     }
-    additional_files.sort();
+    //additional_files.sort();
 
     let mut meta = Meta::example_minimal();
 
@@ -191,17 +212,8 @@ fn meta_from_dir(dir: Option<String>) -> Result<Meta> {
         orcid: Some("<orcid> (optional)".to_string()),
     }]);
 
-    if !additional_files.is_empty() {
-        meta.additional_files = Some(
-            additional_files
-                .iter()
-                .map(|name| AdditionalFile {
-                    file_name: name.to_string(),
-                    file_type: "<file_type> (required)".to_string(),
-                    description: Some("<description> (optional)".to_string()),
-                })
-                .collect::<Vec<_>>(),
-        )
+    if additional_files.is_empty() {
+        meta.additional_files = Some(additional_files);
     };
 
     Ok(meta)
