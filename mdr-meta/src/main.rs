@@ -153,6 +153,10 @@ fn meta_from_dir(args: &GenArgs) -> Result<Meta> {
         }
 
         let file_name = path.file_name().unwrap().to_string_lossy().to_string();
+        if file_name.starts_with(".") || file_name.starts_with("#") {
+            continue;
+        }
+
         let ext = path
             .extension()
             .map_or("".to_string(), |val| val.to_string_lossy().to_string());
@@ -218,7 +222,7 @@ fn meta_from_dir(args: &GenArgs) -> Result<Meta> {
         orcid: Some("<orcid> (optional)".to_string()),
     }]);
 
-    if additional_files.is_empty() {
+    if !additional_files.is_empty() {
         meta.additional_files = Some(additional_files);
     };
 
