@@ -86,6 +86,10 @@ pub struct GenArgs {
     /// Topology filename
     #[arg(long, value_name = "TOPO")]
     pub topology: Option<String>,
+
+    /// Lead contributor ORCID
+    #[arg(long, value_name = "ORCID")]
+    pub orcid: Option<String>,
 }
 
 #[derive(Debug, Parser)]

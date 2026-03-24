@@ -197,6 +197,10 @@ fn meta_from_dir(args: &GenArgs) -> Result<Meta> {
 
     let mut meta = Meta::example_minimal();
 
+    if let Some(orcid) = &args.orcid {
+        meta.lead_contributor_orcid = orcid.to_string();
+    }
+
     meta.trajectory_file_name = trajectory;
 
     meta.structure_file_name = structure;
