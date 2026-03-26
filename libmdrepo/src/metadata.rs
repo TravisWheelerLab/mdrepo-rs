@@ -377,7 +377,7 @@ pub struct AdditionalFile {
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
     pub file_name: String,
 
-    #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
+    #[validate(length(max = 32), regex(path = *constants::NOT_WHITESPACE_REGEX))]
     pub file_type: String,
 
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
