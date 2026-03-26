@@ -24,16 +24,20 @@ pub fn validate(dir: &PathBuf) -> Result<()> {
     files.sort();
 
     let num_files = files.len();
-    info!("Found {num_files} file{}", if num_files == 1 {""} else {"s"});
+    info!(
+        "Found {num_files} file{}",
+        if num_files == 1 { "" } else { "s" }
+    );
     if num_files == 0 {
         bail!(r#""{}" is empty!"#, dir.display());
     }
 
     let completed_path = dir.join("mdrepo-submission.completed.json");
     if completed_path.is_file() {
-        let completed: SubmissionCompleteJson = serde_json::from_str(&read_file(&completed_path)?)
-            .map_err(|e| anyhow!(r#"Failed to parse "{}": {e}"#, completed_path.display()))?;
-        dbg!(&completed);
+        let completed: SubmissionCompleteJson =
+            serde_json::from_str(&read_file(&completed_path)?).map_err(|e| {
+                anyhow!(r#"Failed to parse "{}": {e}"#, completed_path.display())
+            })?;
 
         if completed.total_filenum as usize != completed.files.len() {
             bail!(
@@ -49,7 +53,6 @@ pub fn validate(dir: &PathBuf) -> Result<()> {
         }
 
         // Check file hashes/sizes
-        let mut total_file_size = 0;
         for file in &completed.files {
             let path = dir.join(&file.irods_path);
             if !path.exists() {
@@ -90,22 +93,6 @@ pub fn validate(dir: &PathBuf) -> Result<()> {
                 )
             }
         }
-
-        // Check min/max file size
-        if total_file_size == 0 {
-            bail!("All local files are empty!");
-        }
-
-        if total_file_size > MAX_FILE_SIZE_BYTES {
-            bail!("Total file size ({total_file_size}) exceeds limit {MAX_FILE_SIZE_BYTES}");
-        }
-
-        if total_file_size != completed.total_filesize {
-            bail!(
-                "Total file size ({total_file_size}) does not match meta {}",
-                completed.total_filesize
-            );
-        }
     }
 
     // Validate meta
@@ -117,14 +104,25 @@ pub fn validate(dir: &PathBuf) -> Result<()> {
     // This automatically checks the validity of the TOML
     let meta = Meta::from_file(&meta_toml)?;
 
-    for (file_type, file) in &[
-        ("trajectory_file_name", meta.trajectory_file_name),
-        ("structure_file_name", meta.structure_file_name),
-        ("topology_file_name", meta.topology_file_name),
-    ] {
-        if !files.contains(file) {
-            bail!(r#"Metadata is missing "initial.{file_type}" file "{file}""#);
-        }
+    let mut total_file_size = 0;
+    for filename in meta.all_filenames() {
+        let metadata = dir
+            .join(filename)
+            .metadata()
+            .map_err(|e| anyhow!("{filename}: {e}"))?;
+
+        total_file_size += metadata.len();
+    }
+
+    // Check min/max file size
+    if total_file_size == 0 {
+        bail!("All local files are empty!");
+    }
+
+    if total_file_size > MAX_FILE_SIZE_BYTES {
+        bail!(
+            "Total file size ({total_file_size}) exceeds limit {MAX_FILE_SIZE_BYTES}"
+        );
     }
 
     println!("Validation complete");
