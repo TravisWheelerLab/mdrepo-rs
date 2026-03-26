@@ -124,6 +124,22 @@ pub struct Meta {
 }
 
 impl Meta {
+    pub fn all_filenames(&self) -> Vec<String> {
+        let mut filenames = vec![
+            self.trajectory_file_name.clone(),
+            self.structure_file_name.clone(),
+            self.topology_file_name.clone(),
+        ];
+
+        if let Some(files) = &self.additional_files {
+            for file in files {
+                filenames.push(file.file_name.clone());
+            }
+        }
+
+        filenames
+    }
+
     pub fn check(&self) -> Vec<String> {
         let mut messages = vec![];
         if let Err(e) = self.validate() {
