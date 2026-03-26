@@ -1,4 +1,5 @@
 use clap::{builder::PossibleValue, Parser, ValueEnum};
+use std::path::PathBuf;
 
 // --------------------------------------------------
 #[derive(Parser, Debug)]
@@ -87,9 +88,9 @@ pub struct GenArgs {
     #[arg(long, value_name = "TOPO")]
     pub topology: Option<String>,
 
-    /// Lead contributor ORCID
-    #[arg(long, value_name = "ORCID")]
-    pub orcid: Option<String>,
+    /// TOML template
+    #[arg(long, value_name = "TMPL")]
+    pub template: Option<PathBuf>,
 }
 
 #[derive(Debug, Parser)]
