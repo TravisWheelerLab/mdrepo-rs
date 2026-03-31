@@ -207,10 +207,12 @@ pub fn make_processed_files(
         let micromamba = which("micromamba")
             .map_err(|e| anyhow!("Failed to find micromamba ({e})"))?;
         info!("Making full/minimal files");
+
         let cpp_traj = &script_dir.join("cpptraj_gmx_traj_manipulation.py");
         if !cpp_traj.is_file() {
             bail!(r#"Missing "{}""#, cpp_traj.display());
         }
+
         let mut cmd = Command::new(micromamba);
         cmd.args([
             "run",
