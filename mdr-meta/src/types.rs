@@ -1,4 +1,5 @@
 use clap::{builder::PossibleValue, Parser, ValueEnum};
+use std::path::PathBuf;
 
 // --------------------------------------------------
 #[derive(Parser, Debug)]
@@ -18,7 +19,7 @@ pub enum Command {
     Eg(EgArgs),
 
     /// Generate metadata file from directory contents
-    Gen(GenerateArgs),
+    Gen(GenArgs),
 
     /// Print metadata in JSON format
     ToJson(ToJsonArgs),
@@ -62,7 +63,7 @@ pub struct EgArgs {
 }
 
 #[derive(Debug, Parser)]
-pub struct GenerateArgs {
+pub struct GenArgs {
     /// Output format
     #[arg(short, long, value_name = "DIR")]
     pub directory: Option<String>,
@@ -74,6 +75,22 @@ pub struct GenerateArgs {
     /// Output filename
     #[arg(short, long, value_name = "OUTPUT", default_value = "-")]
     pub outfile: String,
+
+    /// Trajectory filename
+    #[arg(long, value_name = "TRAJ")]
+    pub trajectory: Option<String>,
+
+    /// Structure filename
+    #[arg(long, value_name = "STRUCT")]
+    pub structure: Option<String>,
+
+    /// Topology filename
+    #[arg(long, value_name = "TOPO")]
+    pub topology: Option<String>,
+
+    /// TOML template
+    #[arg(long, value_name = "TMPL")]
+    pub template: Option<PathBuf>,
 }
 
 #[derive(Debug, Parser)]
@@ -105,4 +122,20 @@ pub struct CheckArgs {
     /// Input filename or "-" for STDIN
     #[arg(value_name = "FILE", num_args = 1..)]
     pub filenames: Vec<String>,
+}
+
+// --------------------------------------------------
+#[derive(strum_macros::Display, PartialEq)]
+pub enum FileType {
+    Trajectory,
+    Structure,
+    Topology,
+    Other,
+}
+
+// --------------------------------------------------
+pub struct FileInfo {
+    pub file_name: String,
+    pub file_type: FileType,
+    pub size: u64,
 }

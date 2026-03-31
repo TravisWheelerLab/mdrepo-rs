@@ -32,7 +32,7 @@ pub struct Meta {
     )]
     pub integration_timestep_fs: u32,
 
-    #[validate(length(max = 250), regex(path = *constants::NOT_WHITESPACE_REGEX))]
+    #[validate(length(max = 300), regex(path = *constants::NOT_WHITESPACE_REGEX))]
     pub short_description: String,
 
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
@@ -124,6 +124,22 @@ pub struct Meta {
 }
 
 impl Meta {
+    pub fn all_filenames(&self) -> Vec<String> {
+        let mut filenames = vec![
+            self.trajectory_file_name.clone(),
+            self.structure_file_name.clone(),
+            self.topology_file_name.clone(),
+        ];
+
+        if let Some(files) = &self.additional_files {
+            for file in files {
+                filenames.push(file.file_name.clone());
+            }
+        }
+
+        filenames
+    }
+
     pub fn check(&self) -> Vec<String> {
         let mut messages = vec![];
         if let Err(e) = self.validate() {
@@ -361,7 +377,7 @@ pub struct AdditionalFile {
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
     pub file_name: String,
 
-    #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
+    #[validate(length(max = 32), regex(path = *constants::NOT_WHITESPACE_REGEX))]
     pub file_type: String,
 
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
@@ -547,6 +563,324 @@ fn format_validation_error(err: &ValidationError) -> String {
     };
 
     format!("value {given} {message}")
+}
+
+// --------------------------------------------------
+#[cfg(test)]
+mod proptest_tests {
+    use super::*;
+    use crate::constants;
+    use proptest::prelude::*;
+    use validator::Validate;
+
+    fn base_meta() -> Meta {
+        Meta::example_minimal()
+    }
+
+    proptest! {
+        // --- Regex: ORCID ---
+
+        #[test]
+        fn valid_orcid_matches_regex(
+            a in "[0-9]{4}",
+            b in "[0-9]{4}",
+            c in "[0-9]{4}",
+            d in "[A-Z0-9]{4}",
+        ) {
+            let orcid = format!("{a}-{b}-{c}-{d}");
+            prop_assert!(constants::ORCID_REGEX.is_match(&orcid));
+        }
+
+        // --- Regex: NOT_WHITESPACE ---
+
+        #[test]
+        fn whitespace_only_fails_not_whitespace(s in "[ \t\n\r]+") {
+            prop_assert!(!constants::NOT_WHITESPACE_REGEX.is_match(&s));
+        }
+
+        #[test]
+        fn non_whitespace_string_passes(s in "[a-zA-Z0-9][a-zA-Z0-9 ]{0,50}") {
+            prop_assert!(constants::NOT_WHITESPACE_REGEX.is_match(&s));
+        }
+
+        // --- Regex: PDB ID ---
+
+        #[test]
+        fn valid_pdb_id_matches_regex(s in "[A-Za-z0-9]{4}") {
+            prop_assert!(constants::PDB_REGEX.is_match(&s));
+        }
+
+        #[test]
+        fn pdb_id_wrong_length_fails_regex(
+            s in "[A-Za-z0-9]{1,3}|[A-Za-z0-9]{5,10}",
+        ) {
+            prop_assert!(!constants::PDB_REGEX.is_match(&s));
+        }
+
+        // --- Regex: DOI ---
+
+        #[test]
+        fn valid_doi_matches_regex(
+            use_url_prefix in any::<bool>(),
+            digits in "[0-9]{4,5}",
+            suffix in "[a-zA-Z0-9-]{1,15}[a-zA-Z0-9]",
+        ) {
+            let doi = if use_url_prefix {
+                format!("https://doi.org/10.{digits}/{suffix}")
+            } else {
+                format!("10.{digits}/{suffix}")
+            };
+            prop_assert!(
+                constants::DOI_REGEX.is_match(&doi),
+                "DOI '{}' should match", doi
+            );
+        }
+
+        // --- Range: temperature_kelvin ---
+
+        #[test]
+        fn valid_temperature_no_error(temp in 275u32..=700u32) {
+            let mut meta = base_meta();
+            meta.temperature_kelvin = temp;
+            let errors = meta.check();
+            let has_error = errors.iter().any(|e| e.starts_with("temperature_kelvin:"));
+            prop_assert!(!has_error, "Unexpected temperature error for {temp}: {errors:?}");
+        }
+
+        #[test]
+        fn out_of_range_temperature_produces_error(temp in prop_oneof![
+            0u32..275u32,
+            701u32..=u32::MAX,
+        ]) {
+            let mut meta = base_meta();
+            meta.temperature_kelvin = temp;
+            let errors = meta.check();
+            let has_error = errors.iter().any(|e| e.starts_with("temperature_kelvin:"));
+            prop_assert!(has_error, "Expected temperature error for temp={temp}");
+        }
+
+        // --- Range: integration_timestep_fs ---
+
+        #[test]
+        fn valid_timestep_no_error(timestep in 1u32..=5u32) {
+            let mut meta = base_meta();
+            meta.integration_timestep_fs = timestep;
+            let errors = meta.check();
+            let has_error = errors.iter().any(|e| e.starts_with("integration_timestep_fs:"));
+            prop_assert!(!has_error, "Unexpected timestep error for {timestep}: {errors:?}");
+        }
+
+        #[test]
+        fn out_of_range_timestep_produces_error(timestep in prop_oneof![
+            0u32..1u32,
+            6u32..=u32::MAX,
+        ]) {
+            let mut meta = base_meta();
+            meta.integration_timestep_fs = timestep;
+            let errors = meta.check();
+            let has_error = errors.iter().any(|e| e.starts_with("integration_timestep_fs:"));
+            prop_assert!(has_error, "Expected timestep error for timestep={timestep}");
+        }
+
+        // --- Range: Water density ---
+
+        #[test]
+        fn valid_water_density_passes(density in 900.0f64..=1100.0f64) {
+            let water = Water {
+                model: "TIP3P".to_string(),
+                density_kg_m3: density,
+            };
+            prop_assert!(water.validate().is_ok());
+        }
+
+        #[test]
+        fn out_of_range_water_density_fails(density in prop_oneof![
+            0.1f64..900.0f64,
+            1100.001f64..2000.0f64,
+        ]) {
+            let water = Water {
+                model: "TIP3P".to_string(),
+                density_kg_m3: density,
+            };
+            prop_assert!(water.validate().is_err());
+        }
+
+        // --- Range: Solvent concentration ---
+
+        #[test]
+        fn valid_solvent_concentration_passes(conc in 0.0f64..=1.0f64) {
+            let solvent = Solvent {
+                name: "Na".to_string(),
+                concentration_mol_liter: conc,
+            };
+            prop_assert!(solvent.validate().is_ok());
+        }
+
+        #[test]
+        fn out_of_range_solvent_concentration_fails(conc in prop_oneof![
+            -10.0f64..-0.001f64,
+            1.001f64..10.0f64,
+        ]) {
+            let solvent = Solvent {
+                name: "Na".to_string(),
+                concentration_mol_liter: conc,
+            };
+            prop_assert!(solvent.validate().is_err());
+        }
+
+        // --- Range: Paper year ---
+
+        #[test]
+        fn valid_paper_year_passes(year in 1900u32..=2030u32) {
+            let paper = Paper {
+                title: "Title".to_string(),
+                authors: "Author".to_string(),
+                journal: "Journal".to_string(),
+                volume: 1,
+                number: None,
+                year,
+                pages: None,
+                doi: None,
+            };
+            prop_assert!(paper.validate().is_ok(), "Year {year} should be valid");
+        }
+
+        #[test]
+        fn out_of_range_paper_year_fails(year in prop_oneof![
+            0u32..1900u32,
+            2031u32..=u32::MAX,
+        ]) {
+            let paper = Paper {
+                title: "Title".to_string(),
+                authors: "Author".to_string(),
+                journal: "Journal".to_string(),
+                volume: 1,
+                number: None,
+                year,
+                pages: None,
+                doi: None,
+            };
+            prop_assert!(paper.validate().is_err(), "Year {year} should be invalid");
+        }
+
+        // --- short_description length ---
+
+        #[test]
+        fn short_description_within_300_passes(
+            desc in "[a-zA-Z0-9][a-zA-Z0-9 ]{0,299}",
+        ) {
+            let mut meta = base_meta();
+            meta.short_description = desc;
+            let errors = meta.check();
+            let has_error = errors.iter().any(|e| e.starts_with("short_description:"));
+            prop_assert!(!has_error, "Unexpected description error: {errors:?}");
+        }
+
+        #[test]
+        fn short_description_over_300_fails(extra in "[a-zA-Z0-9]{1,100}") {
+            let mut meta = base_meta();
+            meta.short_description = format!("{}{}", "a".repeat(300), extra);
+            let errors = meta.check();
+            let has_error = errors.iter().any(|e| e.starts_with("short_description:"));
+            prop_assert!(has_error, "Expected description length error, got: {errors:?}");
+        }
+
+        // --- Serialization round-trips ---
+
+        #[test]
+        fn meta_toml_round_trip(
+            temp in 275u32..=700u32,
+            timestep in 1u32..=5u32,
+        ) {
+            let mut meta = base_meta();
+            meta.temperature_kelvin = temp;
+            meta.integration_timestep_fs = timestep;
+            let toml_str = meta.to_toml().expect("serialization failed");
+            let meta2 = Meta::from_toml(&toml_str).expect("deserialization failed");
+            prop_assert_eq!(meta2.temperature_kelvin, temp);
+            prop_assert_eq!(meta2.integration_timestep_fs, timestep);
+        }
+
+        #[test]
+        fn meta_json_round_trip(
+            temp in 275u32..=700u32,
+            timestep in 1u32..=5u32,
+        ) {
+            let mut meta = base_meta();
+            meta.temperature_kelvin = temp;
+            meta.integration_timestep_fs = timestep;
+            let json_str = meta.to_json().expect("serialization failed");
+            let meta2 = Meta::from_json(&json_str).expect("deserialization failed");
+            prop_assert_eq!(meta2.temperature_kelvin, temp);
+            prop_assert_eq!(meta2.integration_timestep_fs, timestep);
+        }
+
+        // --- Duplicate filename detection ---
+
+        #[test]
+        fn duplicate_filename_detected(name in "[a-z]{2,8}") {
+            let mut meta = base_meta();
+            let filename = format!("{name}.xtc");
+            // Same filename in both trajectory and structure fields → duplicate
+            meta.trajectory_file_name = filename.clone();
+            meta.structure_file_name = filename.clone();
+            let errors = meta.check();
+            let has_dup_error = errors.iter().any(|e| e.contains("is duplicated"));
+            prop_assert!(
+                has_dup_error,
+                "Expected duplicate error for '{filename}', got: {errors:?}"
+            );
+        }
+    }
+
+    // --- GROMACS .top special rule (non-proptest) ---
+
+    #[test]
+    fn gromacs_top_without_tpr_or_gro_fails() {
+        let mut meta = base_meta();
+        meta.software_name = "GROMACS".to_string();
+        meta.topology_file_name = "topol.top".to_string();
+        meta.additional_files = None;
+        let errors = meta.check();
+        assert!(
+            errors.iter().any(|e| e.contains("GROMACS topology")),
+            "Expected GROMACS topology error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn gromacs_top_with_tpr_passes_gromacs_check() {
+        let mut meta = base_meta();
+        meta.software_name = "GROMACS".to_string();
+        meta.topology_file_name = "topol.top".to_string();
+        meta.additional_files = Some(vec![AdditionalFile {
+            file_name: "run.tpr".to_string(),
+            file_type: "Binary topology".to_string(),
+            description: None,
+        }]);
+        let errors = meta.check();
+        assert!(
+            !errors.iter().any(|e| e.contains("GROMACS topology")),
+            "Expected no GROMACS topology error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn gromacs_top_with_gro_passes_gromacs_check() {
+        let mut meta = base_meta();
+        meta.software_name = "GROMACS".to_string();
+        meta.topology_file_name = "topol.top".to_string();
+        meta.additional_files = Some(vec![AdditionalFile {
+            file_name: "struct.gro".to_string(),
+            file_type: "Structure".to_string(),
+            description: None,
+        }]);
+        let errors = meta.check();
+        assert!(
+            !errors.iter().any(|e| e.contains("GROMACS topology")),
+            "Expected no GROMACS topology error, got: {errors:?}"
+        );
+    }
 }
 
 // --------------------------------------------------

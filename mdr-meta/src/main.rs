@@ -4,8 +4,12 @@ use libmdrepo::{
     constants::{STRUCTURE_FILE_EXTS, TOPOLOGY_FILE_EXTS, TRAJECTORY_FILE_EXTS},
     metadata::{AdditionalFile, Contributor, Meta},
 };
-use mdr_meta::types::{Cli, Command, FileFormat};
+use mdr_meta::{
+    generate::generate,
+    types::{Cli, Command, FileFormat, FileInfo, FileType, GenArgs},
+};
 use std::{
+    collections::HashSet,
     env,
     fs::{self, File},
     io::{self, Write},
@@ -57,7 +61,7 @@ fn run(args: Cli) -> Result<()> {
         Some(Command::Gen(args)) => {
             let mut out_file = open_outfile(&args.outfile)?;
             let format = args.format.clone().unwrap_or(guess_format(&args.outfile));
-            let meta = meta_from_dir(args.directory.clone())?;
+            let meta = generate(args)?;
             write!(
                 out_file,
                 "{}",
@@ -134,75 +138,4 @@ fn guess_format(filename: &str) -> FileFormat {
             _ => FileFormat::Toml,
         }
     }
-}
-
-// --------------------------------------------------
-fn meta_from_dir(dir: Option<String>) -> Result<Meta> {
-    let dir = dir.map_or(env::current_dir()?, |val| PathBuf::from(&val));
-    let mut trajectory: Option<String> = None;
-    let mut structure: Option<String> = None;
-    let mut topology: Option<String> = None;
-    let mut additional_files = vec![];
-
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-
-        let file_name = path.file_name().unwrap().to_string_lossy().to_string();
-        match path.extension() {
-            Some(ext) => {
-                let ext = ext.to_string_lossy().to_string();
-                if TRAJECTORY_FILE_EXTS.contains(&ext.as_str()) {
-                    trajectory = Some(file_name);
-                } else if STRUCTURE_FILE_EXTS.contains(&ext.as_str()) {
-                    structure = Some(file_name);
-                } else if TOPOLOGY_FILE_EXTS.contains(&ext.as_str()) {
-                    topology = Some(file_name);
-                } else {
-                    additional_files.push(file_name);
-                }
-            }
-            _ => additional_files.push(file_name),
-        }
-    }
-    additional_files.sort();
-
-    let mut meta = Meta::example_minimal();
-
-    meta.trajectory_file_name =
-        trajectory.unwrap_or("<trajectory> (required)".to_string());
-
-    meta.structure_file_name =
-        structure.unwrap_or("<structure> (required)".to_string());
-
-    meta.topology_file_name = topology.unwrap_or("<topology> (required)".to_string());
-
-    meta.software_name = "<software_name> (required)".to_string();
-
-    meta.software_version = "<software_version> (required)".to_string();
-
-    meta.contributors = Some(vec![Contributor {
-        name: "<Your Name>".to_string(),
-        institution: Some("<institution> (optional)".to_string()),
-        email: Some("<email> (optional)".to_string()),
-        orcid: Some("<orcid> (optional)".to_string()),
-    }]);
-
-    if !additional_files.is_empty() {
-        meta.additional_files = Some(
-            additional_files
-                .iter()
-                .map(|name| AdditionalFile {
-                    file_name: name.to_string(),
-                    file_type: "<file_type> (required)".to_string(),
-                    description: Some("<description> (optional)".to_string()),
-                })
-                .collect::<Vec<_>>(),
-        )
-    };
-
-    Ok(meta)
 }
