@@ -59,9 +59,9 @@ fn run(args: Cli) -> Result<()> {
             Ok(())
         }
         Some(Command::Ticket(args)) => {
-            match ticket::process(&args) {
+            match ticket::process(args) {
                 Err(e) => {
-                    let message = match ticket::get_ticket_user(&args) {
+                    let message = match ticket::get_ticket_user(args) {
                         Ok(ticket) => format!("{e}\nNotify User\n{ticket:#?}"),
                         Err(e2) => format!("{e} ({e2})"),
                         //_ => e.to_string(),

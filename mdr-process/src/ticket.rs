@@ -19,7 +19,7 @@ pub fn get_ticket_user(args: &TicketArgs) -> Result<TicketInfo> {
         .join(format!("ticket-{}", args.ticket_id))
         .join("ticket.json");
 
-    let contents = fs::read_to_string(&ticket_file)
+    let contents = fs::read_to_string(ticket_file)
         .map_err(|e| anyhow!("{}: {e}", ticket_file.display()))?;
 
     let ticket: TicketInfo = serde_json::from_str(&contents)?;

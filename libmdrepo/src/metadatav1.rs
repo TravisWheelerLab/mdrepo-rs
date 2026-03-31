@@ -24,7 +24,7 @@ impl Numlike {
             Numlike::Stringy(val) => val.parse().ok(),
             Numlike::TomlVal(toml_val) => match toml_val {
                 TomlValue::String(val) => val.parse().ok(),
-                TomlValue::Integer(val) => Some(val.clone()),
+                TomlValue::Integer(val) => Some(*val),
                 TomlValue::Float(val) => format!("{}", val.round()).parse::<i64>().ok(),
                 _ => None,
             },
@@ -130,7 +130,7 @@ impl MetaV1 {
 
         if let Some(papers) = &self.papers {
             let new_papers: Vec<_> = papers
-                .into_iter()
+                .iter()
                 .map(|paper| {
                     let volume = if let Numlike::TomlVal(val) = &paper.volume {
                         match val {
@@ -145,15 +145,15 @@ impl MetaV1 {
 
                     let number = paper.number.clone().map(|val| {
                         if let Numlike::TomlVal(n) = val {
-                            let new_number = match n {
+                            
+                            match n {
                                 TomlValue::String(v) => Numlike::Stringy(v.to_string()),
                                 TomlValue::Integer(v) => {
                                     Numlike::Stringy(v.to_string())
                                 }
                                 TomlValue::Float(v) => Numlike::Stringy(v.to_string()),
                                 _ => Numlike::Stringy("".to_string()),
-                            };
-                            new_number
+                            }
                         } else {
                             val.clone()
                         }

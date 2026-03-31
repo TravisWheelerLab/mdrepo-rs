@@ -21,7 +21,7 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
 
     let data_dir = &args.work_dir.join(&mdrepo_id);
     if !data_dir.is_dir() {
-        fs::create_dir_all(&data_dir)?;
+        fs::create_dir_all(data_dir)?;
     }
 
     let server = &args.server;

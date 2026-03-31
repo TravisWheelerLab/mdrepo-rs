@@ -468,7 +468,7 @@ pub fn make_import_json(
         ("Structure", &meta.structure_file_name),
         ("Topology", &meta.topology_file_name),
     ] {
-        let local_path = input_dir.join(&filename);
+        let local_path = input_dir.join(filename);
         original_files.push(MdFile {
             name: filename.to_string(),
             file_type: file_type.to_string(),

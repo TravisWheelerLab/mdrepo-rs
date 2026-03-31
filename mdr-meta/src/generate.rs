@@ -118,7 +118,7 @@ fn select_candidate(
 ) -> Result<String> {
     match wanted_name {
         Some(name) => {
-            let path = directory.join(&name);
+            let path = directory.join(name);
             if path.is_file() {
                 Ok(name.to_string())
             } else {

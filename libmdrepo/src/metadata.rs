@@ -259,7 +259,7 @@ impl Meta {
     }
 
     pub fn from_toml(contents: &str) -> Result<Self> {
-        toml::from_str(&contents).map_err(|e| anyhow!(r#"Failed to parse input: {e}"#))
+        toml::from_str(contents).map_err(|e| anyhow!(r#"Failed to parse input: {e}"#))
     }
 
     pub fn from_json(json: &str) -> Result<Self> {
@@ -490,7 +490,7 @@ fn handle_validation_error_kind(
         ValidationErrorsKind::Field(errs) => {
             let message = errs
                 .iter()
-                .map(|e| format_validation_error(&e))
+                .map(|e| format_validation_error(e))
                 .collect::<Vec<_>>()
                 .join("; ");
             messages.push(format!("{field}: {message}"));
