@@ -437,7 +437,7 @@ pub struct Ligand {
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
     pub name: String,
 
-    #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
+    #[validate(custom(function = "is_valid_smiles"))]
     pub smiles: String,
 }
 
@@ -563,6 +563,17 @@ fn format_validation_error(err: &ValidationError) -> String {
     };
 
     format!("value {given} {message}")
+}
+
+// --------------------------------------------------
+pub fn is_valid_smiles(smiles: &str) -> std::result::Result<(), ValidationError> {
+    let mut writer = purr::write::Writer::new();
+    let mut trace = purr::read::Trace::new();
+    if purr::read::read(smiles, &mut writer, Some(&mut trace)).is_ok() {
+        Ok(())
+    } else {
+        Err(ValidationError::new("invalid SMILES"))
+    }
 }
 
 // --------------------------------------------------
