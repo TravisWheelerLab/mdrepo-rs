@@ -46,7 +46,7 @@ label = " "
 
 [[ligands]]
 name = "FY8"
-smiles = 'Oc1ccc(Cl)cc1NC(=O)C2CCNCC2'
+smiles = 'smiles_string'
 
 [[ligands]]
 name = "AQE"
