@@ -1056,6 +1056,7 @@ mod tests {
             r#"forcefield: value " " invalid"#,
             r#"integration_timestep_fs: value 2000 must be >= 1 and <= 5"#,
             r#"lead_contributor_orcid: value "0000-0001-9961-144" invalid"#,
+            r#"ligands[1].smiles: value "smiles_string" invalid"#,
             r#"pdb_id: value "5am" invalid"#,
             r#"short_description: value " " invalid"#,
             r#"solvents[1].name: value " " invalid"#,
