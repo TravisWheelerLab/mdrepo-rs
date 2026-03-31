@@ -60,7 +60,6 @@ pub fn validate(dir: &PathBuf) -> Result<()> {
             }
 
             let size = path.metadata()?.len();
-            total_file_size += size;
 
             let local_md5 = get_md5(&path)?;
 
@@ -105,7 +104,7 @@ pub fn validate(dir: &PathBuf) -> Result<()> {
     let meta = Meta::from_file(&meta_toml)?;
 
     let mut total_file_size = 0;
-    for filename in meta.all_filenames() {
+    for filename in &meta.all_filenames() {
         let metadata = dir
             .join(filename)
             .metadata()
