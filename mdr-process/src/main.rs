@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::Parser;
 use libmdrepo::metadata::Meta;
 use mdr_process::{
@@ -11,7 +11,7 @@ use std::{fs::File, io::BufWriter};
 // --------------------------------------------------
 fn main() {
     if let Err(e) = run(Cli::parse()) {
-        eprintln!("{e}");
+        eprintln!("Error: {e}");
         std::process::exit(1);
     }
 }
@@ -59,8 +59,17 @@ fn run(args: Cli) -> Result<()> {
             Ok(())
         }
         Some(Command::Ticket(args)) => {
-            ticket::process(args)?;
-            println!("Success");
+            match ticket::process(&args) {
+                Err(e) => {
+                    let message = match ticket::get_ticket_user(&args) {
+                        Ok(ticket) => format!("{e}\nNotify User\n{ticket:#?}"),
+                        Err(e2) => format!("{e} ({e2})"),
+                        //_ => e.to_string(),
+                    };
+                    bail!(message);
+                }
+                _ => println!("Success"),
+            }
             Ok(())
         }
         Some(Command::Validate(args)) => {
