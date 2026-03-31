@@ -1,17 +1,12 @@
 use anyhow::{bail, Result};
 use clap::Parser;
-use libmdrepo::{
-    constants::{STRUCTURE_FILE_EXTS, TOPOLOGY_FILE_EXTS, TRAJECTORY_FILE_EXTS},
-    metadata::{AdditionalFile, Contributor, Meta},
-};
+use libmdrepo::metadata::Meta;
 use mdr_meta::{
     generate::generate,
-    types::{Cli, Command, FileFormat, FileInfo, FileType, GenArgs},
+    types::{Cli, Command, FileFormat},
 };
 use std::{
-    collections::HashSet,
-    env,
-    fs::{self, File},
+    fs::File,
     io::{self, Write},
     path::{Path, PathBuf},
 };
