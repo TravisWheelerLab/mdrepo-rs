@@ -259,7 +259,7 @@ impl Meta {
     }
 
     pub fn from_toml(contents: &str) -> Result<Self> {
-        toml::from_str(&contents).map_err(|e| anyhow!(r#"Failed to parse input: {e}"#))
+        toml::from_str(contents).map_err(|e| anyhow!(r#"Failed to parse input: {e}"#))
     }
 
     pub fn from_json(json: &str) -> Result<Self> {
@@ -466,7 +466,7 @@ pub struct Water {
     pub density_kg_m3: f64,
 }
 
-fn validate_dois(dois: &Vec<String>) -> Result<(), ValidationError> {
+fn validate_dois(dois: &[String]) -> Result<(), ValidationError> {
     if !dois.iter().all(|val| constants::DOI_REGEX.is_match(val)) {
         return Err(ValidationError::new("doi"));
     }
@@ -490,7 +490,7 @@ fn handle_validation_error_kind(
         ValidationErrorsKind::Field(errs) => {
             let message = errs
                 .iter()
-                .map(|e| format_validation_error(&e))
+                .map(format_validation_error)
                 .collect::<Vec<_>>()
                 .join("; ");
             messages.push(format!("{field}: {message}"));

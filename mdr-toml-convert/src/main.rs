@@ -32,7 +32,7 @@ fn main() {
 
 // --------------------------------------------------
 fn run(args: Args) -> Result<()> {
-    if &args.filename == &args.outfile {
+    if args.filename == args.outfile {
         bail!("Will not overwrite input file with output file")
     }
 
@@ -73,11 +73,10 @@ fn run(args: Args) -> Result<()> {
     for protein in v1.proteins {
         if protein.molecule_id_type == Some(metadatav1::MoleculeType::PDB) {
             pdb_id = protein.molecule_id;
-        } else if protein.molecule_id_type == Some(metadatav1::MoleculeType::Uniprot) {
-            if let Some(uniprot_id) = protein.molecule_id {
+        } else if protein.molecule_id_type == Some(metadatav1::MoleculeType::Uniprot)
+            && let Some(uniprot_id) = protein.molecule_id {
                 uniprot_ids.push(uniprot_id);
             }
-        }
     }
 
     let water = if let Some(w) = v1.water {

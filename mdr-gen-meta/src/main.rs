@@ -61,7 +61,7 @@ fn run(args: Args) -> Result<()> {
     let water = match (&sim.water_type, &sim.water_density) {
         (Some(model), Some(density_kg_m3)) => Some(metadata::Water {
             model: model.clone(),
-            density_kg_m3: density_kg_m3.clone(),
+            density_kg_m3: *density_kg_m3,
         }),
         _ => None,
     };
@@ -169,7 +169,7 @@ fn run(args: Args) -> Result<()> {
                 .iter()
                 .map(|val| metadata::Solvent {
                     name: val.name.clone(),
-                    concentration_mol_liter: val.concentration.clone(),
+                    concentration_mol_liter: val.concentration,
                 })
                 .collect::<Vec<_>>(),
         )
@@ -230,9 +230,9 @@ fn run(args: Args) -> Result<()> {
                 title: val.title.clone(),
                 authors: val.authors.clone(),
                 journal: val.journal.clone(),
-                volume: val.volume.clone() as u32,
+                volume: val.volume as u32,
                 number: val.number.clone(),
-                year: val.year.clone() as u32,
+                year: val.year as u32,
                 pages: val.pages.clone(),
                 doi: Some(val.doi),
             });

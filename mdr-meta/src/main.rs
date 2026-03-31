@@ -33,7 +33,7 @@ fn run(args: Cli) -> Result<()> {
                     Err(e) => println!("{e}"),
                 }
             }
-            ()
+            
         }
         Some(Command::Eg(args)) => {
             let mut out_file = open_outfile(&args.outfile)?;

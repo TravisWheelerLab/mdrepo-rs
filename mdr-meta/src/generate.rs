@@ -113,12 +113,12 @@ pub fn generate(args: &GenArgs) -> Result<Meta> {
 fn select_candidate(
     wanted_name: &Option<String>,
     file_type: FileType,
-    files: &Vec<FileInfo>,
+    files: &[FileInfo],
     directory: &Path,
 ) -> Result<String> {
     match wanted_name {
         Some(name) => {
-            let path = directory.join(&name);
+            let path = directory.join(name);
             if path.is_file() {
                 Ok(name.to_string())
             } else {

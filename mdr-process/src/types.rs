@@ -469,3 +469,13 @@ pub struct DoiPublishedDateParts {
     #[serde(alias = "date-parts")]
     pub date_parts: Vec<u32>,
 }
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TicketInfo {
+    pub first_name: String,
+    pub last_name: Option<String>,
+    pub email: String,
+    pub institution: Option<String>,
+    pub orcid: String,
+}
