@@ -1,6 +1,6 @@
 use crate::{
     process,
-    types::{ProcessArgs, TicketArgs},
+    types::{ProcessArgs, TicketArgs, TicketInfo},
 };
 use anyhow::{anyhow, bail, Result};
 use dotenvy::dotenv;
@@ -9,17 +9,36 @@ use std::{env, fs, path::PathBuf, process::Command};
 use which::which;
 
 // --------------------------------------------------
+pub fn get_ticket_user(args: &TicketArgs) -> Result<TicketInfo> {
+    let landing_dir = &args.landing_dir.clone().unwrap_or(PathBuf::from(
+        env::var("LANDING_DIR").map_err(|e| anyhow!("LANDING_DIR: {e}"))?,
+    ));
+
+    let ticket_file = &landing_dir
+        .join(args.server.to_string())
+        .join(format!("ticket-{}", args.ticket_id))
+        .join("ticket.json");
+
+    let contents = fs::read_to_string(&ticket_file)
+        .map_err(|e| anyhow!("{}: {e}", ticket_file.display()))?;
+
+    let ticket: TicketInfo = serde_json::from_str(&contents)?;
+
+    Ok(ticket)
+}
+
+// --------------------------------------------------
 pub fn process(args: &TicketArgs) -> Result<()> {
     debug!("{args:?}");
     dotenv().ok();
+
     let script_dir = &args.script_dir.clone().unwrap_or(PathBuf::from(
         env::var("SCRIPT_DIR").map_err(|e| anyhow!("SCRIPT_DIR: {e}"))?,
     ));
 
-    let landing_dir = &args.script_dir.clone().unwrap_or(PathBuf::from(
+    let landing_dir = &args.landing_dir.clone().unwrap_or(PathBuf::from(
         env::var("LANDING_DIR").map_err(|e| anyhow!("LANDING_DIR: {e}"))?,
     ));
-
     let landing_dir = &landing_dir.join(args.server.to_string());
     if !landing_dir.is_dir() {
         fs::create_dir_all(landing_dir)?;
@@ -75,7 +94,7 @@ pub fn process(args: &TicketArgs) -> Result<()> {
     }
 
     for ticket_dir in ticket_dirs {
-        debug!(r#"Processing "{}""#, ticket_dir.display());
+        debug!(r#"Processing ticket directory "{}""#, ticket_dir.display());
         match process::process(&ProcessArgs {
             dirname: ticket_dir.clone(),
             script_dir: Some(script_dir.clone()),
@@ -85,9 +104,18 @@ pub fn process(args: &TicketArgs) -> Result<()> {
             simulation_id: None,
         }) {
             Ok(()) => {
-                info!("Success");
+                info!(
+                    r#"Finished processing ticket directory "{}""#,
+                    ticket_dir.display()
+                );
             }
-            Err(e) => info!("Error: {e}"),
+            Err(e) => {
+                info!("{e}");
+                bail!(
+                    r#"Error processing ticket directory "{}""#,
+                    ticket_dir.display()
+                )
+            }
         }
     }
 
