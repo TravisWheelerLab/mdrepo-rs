@@ -5,7 +5,7 @@ use crate::{
 use anyhow::{bail, Result};
 use dotenvy::dotenv;
 use libmdrepo::{common::file_exists, metadata::Meta};
-use log::{debug, info};
+use log::debug;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -19,12 +19,12 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
     let mdrepo_id = format!("MDR{simulation_id:08}");
     debug!("Reprocessing simulation ID {mdrepo_id}");
 
-    let data_dir = &args.work_dir.join(&mdrepo_id);
+    let server = &args.server;
+    let data_dir = &args.work_dir.join(&server.to_string()).join(&mdrepo_id);
     if !data_dir.is_dir() {
         fs::create_dir_all(data_dir)?;
     }
 
-    let server = &args.server;
     let irods_dir =
         format!("/iplant/home/shared/mdrepo/{server}/release/{mdrepo_id}/original");
     let irods_dir = Path::new(&irods_dir);
@@ -52,18 +52,18 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
         }
     }
 
-    match process::process(&ProcessArgs {
+    process::process(&ProcessArgs {
         dirname: data_dir.clone(),
         script_dir: None,
         out_dir: None,
         json_dir: None,
         server: args.server.clone(),
         simulation_id: Some(simulation_id),
-    }) {
-        Ok(()) => {
-            info!("Success");
-        }
-        Err(e) => info!("Error: {e}"),
+        force: args.force,
+    })?;
+
+    if !args.preserve {
+        fs::remove_dir_all(&data_dir)?;
     }
 
     Ok(())
