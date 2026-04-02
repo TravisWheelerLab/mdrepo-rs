@@ -437,7 +437,7 @@ pub struct Ligand {
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
     pub name: String,
 
-    #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
+    #[validate(custom(function = "is_valid_smiles"))]
     pub smiles: String,
 }
 
@@ -563,6 +563,17 @@ fn format_validation_error(err: &ValidationError) -> String {
     };
 
     format!("value {given} {message}")
+}
+
+// --------------------------------------------------
+pub fn is_valid_smiles(smiles: &str) -> std::result::Result<(), ValidationError> {
+    let mut writer = purr::write::Writer::new();
+    let mut trace = purr::read::Trace::new();
+    if purr::read::read(smiles, &mut writer, Some(&mut trace)).is_ok() {
+        Ok(())
+    } else {
+        Err(ValidationError::new("invalid SMILES"))
+    }
 }
 
 // --------------------------------------------------
@@ -1045,6 +1056,7 @@ mod tests {
             r#"forcefield: value " " invalid"#,
             r#"integration_timestep_fs: value 2000 must be >= 1 and <= 5"#,
             r#"lead_contributor_orcid: value "0000-0001-9961-144" invalid"#,
+            r#"ligands[1].smiles: value "smiles_string" invalid"#,
             r#"pdb_id: value "5am" invalid"#,
             r#"short_description: value " " invalid"#,
             r#"solvents[1].name: value " " invalid"#,

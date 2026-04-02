@@ -9,6 +9,7 @@ external_links[1].url: value "zenodo.org/records/7711953" invalid
 forcefield: value " " invalid
 integration_timestep_fs: value 2000 must be >= 1 and <= 5
 lead_contributor_orcid: value "0000-0001-9961-144" invalid
+ligands[1].smiles: value "smiles_string" invalid
 pdb_id: value "5am" invalid
 short_description: value " " invalid
 solvents[1].name: value " " invalid
