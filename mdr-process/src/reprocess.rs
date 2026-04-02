@@ -20,7 +20,7 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
     debug!("Reprocessing simulation ID {mdrepo_id}");
 
     let server = &args.server;
-    let data_dir = &args.work_dir.join(&server.to_string()).join(&mdrepo_id);
+    let data_dir = &args.work_dir.join(server.to_string()).join(&mdrepo_id);
     if !data_dir.is_dir() {
         fs::create_dir_all(data_dir)?;
     }
@@ -63,7 +63,7 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
     })?;
 
     if !args.preserve {
-        fs::remove_dir_all(&data_dir)?;
+        fs::remove_dir_all(data_dir)?;
     }
 
     Ok(())

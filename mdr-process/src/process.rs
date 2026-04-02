@@ -445,7 +445,7 @@ pub fn make_import_json(
             for (ligand_num, given_ligand) in given_ligands.iter().enumerate() {
                 let mut found_match = false;
                 for inferred in &inferred_ligands {
-                    let check = check_ligand(&given_ligand, &inferred, script_dir)?;
+                    let check = check_ligand(given_ligand, inferred, script_dir)?;
                     if !&[
                         check.exact_match,
                         check.same_connectivity,
@@ -469,7 +469,7 @@ pub fn make_import_json(
         }
     } else {
         for ligand in inferred_ligands {
-            let name = if ligand.name.common_name.len() > 0 {
+            let name = if !ligand.name.common_name.is_empty() {
                 ligand.name.common_name.clone()
             } else {
                 ligand.name.iupac_name.clone()
@@ -663,7 +663,7 @@ pub fn check_ligand(
     }
 
     let stdout = str::from_utf8(&cmd.stdout)?;
-    let checked = serde_json::from_str(&stdout)?;
+    let checked = serde_json::from_str(stdout)?;
     Ok(checked)
 }
 
