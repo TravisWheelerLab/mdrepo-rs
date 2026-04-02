@@ -509,11 +509,11 @@ pub struct InferredLigand {
 pub struct InferredLigandName {
     pub smiles_input: String,
     pub cid: u32,
-    pub iupac_name: String,
-    pub common_name: String,
-    pub formula: String,
+    pub iupac_name: Option<String>,
+    pub common_name: Option<String>,
+    pub formula: Option<String>,
     pub charge: u32,
-    pub synonyms: Vec<String>,
+    pub synonyms: Option<Vec<String>>,
 }
 
 // --------------------------------------------------

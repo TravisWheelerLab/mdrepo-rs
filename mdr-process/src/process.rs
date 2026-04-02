@@ -469,11 +469,11 @@ pub fn make_import_json(
         }
     } else {
         for ligand in inferred_ligands {
-            let name = if !ligand.name.common_name.is_empty() {
-                ligand.name.common_name.clone()
-            } else {
-                ligand.name.iupac_name.clone()
-            };
+            let name = ligand
+                .name
+                .common_name
+                .unwrap_or(ligand.name.iupac_name.unwrap_or("NA".to_string()));
+
             ligands.push({
                 metadata::Ligand {
                     name,
