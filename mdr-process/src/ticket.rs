@@ -102,6 +102,7 @@ pub fn process(args: &TicketArgs) -> Result<()> {
             json_dir: None,
             server: args.server.clone(),
             simulation_id: None,
+            force: args.force,
         }) {
             Ok(()) => {
                 info!(
