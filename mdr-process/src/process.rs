@@ -1,7 +1,7 @@
 use crate::types::{
-    DoiPaper, Duration, Export, ExportSimulation, ImportResult, MdFile, PdbEntry,
-    PdbGraphqlResponse, PdbResponse, ProcessArgs, ProcessedFiles, PushResult, RmsdRmsf,
-    UniprotEntry, UniprotResponse,
+    CheckedLigand, DoiPaper, Duration, Export, ExportSimulation, ImportResult,
+    InferredLigand, MdFile, PdbEntry, PdbGraphqlResponse, PdbResponse, ProcessArgs,
+    ProcessedFiles, PushResult, RmsdRmsf, UniprotEntry, UniprotResponse,
 };
 use anyhow::{anyhow, bail, Result};
 use dotenvy::dotenv;
@@ -35,6 +35,10 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
         env::var("SCRIPT_DIR").map_err(|e| anyhow!("SCRIPT_DIR: {e}"))?,
     ));
     debug!("{processed_dir:?}");
+
+    if args.force && processed_dir.is_dir() {
+        fs::remove_dir_all(&processed_dir)?;
+    }
 
     let meta_path = input_dir.join("mdrepo-metadata.toml");
     let meta = Meta::from_file(&meta_path)?;
@@ -424,6 +428,61 @@ pub fn make_import_json(
     let duration =
         get_duration(&processed_files.full_xtc, meta.integration_timestep_fs)?;
 
+    let inferred_ligands = get_inferred_ligands(
+        &processed_files.min_pdb,
+        &processed_files.min_gro,
+        script_dir,
+    )?;
+
+    let mut ligands = vec![];
+    let mut warnings = vec![];
+    if let Some(given_ligands) = &meta.ligands {
+        // For now, we'll still take all the given ligands
+        ligands = given_ligands.clone();
+
+        // But we'll check them against any inferred values
+        if !inferred_ligands.is_empty() {
+            for (ligand_num, given_ligand) in given_ligands.iter().enumerate() {
+                let mut found_match = false;
+                for inferred in &inferred_ligands {
+                    let check = check_ligand(&given_ligand, &inferred, script_dir)?;
+                    if !&[
+                        check.exact_match,
+                        check.same_connectivity,
+                        check.same_connectivity_and_stereo,
+                        check.same_inchi,
+                    ]
+                    .contains(&true)
+                    {
+                        found_match = true;
+                        break;
+                    }
+                }
+
+                if !found_match {
+                    warnings.push(format!(
+                        "Unable to verify ligand [{ligand_num}] ({})",
+                        given_ligand.smiles
+                    ));
+                }
+            }
+        }
+    } else {
+        for ligand in inferred_ligands {
+            let name = if ligand.name.common_name.len() > 0 {
+                ligand.name.common_name.clone()
+            } else {
+                ligand.name.iupac_name.clone()
+            };
+            ligands.push({
+                metadata::Ligand {
+                    name,
+                    smiles: ligand.structure.smiles,
+                }
+            })
+        }
+    }
+
     let mut uniprots: HashMap<String, UniprotEntry> = HashMap::new();
     if let Some(uniprot_ids) = &meta.uniprot_ids {
         for uniprot_id in uniprot_ids {
@@ -444,6 +503,7 @@ pub fn make_import_json(
             Ok((pdb_tmp, _pdb_uniprots)) => {
                 pdb = Some(pdb_tmp);
 
+                // TODO: Verify that we will not do this.
                 //for entry in pdb_uniprots {
                 //    if !uniprots.contains_key(&entry.uniprot_id) {
                 //        let _ = uniprots.insert(entry.uniprot_id.clone(), entry);
@@ -561,12 +621,16 @@ pub fn make_import_json(
         contributors: meta.contributors.unwrap_or_default(),
         original_files,
         processed_files: processed_export,
-        ligands: meta.ligands.unwrap_or_default(),
+        //ligands: meta.ligands.unwrap_or_default(),
+        ligands,
         solvents: meta.solvents.unwrap_or_default(),
         papers,
     };
 
-    let export = Export { simulation };
+    let export = Export {
+        simulation,
+        warnings,
+    };
 
     let import_json = &input_dir.join("processed").join("import.json");
     info!(r#"Writing JSON to "{}""#, &import_json.display());
@@ -574,6 +638,79 @@ pub fn make_import_json(
     writeln!(&file, "{}", &serde_json::to_string_pretty(&export)?)?;
 
     Ok(import_json.into())
+}
+
+// --------------------------------------------------
+pub fn check_ligand(
+    ligand: &metadata::Ligand,
+    inferred_ligand: &InferredLigand,
+    script_dir: &Path,
+) -> Result<CheckedLigand> {
+    let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
+    let script = script_dir.join("compare_smiles.py");
+    let cmd = Command::new(&uv)
+        .current_dir(script_dir)
+        .args([
+            "run",
+            script.to_string_lossy().as_ref(),
+            &ligand.smiles,
+            &inferred_ligand.structure.smiles,
+        ])
+        .output()?;
+
+    if !cmd.status.success() {
+        bail!(str::from_utf8(&cmd.stderr)?.to_string());
+    }
+
+    let stdout = str::from_utf8(&cmd.stdout)?;
+    let checked = serde_json::from_str(&stdout)?;
+    Ok(checked)
+}
+
+// --------------------------------------------------
+pub fn get_inferred_ligands(
+    min_pdb: &Path,
+    min_gro: &Path,
+    script_dir: &Path,
+) -> Result<Vec<InferredLigand>> {
+    let processed_dir = min_pdb.parent().unwrap();
+    let out_file = processed_dir.join("inferred_ligands.json");
+    if file_exists(&out_file) {
+        info!("Inferred ligands file exists");
+    } else {
+        info!("Creating inferred ligands file");
+        let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
+        let mol_tools = script_dir.join("mol_tools.py");
+        let cmd = Command::new(&uv)
+            .current_dir(script_dir)
+            .args([
+                "run",
+                mol_tools.to_string_lossy().as_ref(),
+                "both",
+                "--pdb",
+                min_pdb.to_string_lossy().as_ref(),
+                "--gro",
+                min_gro.to_string_lossy().as_ref(),
+                "--outfile",
+                out_file.to_string_lossy().as_ref(),
+            ])
+            .output()?;
+
+        info!("{}", str::from_utf8(&cmd.stdout)?);
+
+        if !cmd.status.success() {
+            bail!(str::from_utf8(&cmd.stderr)?.to_string());
+        }
+
+        if !file_exists(&out_file) {
+            bail!(r#"Failed to create "{}""#, out_file.display());
+        }
+    }
+
+    let contents = fs::read_to_string(&out_file)?;
+    let ligands: Vec<InferredLigand> = serde_json::from_str(&contents)?;
+
+    Ok(ligands)
 }
 
 // --------------------------------------------------
