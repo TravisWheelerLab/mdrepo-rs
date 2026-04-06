@@ -34,9 +34,10 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
     let script_dir = &args.script_dir.clone().unwrap_or(PathBuf::from(
         env::var("SCRIPT_DIR").map_err(|e| anyhow!("SCRIPT_DIR: {e}"))?,
     ));
-    debug!("{processed_dir:?}");
 
+    debug!(r#"Processed files will go to "{processed_dir:?}""#);
     if args.force && processed_dir.is_dir() {
+        debug!("Removing processed directory");
         fs::remove_dir_all(&processed_dir)?;
     }
 
