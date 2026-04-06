@@ -85,6 +85,10 @@ pub struct ProcessArgs {
     /// Simulation ID
     #[arg(long, value_name = "SIMULATION_ID")]
     pub simulation_id: Option<u32>,
+
+    /// Allow missing PDB/Uniprot IDs in metadata
+    #[arg(short, long)]
+    pub no_id: bool,
 }
 
 // --------------------------------------------------
@@ -197,6 +201,10 @@ pub struct MetaCheckArgs {
     /// Input file
     #[arg(value_name = "FILE")]
     pub filename: PathBuf,
+
+    /// Allow missing PDB/Uniprot IDs in metadata
+    #[arg(short, long)]
+    pub no_id: bool,
 }
 
 // --------------------------------------------------

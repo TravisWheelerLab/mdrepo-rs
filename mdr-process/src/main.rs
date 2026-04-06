@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use clap::Parser;
-use libmdrepo::metadata::Meta;
+use libmdrepo::metadata::{Meta, MetaCheckOptions};
 use mdr_process::{
     process, reprocess, ticket,
     types::{Cli, Command, LogLevel},
@@ -47,7 +47,16 @@ fn run(args: Cli) -> Result<()> {
         }
         Some(Command::MetaCheck(args)) => {
             let messages = match Meta::from_file(&args.filename) {
-                Ok(meta) => meta.check(),
+                Ok(meta) => {
+                    let opts = if args.no_id {
+                        Some(MetaCheckOptions {
+                            allow_no_pdb_uniprot: true,
+                        })
+                    } else {
+                        None
+                    };
+                    meta.check(opts)
+                }
                 Err(e) => vec![format!(
                     "Unable to parse {}: {}",
                     args.filename.display(),

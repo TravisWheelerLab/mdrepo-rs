@@ -102,6 +102,8 @@ pub fn process(args: &TicketArgs) -> Result<()> {
             json_dir: None,
             server: args.server.clone(),
             simulation_id: None,
+            // The TOML will have already been validated, so allow missing IDs
+            no_id: true,
         }) {
             Ok(()) => {
                 info!(

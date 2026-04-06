@@ -59,6 +59,8 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
         json_dir: None,
         server: args.server.clone(),
         simulation_id: Some(simulation_id),
+        // If it had no PDB/Uniprots before, let it stand
+        no_id: true,
     }) {
         Ok(()) => {
             info!("Success");

@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use clap::Parser;
-use libmdrepo::metadata::Meta;
+use libmdrepo::metadata::{Meta, MetaCheckOptions};
 use mdr_meta::{
     generate::generate,
     types::{Cli, Command, FileFormat},
@@ -29,11 +29,19 @@ fn run(args: Cli) -> Result<()> {
                     println!("==> {filename} <==")
                 }
                 match parse_file(filename) {
-                    Ok(meta) => println!("{}", meta.check().join("\n")),
+                    Ok(meta) => {
+                        let opts = if args.no_id {
+                            Some(MetaCheckOptions {
+                                allow_no_pdb_uniprot: true,
+                            })
+                        } else {
+                            None
+                        };
+                        println!("{}", meta.check(opts).join("\n"))
+                    }
                     Err(e) => println!("{e}"),
                 }
             }
-            
         }
         Some(Command::Eg(args)) => {
             let mut out_file = open_outfile(&args.outfile)?;

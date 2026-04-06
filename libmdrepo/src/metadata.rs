@@ -10,6 +10,11 @@ use std::{
 use validator::{Validate, ValidationError, ValidationErrorsKind};
 
 #[derive(Debug, Deserialize, Serialize, Validate)]
+pub struct MetaCheckOptions {
+    pub allow_no_pdb_uniprot: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, Validate)]
 #[serde(deny_unknown_fields)]
 pub struct Meta {
     #[validate(regex(path = *constants::ORCID_REGEX))]
@@ -140,7 +145,7 @@ impl Meta {
         filenames
     }
 
-    pub fn check(&self) -> Vec<String> {
+    pub fn check(&self, options: Option<MetaCheckOptions>) -> Vec<String> {
         let mut messages = vec![];
         if let Err(e) = self.validate() {
             for (field, val) in e.errors() {
@@ -235,6 +240,14 @@ impl Meta {
                         .to_string(),
                 );
             }
+        }
+
+        if self.pdb_id.is_none()
+            && self.uniprot_ids.is_none()
+            && !options.map_or(false, |val| val.allow_no_pdb_uniprot)
+        {
+            messages
+                .push("Missing PDB and Uniprot IDs (skip with --no-id)".to_string());
         }
 
         messages
@@ -653,7 +666,7 @@ mod proptest_tests {
         fn valid_temperature_no_error(temp in 275u32..=700u32) {
             let mut meta = base_meta();
             meta.temperature_kelvin = temp;
-            let errors = meta.check();
+            let errors = meta.check(None);
             let has_error = errors.iter().any(|e| e.starts_with("temperature_kelvin:"));
             prop_assert!(!has_error, "Unexpected temperature error for {temp}: {errors:?}");
         }
@@ -665,7 +678,7 @@ mod proptest_tests {
         ]) {
             let mut meta = base_meta();
             meta.temperature_kelvin = temp;
-            let errors = meta.check();
+            let errors = meta.check(None);
             let has_error = errors.iter().any(|e| e.starts_with("temperature_kelvin:"));
             prop_assert!(has_error, "Expected temperature error for temp={temp}");
         }
@@ -676,7 +689,7 @@ mod proptest_tests {
         fn valid_timestep_no_error(timestep in 1u32..=5u32) {
             let mut meta = base_meta();
             meta.integration_timestep_fs = timestep;
-            let errors = meta.check();
+            let errors = meta.check(None);
             let has_error = errors.iter().any(|e| e.starts_with("integration_timestep_fs:"));
             prop_assert!(!has_error, "Unexpected timestep error for {timestep}: {errors:?}");
         }
@@ -688,7 +701,7 @@ mod proptest_tests {
         ]) {
             let mut meta = base_meta();
             meta.integration_timestep_fs = timestep;
-            let errors = meta.check();
+            let errors = meta.check(None);
             let has_error = errors.iter().any(|e| e.starts_with("integration_timestep_fs:"));
             prop_assert!(has_error, "Expected timestep error for timestep={timestep}");
         }
@@ -782,7 +795,7 @@ mod proptest_tests {
         ) {
             let mut meta = base_meta();
             meta.short_description = desc;
-            let errors = meta.check();
+            let errors = meta.check(None);
             let has_error = errors.iter().any(|e| e.starts_with("short_description:"));
             prop_assert!(!has_error, "Unexpected description error: {errors:?}");
         }
@@ -791,7 +804,7 @@ mod proptest_tests {
         fn short_description_over_300_fails(extra in "[a-zA-Z0-9]{1,100}") {
             let mut meta = base_meta();
             meta.short_description = format!("{}{}", "a".repeat(300), extra);
-            let errors = meta.check();
+            let errors = meta.check(None);
             let has_error = errors.iter().any(|e| e.starts_with("short_description:"));
             prop_assert!(has_error, "Expected description length error, got: {errors:?}");
         }
@@ -835,7 +848,7 @@ mod proptest_tests {
             // Same filename in both trajectory and structure fields → duplicate
             meta.trajectory_file_name = filename.clone();
             meta.structure_file_name = filename.clone();
-            let errors = meta.check();
+            let errors = meta.check(None);
             let has_dup_error = errors.iter().any(|e| e.contains("is duplicated"));
             prop_assert!(
                 has_dup_error,
@@ -852,7 +865,7 @@ mod proptest_tests {
         meta.software_name = "GROMACS".to_string();
         meta.topology_file_name = "topol.top".to_string();
         meta.additional_files = None;
-        let errors = meta.check();
+        let errors = meta.check(None);
         assert!(
             errors.iter().any(|e| e.contains("GROMACS topology")),
             "Expected GROMACS topology error, got: {errors:?}"
@@ -869,7 +882,7 @@ mod proptest_tests {
             file_type: "Binary topology".to_string(),
             description: None,
         }]);
-        let errors = meta.check();
+        let errors = meta.check(None);
         assert!(
             !errors.iter().any(|e| e.contains("GROMACS topology")),
             "Expected no GROMACS topology error, got: {errors:?}"
@@ -886,7 +899,7 @@ mod proptest_tests {
             file_type: "Structure".to_string(),
             description: None,
         }]);
-        let errors = meta.check();
+        let errors = meta.check(None);
         assert!(
             !errors.iter().any(|e| e.contains("GROMACS topology")),
             "Expected no GROMACS topology error, got: {errors:?}"
@@ -1043,7 +1056,7 @@ mod tests {
     #[test]
     fn meta_check_bad() -> Result<()> {
         let meta = Meta::from_file(&PathBuf::from(TOML_BAD1))?;
-        let errors = &meta.check();
+        let errors = &meta.check(None);
         let expected = vec![
             r#"additional_files[1].description: value " " invalid"#,
             r#"additional_files[1].file_name: value " " invalid"#,
