@@ -89,6 +89,10 @@ pub struct ProcessArgs {
     /// Allow missing PDB/Uniprot IDs in metadata
     #[arg(short, long)]
     pub no_id: bool,
+
+    /// Force removal of any existing "processed" directory
+    #[arg(short, long)]
+    pub force: bool,
 }
 
 // --------------------------------------------------
@@ -119,6 +123,10 @@ pub struct TicketArgs {
     /// Server
     #[arg(short, long, value_name = "SERVER", default_value = "staging")]
     pub server: Server,
+
+    /// Force removal of any existing "processed" directory
+    #[arg(short, long)]
+    pub force: bool,
 }
 
 // --------------------------------------------------
@@ -150,6 +158,14 @@ pub struct ReprocessArgs {
     /// Server
     #[arg(short('S'), long, value_name = "SERVER", default_value = "staging")]
     pub server: Server,
+
+    /// Preserve working directory
+    #[arg(long)]
+    pub preserve: bool,
+
+    /// Force removal of any existing "processed" directory
+    #[arg(short, long)]
+    pub force: bool,
 }
 
 // --------------------------------------------------
@@ -379,6 +395,7 @@ pub struct RcsbUniprotProteinName {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Export {
     pub simulation: ExportSimulation,
+    pub warnings: Vec<String>,
 }
 
 // --------------------------------------------------
@@ -486,4 +503,53 @@ pub struct TicketInfo {
     pub email: String,
     pub institution: Option<String>,
     pub orcid: String,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct InferredLigand {
+    pub structure: InferredLigandStructure,
+    pub name: InferredLigandName,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct InferredLigandName {
+    pub smiles_input: String,
+    pub cid: u32,
+    pub iupac_name: Option<String>,
+    pub common_name: Option<String>,
+    pub formula: Option<String>,
+    pub charge: u32,
+    pub synonyms: Option<Vec<String>>,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct InferredLigandStructure {
+    pub smiles: String,
+    pub formula: String,
+    pub num_atoms: u32,
+    pub num_heavy_atoms: u32,
+    pub charge: u32,
+    pub inchikey: String,
+    pub resname: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CheckedLigand {
+    pub smi1_canonical: String,
+    pub smi2_canonical: String,
+    pub formula1: String,
+    pub formula2: String,
+    pub charge1: u32,
+    pub charge2: u32,
+    pub exact_match: bool,
+    pub same_connectivity: bool,
+    pub same_connectivity_and_stereo: bool,
+    pub same_inchi: bool,
+    pub differences: Vec<String>,
+    pub inchi1: String,
+    pub inchi2: String,
+    pub connectivity_layer: Option<String>,
 }

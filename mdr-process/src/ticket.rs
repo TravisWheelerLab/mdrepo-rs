@@ -104,6 +104,7 @@ pub fn process(args: &TicketArgs) -> Result<()> {
             simulation_id: None,
             // The TOML will have already been validated, so allow missing IDs
             no_id: true,
+            force: args.force,
         }) {
             Ok(()) => {
                 info!(
