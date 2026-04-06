@@ -7,7 +7,7 @@ use anyhow::{anyhow, bail, Result};
 use dotenvy::dotenv;
 use libmdrepo::{
     common::{file_exists, get_md5, read_file},
-    metadata::{self, Meta},
+    metadata::{self, Meta, MetaCheckOptions},
 };
 use log::{debug, info};
 use regex::Regex;
@@ -43,7 +43,14 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
 
     let meta_path = input_dir.join("mdrepo-metadata.toml");
     let meta = Meta::from_file(&meta_path)?;
-    let errors = meta.check();
+    let opts = if args.no_id {
+        Some(MetaCheckOptions {
+            allow_no_pdb_uniprot: true,
+        })
+    } else {
+        None
+    };
+    let errors = meta.check(opts);
     if !errors.is_empty() {
         bail!(
             "Found {} error{} in mdrepo-metadata.toml:\n{}",

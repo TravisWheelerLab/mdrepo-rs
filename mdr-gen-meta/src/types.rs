@@ -22,6 +22,10 @@ pub struct Args {
     /// Output format
     #[arg(short, long, value_name = "FORMAT")]
     pub format: Option<FileFormat>,
+
+    /// Allow missing PDB/Uniprot IDs
+    #[arg(short, long)]
+    pub no_id: bool,
 }
 
 // --------------------------------------------------

@@ -122,6 +122,10 @@ pub struct CheckArgs {
     /// Input filename or "-" for STDIN
     #[arg(value_name = "FILE", num_args = 1..)]
     pub filenames: Vec<String>,
+
+    /// Allow missing PDB/Uniprot IDs
+    #[arg(short, long)]
+    pub no_id: bool,
 }
 
 // --------------------------------------------------

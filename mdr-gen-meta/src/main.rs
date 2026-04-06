@@ -283,7 +283,14 @@ fn run(args: Args) -> Result<()> {
         contributors,
     };
 
-    let errors = meta.check();
+    let opts = if args.no_id {
+        Some(metadata::MetaCheckOptions {
+            allow_no_pdb_uniprot: true,
+        })
+    } else {
+        None
+    };
+    let errors = meta.check(opts);
     if !errors.is_empty() {
         bail!("Errors!\n{}", errors.join("\n"));
     }
