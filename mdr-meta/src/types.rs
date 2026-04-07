@@ -3,17 +3,8 @@ use std::path::PathBuf;
 
 // --------------------------------------------------
 #[derive(Parser, Debug)]
-#[command(
-    arg_required_else_help = true,
-    version,
-    about,
-    disable_version_flag = true
-)]
+#[command(arg_required_else_help = true, version, about)]
 pub struct Cli {
-    /// Print version
-    #[arg(short, long, action = clap::ArgAction::Version)]
-    version: Option<bool>,
-
     #[command(subcommand)]
     pub command: Option<Command>,
 }
