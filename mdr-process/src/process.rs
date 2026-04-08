@@ -43,11 +43,11 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
     let processed_dir = args
         .out_dir
         .clone()
-        .map_or(input_dir.join("processed"), |dir| PathBuf::from(&dir));
-    let script_dir = &args.script_dir.clone().unwrap_or(PathBuf::from(
+        .map_or(input_dir.join("processed"), PathBuf::from);
+    let script_dir = args.script_dir.clone().unwrap_or(PathBuf::from(
         env::var("SCRIPT_DIR").map_err(|e| anyhow!("SCRIPT_DIR: {e}"))?,
     ));
-    let work_dir = &args.work_dir.clone().unwrap_or(PathBuf::from(
+    let work_dir = args.work_dir.clone().unwrap_or(PathBuf::from(
         env::var("MDREPO_WORK_DIR").map_err(|e| anyhow!("MDREPO_WORK_DIR: {e}"))?,
     ));
     let uniprot_blast_dir = work_dir.join("blast").join("uniprot");
@@ -60,14 +60,11 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
 
     let meta_path = input_dir.join("mdrepo-metadata.toml");
     let meta = Meta::from_file(&meta_path)?;
-    let opts = if args.no_id {
-        Some(MetaCheckOptions {
-            allow_no_pdb_uniprot: true,
-        })
+    let errors = meta.check(if args.no_id {
+        Some(MetaCheckOptions { allow_no_pdb_uniprot: true })
     } else {
         None
-    };
-    let errors = meta.check(opts);
+    });
     if !errors.is_empty() {
         bail!(
             "Found {} error{} in mdrepo-metadata.toml:\n{}",
@@ -78,12 +75,12 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
     }
 
     let processed_files =
-        make_processed_files(&meta_path, &input_dir, &processed_dir, script_dir)?;
+        make_processed_files(&meta_path, &input_dir, &processed_dir, &script_dir)?;
 
     let import_json = make_import_json(
         &meta_path,
         &input_dir,
-        script_dir,
+        &script_dir,
         &uniprot_blast_dir,
         &processed_files,
         args.simulation_id,
@@ -91,92 +88,119 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
 
     if !args.dry_run {
         let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
-        let import_script = script_dir.join("import_preprocessed.py");
-        info!(r#"Import "{}""#, import_json.display());
-        let out_file = &processed_dir.join("imported.json");
-        let mut cmd = Command::new(&uv);
-        let mut import_args = vec![
-            "run".to_string(),
-            import_script.to_string_lossy().to_string(),
-            "--file".to_string(),
-            import_json.to_string_lossy().to_string(),
-            "--data-dir".to_string(),
-            input_dir.to_string_lossy().to_string(),
-            "--server".to_string(),
-            args.server.to_string(),
-            "--out-file".to_string(),
-            out_file.to_string_lossy().to_string(),
-        ];
-        if let Some(sim_id) = args.simulation_id {
-            import_args.extend_from_slice(&[
-                "--simulation-id".to_string(),
-                sim_id.to_string(),
-            ]);
-        }
-        cmd.current_dir(script_dir).args(&import_args);
-        debug!("Running {cmd:?}");
-        let output = cmd.output()?;
-
-        if !output.status.success() {
-            bail!(str::from_utf8(&output.stderr)?.to_string());
-        }
-
-        // The ticket directory should have been created by the fetch
-        if !out_file.is_file() {
-            bail!(r#"Failed to create "{}""#, out_file.display());
-        }
-
-        let import_result: ImportResult = serde_json::from_str(&read_file(out_file)?)
-            .map_err(|e| {
-            anyhow!(r#"Failed to parse "{}": {e}"#, out_file.display())
-        })?;
-
-        let push_script = script_dir.join("push_sim_files.py");
-        info!(
-            r#"Push files for "{}" -> simuation "{}""#,
-            import_result.filename, import_result.simulation_id
-        );
-
-        let out_file = processed_dir.join("pushed.json");
-        let mut cmd = Command::new(&uv);
-        let mut push_args = vec![
-            "run".to_string(),
-            push_script.to_string_lossy().to_string(),
-            "--file".to_string(),
-            import_result.filename,
-            "--simulation-id".to_string(),
-            import_result.simulation_id.to_string(),
-            "--server".to_string(),
-            args.server.to_string(),
-            "--data-dir".to_string(),
-            input_dir.to_string_lossy().to_string(),
-            "--out-file".to_string(),
-            out_file.to_string_lossy().to_string(),
-        ];
-
-        // We should remove existing "processed" directory
-        if args.simulation_id.is_some() {
-            push_args.push("--remove-processed-dir".to_string());
-        }
-
-        cmd.current_dir(script_dir).args(&push_args);
-        debug!("Running {cmd:?}");
-
-        let output = cmd.output()?;
-        if !output.status.success() {
-            bail!(str::from_utf8(&output.stderr)?.to_string());
-        }
-
-        if !out_file.is_file() {
-            bail!(r#"Failed to create "{}""#, out_file.display());
-        }
-
-        let push_res: Vec<PushResult> = serde_json::from_str(&read_file(&out_file)?)
-            .map_err(|e| anyhow!(r#"Failed to parse "{}": {e}"#, out_file.display()))?;
+        let import_result = run_import(
+            &uv,
+            &script_dir,
+            &import_json,
+            &input_dir,
+            &args.server.to_string(),
+            args.simulation_id,
+            &processed_dir,
+        )?;
+        let push_res = run_push(
+            &uv,
+            &script_dir,
+            import_result,
+            &input_dir,
+            &args.server.to_string(),
+            args.simulation_id,
+            &processed_dir,
+        )?;
         debug!("{push_res:?}");
     }
 
     Ok(())
+}
+
+// --------------------------------------------------
+fn run_import(
+    uv: &Path,
+    script_dir: &Path,
+    import_json: &Path,
+    input_dir: &Path,
+    server: &str,
+    simulation_id: Option<u32>,
+    processed_dir: &Path,
+) -> Result<ImportResult> {
+    let import_script = script_dir.join("import_preprocessed.py");
+    let out_file = processed_dir.join("imported.json");
+    info!(r#"Import "{}""#, import_json.display());
+
+    let mut args = vec![
+        "run".to_string(),
+        import_script.to_string_lossy().to_string(),
+        "--file".to_string(),
+        import_json.to_string_lossy().to_string(),
+        "--data-dir".to_string(),
+        input_dir.to_string_lossy().to_string(),
+        "--server".to_string(),
+        server.to_string(),
+        "--out-file".to_string(),
+        out_file.to_string_lossy().to_string(),
+    ];
+    if let Some(id) = simulation_id {
+        args.extend(["--simulation-id".to_string(), id.to_string()]);
+    }
+
+    let cmd = Command::new(uv).current_dir(script_dir).args(&args).output()?;
+    debug!("Running import_preprocessed.py");
+    if !cmd.status.success() {
+        bail!(str::from_utf8(&cmd.stderr)?.to_string());
+    }
+    if !out_file.is_file() {
+        bail!(r#"Failed to create "{}""#, out_file.display());
+    }
+
+    serde_json::from_str(&read_file(&out_file)?)
+        .map_err(|e| anyhow!(r#"Failed to parse "{}": {e}"#, out_file.display()))
+}
+
+// --------------------------------------------------
+fn run_push(
+    uv: &Path,
+    script_dir: &Path,
+    import_result: ImportResult,
+    input_dir: &Path,
+    server: &str,
+    simulation_id: Option<u32>,
+    processed_dir: &Path,
+) -> Result<Vec<PushResult>> {
+    let push_script = script_dir.join("push_sim_files.py");
+    let out_file = processed_dir.join("pushed.json");
+    info!(
+        r#"Push files for "{}" -> simulation "{}""#,
+        import_result.filename, import_result.simulation_id
+    );
+
+    let mut args = vec![
+        "run".to_string(),
+        push_script.to_string_lossy().to_string(),
+        "--file".to_string(),
+        import_result.filename,
+        "--simulation-id".to_string(),
+        import_result.simulation_id.to_string(),
+        "--server".to_string(),
+        server.to_string(),
+        "--data-dir".to_string(),
+        input_dir.to_string_lossy().to_string(),
+        "--out-file".to_string(),
+        out_file.to_string_lossy().to_string(),
+    ];
+    if simulation_id.is_some() {
+        args.push("--remove-processed-dir".to_string());
+    }
+
+    let cmd = Command::new(uv).current_dir(script_dir).args(&args).output()?;
+    debug!("Running push_sim_files.py");
+    if !cmd.status.success() {
+        bail!(str::from_utf8(&cmd.stderr)?.to_string());
+    }
+    if !out_file.is_file() {
+        bail!(r#"Failed to create "{}""#, out_file.display());
+    }
+
+    serde_json::from_str(&read_file(&out_file)?)
+        .map_err(|e| anyhow!(r#"Failed to parse "{}": {e}"#, out_file.display()))
 }
 
 // --------------------------------------------------
