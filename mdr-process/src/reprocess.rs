@@ -85,7 +85,7 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
 }
 
 // --------------------------------------------------
-fn irods_fetch(irods_path: &Path, local_path: &PathBuf) -> Result<()> {
+fn irods_fetch(irods_path: &Path, local_path: &Path) -> Result<()> {
     debug!(
         r#"Get "{}" -> "{}""#,
         irods_path.display(),

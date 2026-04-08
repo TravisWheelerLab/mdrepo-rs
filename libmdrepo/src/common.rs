@@ -4,13 +4,13 @@ use regex::Regex;
 use std::{
     fs::{self, File},
     io::Write,
-    path::{Path, PathBuf},
+    path::Path,
     process::Command,
 };
 use which::which;
 
 // --------------------------------------------------
-pub fn file_exists(file: &PathBuf) -> bool {
+pub fn file_exists(file: &Path) -> bool {
     if let Ok(meta) = fs::metadata(file) {
         meta.is_file() && meta.len() > 0
     } else {
@@ -19,7 +19,7 @@ pub fn file_exists(file: &PathBuf) -> bool {
 }
 
 // --------------------------------------------------
-pub fn read_file(path: &PathBuf) -> Result<String> {
+pub fn read_file(path: &Path) -> Result<String> {
     fs::read_to_string(path).map_err(|e| anyhow!("{}: {e}", path.display()))
 }
 

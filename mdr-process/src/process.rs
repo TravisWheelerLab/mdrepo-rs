@@ -170,10 +170,10 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
 
 // --------------------------------------------------
 pub fn make_thumbnail(
-    thumbnail: &PathBuf,
+    thumbnail: &Path,
     sampled_trajectory: &Path,
     min_pdb: &Path,
-    script_dir: &PathBuf,
+    script_dir: &Path,
 ) -> Result<()> {
     let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
     if file_exists(thumbnail) {
@@ -210,10 +210,10 @@ pub fn make_thumbnail(
 
 // --------------------------------------------------
 pub fn make_processed_files(
-    meta_path: &PathBuf,
+    meta_path: &Path,
     in_dir: &Path,
     processed_dir: &Path,
-    script_dir: &PathBuf,
+    script_dir: &Path,
 ) -> Result<ProcessedFiles> {
     let meta = Meta::from_file(meta_path)?;
     let full_min_files = &[
@@ -226,7 +226,7 @@ pub fn make_processed_files(
     ]
     .map(|f| processed_dir.join(f));
 
-    if full_min_files.iter().all(file_exists) {
+    if full_min_files.iter().all(|f| file_exists(f)) {
         info!("Full/minimal files all exist");
     } else {
         let micromamba = which("micromamba")
@@ -309,7 +309,7 @@ pub fn make_processed_files(
 pub fn get_rmsd_rmsf(
     min_pdb: &Path,
     min_xtc: &Path,
-    script_dir: &PathBuf,
+    script_dir: &Path,
 ) -> Result<RmsdRmsf> {
     let processed_dir = min_pdb.parent().expect("parent");
     let out_file = processed_dir.join("rmsd_rmsf.json");
@@ -432,7 +432,7 @@ pub fn blast_uniprot(
 }
 
 // --------------------------------------------------
-pub fn get_sequence(full_pdb: &Path, script_dir: &PathBuf) -> Result<PathBuf> {
+pub fn get_sequence(full_pdb: &Path, script_dir: &Path) -> Result<PathBuf> {
     let processed_dir = full_pdb.parent().expect("parent");
     let sequence_file = processed_dir.join("sequence.fa");
 
@@ -471,8 +471,8 @@ pub fn get_sequence(full_pdb: &Path, script_dir: &PathBuf) -> Result<PathBuf> {
 pub fn sample_trajectory(
     min_xtc: &Path,
     min_pdb: &Path,
-    out_file: &PathBuf,
-    script_dir: &PathBuf,
+    out_file: &Path,
+    script_dir: &Path,
 ) -> Result<()> {
     if file_exists(out_file) {
         info!("Sampled trajectory exists");
@@ -510,9 +510,9 @@ pub fn sample_trajectory(
 
 // --------------------------------------------------
 pub fn make_import_json(
-    meta_path: &PathBuf,
+    meta_path: &Path,
     input_dir: &Path,
-    script_dir: &PathBuf,
+    script_dir: &Path,
     uniprot_blast_dir: &Path,
     processed_files: &ProcessedFiles,
     simulation_id: Option<u32>,
@@ -534,6 +534,8 @@ pub fn make_import_json(
         &processed_files.min_gro,
         script_dir,
     )?;
+
+    let unique_file_hash_string = get_unique_file_hash(&meta, input_dir);
 
     let mut ligands = vec![];
     let mut warnings = vec![];
@@ -587,7 +589,6 @@ pub fn make_import_json(
     let mut uniprots: HashMap<String, UniprotEntry> = HashMap::new();
     if let Some(uniprot_ids) = meta
         .uniprot_ids
-        .clone()
         .or(blast_uniprot(&fasta_sequence_file, uniprot_blast_dir)?)
     {
         for uniprot_id in uniprot_ids {
@@ -695,7 +696,7 @@ pub fn make_import_json(
         })
     }
 
-    let mut papers: Vec<metadata::Paper> = meta.papers.clone().unwrap_or_default();
+    let mut papers: Vec<metadata::Paper> = meta.papers.unwrap_or_default();
     if let Some(dois) = &meta.dois {
         for doi in dois {
             match get_doi(doi) {
@@ -708,29 +709,29 @@ pub fn make_import_json(
     let fasta_sequence = fs::read_to_string(fasta_sequence_file)?;
     let simulation = ExportSimulation {
         simulation_id,
-        lead_contributor_orcid: meta.lead_contributor_orcid.clone(),
-        unique_file_hash_string: get_unique_file_hash(&meta, input_dir),
-        user_accession: meta.user_accession.clone(),
-        description: meta.description.clone(),
-        short_description: meta.short_description.clone(),
-        run_commands: meta.run_commands.clone(),
-        software_name: meta.software_name.clone(),
-        software_version: meta.software_version.clone(),
+        lead_contributor_orcid: meta.lead_contributor_orcid,
+        unique_file_hash_string,
+        user_accession: meta.user_accession,
+        description: meta.description,
+        short_description: meta.short_description,
+        run_commands: meta.run_commands,
+        software_name: meta.software_name,
+        software_version: meta.software_version,
         pdb,
         uniprots: uniprots.into_values().collect::<Vec<_>>(),
         duration: duration.totaltime_ns,
         sampling_frequency: duration.sampling_frequency_ns,
         integration_timestep_fs: meta.integration_timestep_fs,
         external_links: meta.external_links.unwrap_or_default(),
-        forcefield: meta.forcefield.clone(),
-        forcefield_comments: meta.forcefield_comments.clone(),
-        protonation_method: meta.protonation_method.clone(),
+        forcefield: meta.forcefield,
+        forcefield_comments: meta.forcefield_comments,
+        protonation_method: meta.protonation_method,
         rmsd_values: rmsd_rmsf.rmsd,
         rmsf_values: rmsd_rmsf.rmsf,
         temperature_kelvin: meta.temperature_kelvin,
         fasta_sequence,
-        replicate_id: meta.replicate_id.clone(),
-        water: meta.water.clone(),
+        replicate_id: meta.replicate_id,
+        water: meta.water,
         topology_hash,
         contributors: meta.contributors.unwrap_or_default(),
         original_files,
@@ -947,7 +948,7 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Dur
 }
 
 // --------------------------------------------------
-pub fn get_topology_hash(topology: &PathBuf) -> Result<String> {
+pub fn get_topology_hash(topology: &Path) -> Result<String> {
     let contents = fs::read(topology)?;
     let digest = Sha1::digest(&contents);
     Ok(format!("{digest:x}"))

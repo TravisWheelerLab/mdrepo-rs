@@ -5,7 +5,7 @@ use std::{
     borrow::Cow::Borrowed,
     collections::HashMap,
     ffi::OsStr,
-    path::{Path, PathBuf},
+    path::Path,
 };
 use validator::{Validate, ValidationError, ValidationErrorsKind};
 
@@ -263,7 +263,7 @@ impl Meta {
         messages
     }
 
-    pub fn from_file(path: &PathBuf) -> Result<Self> {
+    pub fn from_file(path: &Path) -> Result<Self> {
         match path.extension() {
             Some(ext) => {
                 let contents = read_file(path)?;

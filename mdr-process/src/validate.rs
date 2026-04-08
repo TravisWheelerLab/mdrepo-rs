@@ -6,10 +6,10 @@ use libmdrepo::{
     metadata::Meta,
 };
 use log::info;
-use std::{fs, path::PathBuf};
+use std::{fs, path::Path};
 
 // --------------------------------------------------
-pub fn validate(dir: &PathBuf) -> Result<()> {
+pub fn validate(dir: &Path) -> Result<()> {
     if !dir.is_dir() {
         bail!(r#"Invalid directory "{}""#, dir.display())
     }
