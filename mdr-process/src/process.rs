@@ -8,10 +8,10 @@ use csv::ReaderBuilder;
 use dotenvy::dotenv;
 use libmdrepo::{
     common::{file_exists, get_md5, read_file},
+    constants::{MOLLY_NFRAMES_REGEX, MOLLY_TIME_REGEX},
     metadata::{self, Meta, MetaCheckOptions},
 };
 use log::{debug, info};
-use regex::Regex;
 use sha1::{Digest, Sha1};
 use std::{
     collections::HashMap,
@@ -829,7 +829,9 @@ pub fn get_inferred_ligands(
 
 // --------------------------------------------------
 pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Duration> {
-    let processed_dir = full_xtc.parent().expect("parent");
+    let processed_dir = full_xtc
+        .parent()
+        .ok_or_else(|| anyhow!("No parent directory for '{}'", full_xtc.display()))?;
     let out_file = processed_dir.join("duration.json");
 
     if file_exists(&out_file) {
@@ -845,15 +847,19 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Dur
         }
 
         let stdout = str::from_utf8(&cmd.stdout)?.to_string();
-        let time_re = Regex::new(r"^time:\s*(\d+)-(\d+(?:\.\d)?)\s+ps").unwrap();
-        let nframes_re = Regex::new(r"^nframes:\s*(\d+)").unwrap();
         let mut time_start: Option<u64> = None;
         let mut time_stop: Option<u64> = None;
         let mut num_frames: Option<u64> = None;
         for line in stdout.split("\n") {
-            if let Some(caps) = time_re.captures(line) {
-                let start = caps.get(1).expect("start").as_str();
-                let stop = caps.get(2).expect("stop").as_str();
+            if let Some(caps) = MOLLY_TIME_REGEX.captures(line) {
+                let start = caps
+                    .get(1)
+                    .ok_or_else(|| anyhow!("Missing time start in: {line}"))?
+                    .as_str();
+                let stop = caps
+                    .get(2)
+                    .ok_or_else(|| anyhow!("Missing time stop in: {line}"))?
+                    .as_str();
 
                 if let Ok(tmp) = start.parse::<u64>() {
                     time_start = Some(tmp);
@@ -868,8 +874,11 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Dur
                 } else {
                     info!("Failed to parse time_start from \"{stop}\" ({line})")
                 }
-            } else if let Some(caps) = nframes_re.captures(line) {
-                let val = caps.get(1).expect("val").as_str();
+            } else if let Some(caps) = MOLLY_NFRAMES_REGEX.captures(line) {
+                let val = caps
+                    .get(1)
+                    .ok_or_else(|| anyhow!("Missing nframes value in: {line}"))?
+                    .as_str();
                 if let Ok(tmp) = val.parse::<u64>() {
                     num_frames = Some(tmp);
                 } else {
@@ -877,16 +886,10 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Dur
                 }
             }
         }
-        if [time_start, time_stop, num_frames]
-            .iter()
-            .any(|v| v.is_none())
-        {
-            bail!("Failed to parse molly output:\n{stdout}")
-        }
-
-        let time_start = time_start.expect("start") as f64;
-        let time_stop = time_stop.expect("stop") as f64;
-        let num_frames = num_frames.expect("num_frames") as f64;
+        let (time_start, time_stop, num_frames) = match (time_start, time_stop, num_frames) {
+            (Some(a), Some(b), Some(c)) => (a as f64, b as f64, c as f64),
+            _ => bail!("Failed to parse molly output:\n{stdout}"),
+        };
 
         if num_frames <= 1. {
             bail!("Trajectory file has only {num_frames} frame(s)");
@@ -923,7 +926,7 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Dur
         let totaltime_ns = (duration_ps / 1000.0).round();
         let sampling_frequency_ns = format!("{:.2}", totaltime_ns / num_frames)
             .parse::<f32>()
-            .expect("freq");
+            .map_err(|e| anyhow!("Failed to compute sampling frequency: {e}"))?;
         let duration = Duration {
             totaltime_ns: totaltime_ns as u32,
             sampling_frequency_ns,
