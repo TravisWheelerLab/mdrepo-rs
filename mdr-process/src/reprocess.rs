@@ -2,11 +2,13 @@ use crate::{
     process,
     types::{ProcessArgs, ReprocessArgs},
 };
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use dotenvy::dotenv;
 use libmdrepo::{common::file_exists, metadata::Meta};
 use log::debug;
 use std::{
+    env,
+    ffi::OsStr,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -15,12 +17,19 @@ use std::{
 // --------------------------------------------------
 pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
     dotenv().ok();
+    let work_dir = args.work_dir.clone().unwrap_or(PathBuf::from(
+        env::var("MDREPO_WORK_DIR").map_err(|e| anyhow!("MDREPO_WORK_DIR: {e}"))?,
+    ));
     let simulation_id = args.simulation_id;
     let mdrepo_id = format!("MDR{simulation_id:08}");
     debug!("Reprocessing simulation ID {mdrepo_id}");
 
-    let server = &args.server;
-    let data_dir = &args.work_dir.join(server.to_string()).join(&mdrepo_id);
+    let server = args.server.clone();
+    let data_dir = &work_dir
+        .join("reprocess")
+        .join(server.to_string())
+        .join(&mdrepo_id);
+
     if !data_dir.is_dir() {
         fs::create_dir_all(data_dir)?;
     }
@@ -43,21 +52,26 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
         irods_fetch(&irods_dir.join(filename), &data_dir.join(filename))?;
     }
 
+    let wanted_ext = &[OsStr::new(".tpr"), OsStr::new(".gro")];
     if let Some(addl_files) = meta.additional_files {
         for file in addl_files {
-            irods_fetch(
-                &irods_dir.join(&file.file_name),
-                &data_dir.join(&file.file_name),
-            )?;
+            if let Some(ext) = Path::new(&file.file_name).extension() {
+                if wanted_ext.contains(&ext) {
+                    irods_fetch(
+                        &irods_dir.join(&file.file_name),
+                        &data_dir.join(&file.file_name),
+                    )?;
+                }
+            }
         }
     }
 
     process::process(&ProcessArgs {
-        dirname: data_dir.clone(),
+        input_dir: data_dir.clone(),
         script_dir: None,
+        work_dir: Some(work_dir),
         out_dir: None,
-        json_dir: None,
-        server: args.server.clone(),
+        server,
         simulation_id: Some(simulation_id),
         force: args.force,
         no_id: true, // If it had no PDB/Uniprots before, let it stand
