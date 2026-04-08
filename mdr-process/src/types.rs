@@ -93,6 +93,10 @@ pub struct ProcessArgs {
     /// Force removal of any existing "processed" directory
     #[arg(short, long)]
     pub force: bool,
+
+    /// Process files/create import JSON but do not import/push
+    #[arg(short, long)]
+    pub dry_run: bool,
 }
 
 // --------------------------------------------------
@@ -127,6 +131,10 @@ pub struct TicketArgs {
     /// Force removal of any existing "processed" directory
     #[arg(short, long)]
     pub force: bool,
+
+    /// Process files/create import JSON but do not import/push
+    #[arg(short, long)]
+    pub dry_run: bool,
 }
 
 // --------------------------------------------------
@@ -166,6 +174,10 @@ pub struct ReprocessArgs {
     /// Force removal of any existing "processed" directory
     #[arg(short, long)]
     pub force: bool,
+
+    /// Process files/create import JSON but do not import/push
+    #[arg(short, long)]
+    pub dry_run: bool,
 }
 
 // --------------------------------------------------
@@ -536,6 +548,7 @@ pub struct InferredLigandStructure {
     pub resname: String,
 }
 
+// --------------------------------------------------
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CheckedLigand {
     pub smi1_canonical: String,
@@ -552,4 +565,21 @@ pub struct CheckedLigand {
     pub inchi1: String,
     pub inchi2: String,
     pub connectivity_layer: Option<String>,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct BlastResult {
+    pub qaccver: u32,
+    pub saccver: String,
+    pub pident: f64,
+    pub length: u32,
+    pub mismatch: u32,
+    pub gapopen: u32,
+    pub qstart: u32,
+    pub qend: u32,
+    pub sstart: u32,
+    pub send: u32,
+    pub evalue: f64,
+    pub bitscore: u32,
 }

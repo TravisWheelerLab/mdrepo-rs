@@ -60,8 +60,8 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
         server: args.server.clone(),
         simulation_id: Some(simulation_id),
         force: args.force,
-        // If it had no PDB/Uniprots before, let it stand
-        no_id: true,
+        no_id: true, // If it had no PDB/Uniprots before, let it stand
+        dry_run: args.dry_run,
     })?;
 
     if !args.preserve {

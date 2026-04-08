@@ -21,6 +21,7 @@ validator = { version = "0.20.0", features = ["derive"] }
 which = "8.0.0"
 libmdrepo = { path = "../libmdrepo" }
 dotenvy = "0.15.7"
+csv = "1.4.0"
 
 [dev-dependencies]
 assert_cmd = "2.1.2"

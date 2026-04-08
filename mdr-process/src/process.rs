@@ -1,9 +1,10 @@
 use crate::types::{
-    CheckedLigand, DoiPaper, Duration, Export, ExportSimulation, ImportResult,
-    InferredLigand, MdFile, PdbEntry, PdbGraphqlResponse, PdbResponse, ProcessArgs,
-    ProcessedFiles, PushResult, RmsdRmsf, UniprotEntry, UniprotResponse,
+    BlastResult, CheckedLigand, DoiPaper, Duration, Export, ExportSimulation,
+    ImportResult, InferredLigand, MdFile, PdbEntry, PdbGraphqlResponse, PdbResponse,
+    ProcessArgs, ProcessedFiles, PushResult, RmsdRmsf, UniprotEntry, UniprotResponse,
 };
 use anyhow::{anyhow, bail, Result};
+use csv::ReaderBuilder;
 use dotenvy::dotenv;
 use libmdrepo::{
     common::{file_exists, get_md5, read_file},
@@ -16,7 +17,7 @@ use std::{
     collections::HashMap,
     env,
     fs::{self, File},
-    io::Write,
+    io::{BufReader, Write},
     path::{self, Path, PathBuf},
     process::Command,
 };
@@ -71,86 +72,92 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
         args.simulation_id,
     )?;
 
-    let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
-    let import_script = script_dir.join("import_preprocessed.py");
-    info!(r#"Import "{}""#, import_json.display());
-    let out_file = &processed_dir.join("imported.json");
-    let mut cmd = Command::new(&uv);
-    let mut import_args = vec![
-        "run".to_string(),
-        import_script.to_string_lossy().to_string(),
-        "--file".to_string(),
-        import_json.to_string_lossy().to_string(),
-        "--data-dir".to_string(),
-        input_dir.to_string_lossy().to_string(),
-        "--server".to_string(),
-        args.server.to_string(),
-        "--out-file".to_string(),
-        out_file.to_string_lossy().to_string(),
-    ];
-    if let Some(sim_id) = args.simulation_id {
-        import_args
-            .extend_from_slice(&["--simulation-id".to_string(), sim_id.to_string()]);
+    if !args.dry_run {
+        let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
+        let import_script = script_dir.join("import_preprocessed.py");
+        info!(r#"Import "{}""#, import_json.display());
+        let out_file = &processed_dir.join("imported.json");
+        let mut cmd = Command::new(&uv);
+        let mut import_args = vec![
+            "run".to_string(),
+            import_script.to_string_lossy().to_string(),
+            "--file".to_string(),
+            import_json.to_string_lossy().to_string(),
+            "--data-dir".to_string(),
+            input_dir.to_string_lossy().to_string(),
+            "--server".to_string(),
+            args.server.to_string(),
+            "--out-file".to_string(),
+            out_file.to_string_lossy().to_string(),
+        ];
+        if let Some(sim_id) = args.simulation_id {
+            import_args.extend_from_slice(&[
+                "--simulation-id".to_string(),
+                sim_id.to_string(),
+            ]);
+        }
+        cmd.current_dir(script_dir).args(&import_args);
+        debug!("Running {cmd:?}");
+        let output = cmd.output()?;
+
+        if !output.status.success() {
+            bail!(str::from_utf8(&output.stderr)?.to_string());
+        }
+
+        // The ticket directory should have been created by the fetch
+        if !out_file.is_file() {
+            bail!(r#"Failed to create "{}""#, out_file.display());
+        }
+
+        let import_result: ImportResult = serde_json::from_str(&read_file(out_file)?)
+            .map_err(|e| {
+            anyhow!(r#"Failed to parse "{}": {e}"#, out_file.display())
+        })?;
+
+        let push_script = script_dir.join("push_sim_files.py");
+        info!(
+            r#"Push files for "{}" -> simuation "{}""#,
+            import_result.filename, import_result.simulation_id
+        );
+
+        let out_file = processed_dir.join("pushed.json");
+        let mut cmd = Command::new(&uv);
+        let mut push_args = vec![
+            "run".to_string(),
+            push_script.to_string_lossy().to_string(),
+            "--file".to_string(),
+            import_result.filename,
+            "--simulation-id".to_string(),
+            import_result.simulation_id.to_string(),
+            "--server".to_string(),
+            args.server.to_string(),
+            "--data-dir".to_string(),
+            input_dir.to_string_lossy().to_string(),
+            "--out-file".to_string(),
+            out_file.to_string_lossy().to_string(),
+        ];
+
+        // We should remove existing "processed" directory
+        if args.simulation_id.is_some() {
+            push_args.push("--remove-processed-dir".to_string());
+        }
+
+        cmd.current_dir(script_dir).args(&push_args);
+        debug!("Running {cmd:?}");
+
+        let output = cmd.output()?;
+        if !output.status.success() {
+            bail!(str::from_utf8(&output.stderr)?.to_string());
+        }
+
+        if !out_file.is_file() {
+            bail!(r#"Failed to create "{}""#, out_file.display());
+        }
+
+        let push_res: Vec<PushResult> = serde_json::from_str(&read_file(&out_file)?)
+            .map_err(|e| anyhow!(r#"Failed to parse "{}": {e}"#, out_file.display()))?;
+        debug!("{push_res:?}");
     }
-    cmd.current_dir(script_dir).args(&import_args);
-    debug!("Running {cmd:?}");
-    let output = cmd.output()?;
-
-    if !output.status.success() {
-        bail!(str::from_utf8(&output.stderr)?.to_string());
-    }
-
-    // The ticket directory should have been created by the fetch
-    if !out_file.is_file() {
-        bail!(r#"Failed to create "{}""#, out_file.display());
-    }
-
-    let import_result: ImportResult = serde_json::from_str(&read_file(out_file)?)
-        .map_err(|e| anyhow!(r#"Failed to parse "{}": {e}"#, out_file.display()))?;
-
-    let push_script = script_dir.join("push_sim_files.py");
-    info!(
-        r#"Push files for "{}" -> simuation "{}""#,
-        import_result.filename, import_result.simulation_id
-    );
-
-    let out_file = processed_dir.join("pushed.json");
-    let mut cmd = Command::new(&uv);
-    let mut push_args = vec![
-        "run".to_string(),
-        push_script.to_string_lossy().to_string(),
-        "--file".to_string(),
-        import_result.filename,
-        "--simulation-id".to_string(),
-        import_result.simulation_id.to_string(),
-        "--server".to_string(),
-        args.server.to_string(),
-        "--data-dir".to_string(),
-        input_dir.to_string_lossy().to_string(),
-        "--out-file".to_string(),
-        out_file.to_string_lossy().to_string(),
-    ];
-
-    // We should remove existing "processed" directory
-    if args.simulation_id.is_some() {
-        push_args.push("--remove-processed-dir".to_string());
-    }
-
-    cmd.current_dir(script_dir).args(&push_args);
-    debug!("Running {cmd:?}");
-
-    let output = cmd.output()?;
-    if !output.status.success() {
-        bail!(str::from_utf8(&output.stderr)?.to_string());
-    }
-
-    if !out_file.is_file() {
-        bail!(r#"Failed to create "{}""#, out_file.display());
-    }
-
-    let push_res: Vec<PushResult> = serde_json::from_str(&read_file(&out_file)?)
-        .map_err(|e| anyhow!(r#"Failed to parse "{}": {e}"#, out_file.display()))?;
-    debug!("{push_res:?}");
 
     Ok(())
 }
@@ -339,7 +346,72 @@ pub fn get_rmsd_rmsf(
 }
 
 // --------------------------------------------------
-pub fn get_sequence(full_pdb: &Path, script_dir: &PathBuf) -> Result<String> {
+pub fn blast_uniprot(fasta_sequence: &PathBuf) -> Result<Option<Vec<String>>> {
+    let processed_dir = fasta_sequence.parent().unwrap();
+    let blast_results = processed_dir.join("blast.out");
+
+    if file_exists(&blast_results) {
+        info!("Uniprot BLAST results exists");
+    } else {
+        info!("Creating Uniprot BLAST results");
+        let blastp =
+            which("blastp").map_err(|e| anyhow!("Failed to find blastp ({e})"))?;
+        let cmd = Command::new(&blastp)
+            .args([
+                "-query",
+                fasta_sequence.to_string_lossy().as_ref(),
+                "-db",
+                "/opt/mdrepo/uniprot/uniprot_sprot",
+                "-out",
+                blast_results.to_string_lossy().as_ref(),
+                "-outfmt",
+                "6",
+                "-evalue",
+                "1e-5",
+                "-num_threads",
+                "4",
+                "-max_target_seqs",
+                "10",
+            ])
+            .output()?;
+
+        info!("{}", str::from_utf8(&cmd.stdout)?);
+
+        if !cmd.status.success() {
+            bail!(str::from_utf8(&cmd.stderr)?.to_string());
+        }
+
+        if !file_exists(&blast_results) {
+            bail!(r#"Failed to create "{}""#, blast_results.display());
+        }
+    }
+
+    let file = BufReader::new(
+        File::open(&blast_results)
+            .map_err(|e| anyhow!("{}: {e}", blast_results.display()))?,
+    );
+    let mut reader = ReaderBuilder::new()
+        .delimiter(9) // Tab
+        .has_headers(false)
+        .from_reader(file);
+
+    let mut results = vec![];
+    for result in reader.deserialize() {
+        let hit: BlastResult = result?;
+        if hit.pident >= 97.0 {
+            results.push(hit.saccver.to_string());
+        }
+    }
+
+    Ok(if results.is_empty() {
+        None
+    } else {
+        Some(results)
+    })
+}
+
+// --------------------------------------------------
+pub fn get_sequence(full_pdb: &Path, script_dir: &PathBuf) -> Result<PathBuf> {
     let processed_dir = full_pdb.parent().unwrap();
     let sequence_file = processed_dir.join("sequence.fa");
 
@@ -371,8 +443,7 @@ pub fn get_sequence(full_pdb: &Path, script_dir: &PathBuf) -> Result<String> {
         }
     }
 
-    fs::read_to_string(&sequence_file)
-        .map_err(|e| anyhow!("{}: {e}", sequence_file.display()))
+    Ok(sequence_file)
 }
 
 // --------------------------------------------------
@@ -427,7 +498,8 @@ pub fn make_import_json(
     let meta = Meta::from_file(meta_path)?;
     let topology_path = input_dir.join(&meta.topology_file_name);
     let topology_hash = get_topology_hash(&topology_path)?;
-    let fasta_sequence = get_sequence(&processed_files.full_pdb, script_dir)?;
+    let fasta_sequence_file = get_sequence(&processed_files.full_pdb, script_dir)?;
+    let uniprot_hits = blast_uniprot(&fasta_sequence_file)?;
     let rmsd_rmsf = get_rmsd_rmsf(
         &processed_files.min_pdb,
         &processed_files.min_xtc,
@@ -492,7 +564,7 @@ pub fn make_import_json(
     }
 
     let mut uniprots: HashMap<String, UniprotEntry> = HashMap::new();
-    if let Some(uniprot_ids) = &meta.uniprot_ids {
+    if let Some(uniprot_ids) = &meta.uniprot_ids.clone().or(uniprot_hits) {
         for uniprot_id in uniprot_ids {
             if !uniprots.contains_key(uniprot_id) {
                 match get_uniprot_entry(uniprot_id) {
@@ -600,6 +672,7 @@ pub fn make_import_json(
         }
     }
 
+    let fasta_sequence = fs::read_to_string(fasta_sequence_file)?;
     let simulation = ExportSimulation {
         simulation_id,
         lead_contributor_orcid: meta.lead_contributor_orcid.clone(),

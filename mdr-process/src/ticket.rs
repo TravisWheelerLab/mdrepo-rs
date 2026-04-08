@@ -105,6 +105,7 @@ pub fn process(args: &TicketArgs) -> Result<()> {
             // The TOML will have already been validated, so allow missing IDs
             no_id: true,
             force: args.force,
+            dry_run: args.dry_run,
         }) {
             Ok(()) => {
                 info!(
