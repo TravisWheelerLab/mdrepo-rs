@@ -23,6 +23,17 @@ use std::{
 };
 use which::which;
 
+// ── BLAST parameters ──────────────────────────────────────────────────────────
+const BLAST_EVALUE: &str = "1e-5";
+const BLAST_NUM_THREADS: &str = "4";
+const BLAST_MAX_TARGET_SEQS: &str = "10";
+const BLAST_MIN_PIDENT: f64 = 99.0;
+
+// ── Unit conversions ──────────────────────────────────────────────────────────
+const FS_PER_PS: f64 = 1000.0;
+const PS_PER_NS: f64 = 1000.0;
+const XTC_INFLATION_FACTOR: f64 = 1000.0;
+
 // --------------------------------------------------
 pub fn process(args: &ProcessArgs) -> Result<()> {
     debug!("{args:?}");
@@ -386,11 +397,11 @@ pub fn blast_uniprot(
                 "-outfmt",
                 "6",
                 "-evalue",
-                "1e-5",
+                BLAST_EVALUE,
                 "-num_threads",
-                "4",
+                BLAST_NUM_THREADS,
                 "-max_target_seqs",
-                "10",
+                BLAST_MAX_TARGET_SEQS,
             ])
             .output()?;
 
@@ -418,7 +429,7 @@ pub fn blast_uniprot(
     for result in reader.deserialize() {
         let hit: BlastResult = result?;
         // Just pick the top-scoring one, as long as it has >99% id
-        if hit.pident >= 99.0 {
+        if hit.pident >= BLAST_MIN_PIDENT {
             results.push(hit.saccver.to_string());
             break;
         }
@@ -549,13 +560,10 @@ pub fn make_import_json(
                 let mut found_match = false;
                 for inferred in &inferred_ligands {
                     let check = check_ligand(given_ligand, inferred, script_dir)?;
-                    if !&[
-                        check.exact_match,
-                        check.same_connectivity,
-                        check.same_connectivity_and_stereo,
-                        check.same_inchi,
-                    ]
-                    .contains(&true)
+                    if !(check.exact_match
+                        || check.same_connectivity
+                        || check.same_connectivity_and_stereo
+                        || check.same_inchi)
                     {
                         found_match = true;
                         break;
@@ -901,20 +909,20 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Dur
 
         // Sanity check: compute nstxout (output steps per frame)
         // using the integration timestep from metadata.
-        let nstxout = sampling_ps / (integration_timestep_fs as f64 / 1000.0);
+        let nstxout = sampling_ps / (integration_timestep_fs as f64 / FS_PER_PS);
 
         // A reasonable nstxout is 1e3..1e7. If it's way too large
         // but dividing by 1000 fixes it, the XTC timestamps are
         // inflated by 1000x (a known issue with some MD engines).
         if nstxout > 1e7 {
-            let corrected_nstxout = nstxout / 1000.0;
+            let corrected_nstxout = nstxout / XTC_INFLATION_FACTOR;
             if (1e3..=1e7).contains(&corrected_nstxout) {
                 info!(
                     "XTC timestamps appear inflated by 1000x \
                          (nstxout={nstxout:.0}, corrected={corrected_nstxout:.0}). \
                          Applying correction."
                 );
-                duration_ps /= 1000.0;
+                duration_ps /= XTC_INFLATION_FACTOR;
             } else {
                 bail!(
                     "XTC timestamps look wrong (nstxout={nstxout:.0}) \
@@ -923,7 +931,7 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Dur
             }
         }
 
-        let totaltime_ns = (duration_ps / 1000.0).round();
+        let totaltime_ns = (duration_ps / PS_PER_NS).round();
         let sampling_frequency_ns = format!("{:.2}", totaltime_ns / num_frames)
             .parse::<f32>()
             .map_err(|e| anyhow!("Failed to compute sampling frequency: {e}"))?;
