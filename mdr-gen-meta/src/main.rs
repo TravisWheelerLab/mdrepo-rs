@@ -37,7 +37,7 @@ fn run(args: Args) -> Result<()> {
             }
         }
     };
-    let mut conn = mdr_db::connect(&url);
+    let mut conn = mdr_db::connect(&url)?;
     let sim = ops::get_simulation(&mut conn, args.simulation_id)?;
     let software = ops::get_software(&mut conn, sim.software_id.expect("software_id"))?;
     let pdb = sim
