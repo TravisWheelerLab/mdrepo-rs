@@ -27,7 +27,8 @@ use which::which;
 pub fn process(args: &ProcessArgs) -> Result<()> {
     debug!("{args:?}");
     dotenv().ok();
-    let input_dir = path::absolute(&args.dirname)?;
+
+    let input_dir = path::absolute(&args.input_dir)?;
     let processed_dir = args
         .out_dir
         .clone()
@@ -35,6 +36,10 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
     let script_dir = &args.script_dir.clone().unwrap_or(PathBuf::from(
         env::var("SCRIPT_DIR").map_err(|e| anyhow!("SCRIPT_DIR: {e}"))?,
     ));
+    let work_dir = &args.work_dir.clone().unwrap_or(PathBuf::from(
+        env::var("MDREPO_WORK_DIR").map_err(|e| anyhow!("MDREPO_WORK_DIR: {e}"))?,
+    ));
+    let uniprot_blast_dir = work_dir.join("blast").join("uniprot");
 
     debug!(r#"Processed files will go to "{processed_dir:?}""#);
     if args.force && processed_dir.is_dir() {
@@ -68,6 +73,7 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
         &meta_path,
         &input_dir,
         script_dir,
+        &uniprot_blast_dir,
         &processed_files,
         args.simulation_id,
     )?;
@@ -346,7 +352,17 @@ pub fn get_rmsd_rmsf(
 }
 
 // --------------------------------------------------
-pub fn blast_uniprot(fasta_sequence: &PathBuf) -> Result<Option<Vec<String>>> {
+pub fn blast_uniprot(
+    fasta_sequence: &PathBuf,
+    uniprot_blast_dir: &PathBuf,
+) -> Result<Option<Vec<String>>> {
+    if !uniprot_blast_dir.is_dir() {
+        bail!(
+            r#"Invalid Uniprot BLAST dir "{}""#,
+            uniprot_blast_dir.display()
+        );
+    }
+
     let processed_dir = fasta_sequence.parent().unwrap();
     let blast_results = processed_dir.join("blast.out");
 
@@ -361,7 +377,10 @@ pub fn blast_uniprot(fasta_sequence: &PathBuf) -> Result<Option<Vec<String>>> {
                 "-query",
                 fasta_sequence.to_string_lossy().as_ref(),
                 "-db",
-                "/opt/mdrepo/uniprot/uniprot_sprot",
+                uniprot_blast_dir
+                    .join("uniprot_sprot")
+                    .to_string_lossy()
+                    .as_ref(),
                 "-out",
                 blast_results.to_string_lossy().as_ref(),
                 "-outfmt",
@@ -398,8 +417,10 @@ pub fn blast_uniprot(fasta_sequence: &PathBuf) -> Result<Option<Vec<String>>> {
     let mut results = vec![];
     for result in reader.deserialize() {
         let hit: BlastResult = result?;
-        if hit.pident >= 97.0 {
+        // Just pick the top-scoring one, as long as it has >99% id
+        if hit.pident >= 99.0 {
             results.push(hit.saccver.to_string());
+            break;
         }
     }
 
@@ -492,6 +513,7 @@ pub fn make_import_json(
     meta_path: &PathBuf,
     input_dir: &Path,
     script_dir: &PathBuf,
+    uniprot_blast_dir: &PathBuf,
     processed_files: &ProcessedFiles,
     simulation_id: Option<u32>,
 ) -> Result<PathBuf> {
@@ -499,7 +521,6 @@ pub fn make_import_json(
     let topology_path = input_dir.join(&meta.topology_file_name);
     let topology_hash = get_topology_hash(&topology_path)?;
     let fasta_sequence_file = get_sequence(&processed_files.full_pdb, script_dir)?;
-    let uniprot_hits = blast_uniprot(&fasta_sequence_file)?;
     let rmsd_rmsf = get_rmsd_rmsf(
         &processed_files.min_pdb,
         &processed_files.min_xtc,
@@ -564,10 +585,14 @@ pub fn make_import_json(
     }
 
     let mut uniprots: HashMap<String, UniprotEntry> = HashMap::new();
-    if let Some(uniprot_ids) = &meta.uniprot_ids.clone().or(uniprot_hits) {
+    if let Some(uniprot_ids) = meta
+        .uniprot_ids
+        .clone()
+        .or(blast_uniprot(&fasta_sequence_file, uniprot_blast_dir)?)
+    {
         for uniprot_id in uniprot_ids {
-            if !uniprots.contains_key(uniprot_id) {
-                match get_uniprot_entry(uniprot_id) {
+            if !uniprots.contains_key(&uniprot_id) {
+                match get_uniprot_entry(&uniprot_id) {
                     Ok(entry) => {
                         let _ = uniprots.insert(uniprot_id.to_string(), entry);
                     }
