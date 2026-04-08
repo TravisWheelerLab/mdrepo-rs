@@ -26,8 +26,12 @@ pub fn read_file(path: &PathBuf) -> Result<String> {
 // --------------------------------------------------
 pub fn get_md5(path: &Path) -> Result<String> {
     info!("Getting MD5 '{}'", path.display());
-    let input_dir = path.parent().unwrap();
-    let filename = path.file_name().unwrap().to_string_lossy().to_string();
+    let input_dir = path.parent().expect("parent_dir");
+    let filename = path
+        .file_name()
+        .expect("filename")
+        .to_string_lossy()
+        .to_string();
     let md5_file = input_dir.join(format!("{filename}.md5"));
 
     if !file_exists(&md5_file) {
@@ -42,13 +46,10 @@ pub fn get_md5(path: &Path) -> Result<String> {
         let caps = re
             .captures(stdout)
             .ok_or(anyhow!(r#"Unexpected MD5: {stdout}"#))?;
-        let digest = caps.get(1).unwrap().as_str();
-
-        //let fh = File::open(&path).map_err(|e| anyhow!("{}: {e}", &path.display()))?;
-        //let digest = chksum_md5::chksum(fh)?.to_hex_lowercase();
-
-        let out_fh = File::create(&md5_file)?;
-        write!(&out_fh, "{digest}")?;
+        if let Some(digest) = caps.get(1) {
+            let out_fh = File::create(&md5_file)?;
+            write!(&out_fh, "{}", digest.as_str())?;
+        }
     }
 
     read_file(&md5_file)

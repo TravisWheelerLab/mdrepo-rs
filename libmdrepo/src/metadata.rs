@@ -1,9 +1,9 @@
 use crate::{common::read_file, constants};
 use anyhow::{anyhow, bail, Result};
-use multiset::HashMultiSet;
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow::Borrowed,
+    collections::HashMap,
     ffi::OsStr,
     path::{Path, PathBuf},
 };
@@ -193,18 +193,28 @@ impl Meta {
         messages.sort();
 
         // Ensure that each filename is present only once
-        let mut file_count = HashMultiSet::new();
-        file_count.insert(self.trajectory_file_name.clone());
-        file_count.insert(self.topology_file_name.clone());
-        file_count.insert(self.structure_file_name.clone());
+        let mut file_count: HashMap<&str, usize> = HashMap::new();
+        for filename in &[
+            &self.trajectory_file_name,
+            &self.topology_file_name,
+            &self.structure_file_name,
+        ] {
+            file_count
+                .entry(filename)
+                .and_modify(|count| *count += 1)
+                .or_insert(1);
+        }
+
         if let Some(addl_files) = &self.additional_files {
             for file in addl_files {
-                file_count.insert(file.file_name.clone());
+                file_count
+                    .entry(&file.file_name)
+                    .and_modify(|count| *count += 1)
+                    .or_insert(1);
             }
         }
 
-        for filename in file_count.distinct_elements() {
-            let count = file_count.count_of(filename);
+        for (filename, count) in file_count {
             if count > 1 {
                 messages.push(format!(
                     r#"Filename "{filename}" is duplicated {count} times"#

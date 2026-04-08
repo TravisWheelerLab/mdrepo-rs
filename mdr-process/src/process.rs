@@ -311,7 +311,7 @@ pub fn get_rmsd_rmsf(
     min_xtc: &Path,
     script_dir: &PathBuf,
 ) -> Result<RmsdRmsf> {
-    let processed_dir = min_pdb.parent().unwrap();
+    let processed_dir = min_pdb.parent().expect("parent");
     let out_file = processed_dir.join("rmsd_rmsf.json");
 
     if file_exists(&out_file) {
@@ -363,7 +363,7 @@ pub fn blast_uniprot(
         );
     }
 
-    let processed_dir = fasta_sequence.parent().unwrap();
+    let processed_dir = fasta_sequence.parent().expect("parent");
     let blast_results = processed_dir.join("blast.out");
 
     if file_exists(&blast_results) {
@@ -433,7 +433,7 @@ pub fn blast_uniprot(
 
 // --------------------------------------------------
 pub fn get_sequence(full_pdb: &Path, script_dir: &PathBuf) -> Result<PathBuf> {
-    let processed_dir = full_pdb.parent().unwrap();
+    let processed_dir = full_pdb.parent().expect("parent");
     let sequence_file = processed_dir.join("sequence.fa");
 
     if file_exists(&sequence_file) {
@@ -620,7 +620,11 @@ pub fn make_import_json(
     }
 
     let mut original_files: Vec<MdFile> = vec![MdFile {
-        name: meta_path.file_name().unwrap().to_string_lossy().to_string(),
+        name: meta_path
+            .file_name()
+            .expect("filename")
+            .to_string_lossy()
+            .to_string(),
         file_type: "Metadata".to_string(),
         size: meta_path.metadata()?.len(),
         md5_sum: get_md5(meta_path)?,
@@ -678,7 +682,11 @@ pub fn make_import_json(
         ("Preview image", &processed_files.thumbnail_png),
     ] {
         processed_export.push(MdFile {
-            name: path.file_name().unwrap().to_string_lossy().to_string(),
+            name: path
+                .file_name()
+                .expect("filename")
+                .to_string_lossy()
+                .to_string(),
             file_type: file_type.to_string(),
             size: path.metadata()?.len(),
             md5_sum: get_md5(path)?,
@@ -727,7 +735,6 @@ pub fn make_import_json(
         contributors: meta.contributors.unwrap_or_default(),
         original_files,
         processed_files: processed_export,
-        //ligands: meta.ligands.unwrap_or_default(),
         ligands,
         solvents: meta.solvents.unwrap_or_default(),
         papers,
@@ -779,7 +786,7 @@ pub fn get_inferred_ligands(
     min_gro: &Path,
     script_dir: &Path,
 ) -> Result<Vec<InferredLigand>> {
-    let processed_dir = min_pdb.parent().unwrap();
+    let processed_dir = min_pdb.parent().expect("parent");
     let out_file = processed_dir.join("inferred_ligands.json");
     if file_exists(&out_file) {
         info!("Inferred ligands file exists");
@@ -821,7 +828,7 @@ pub fn get_inferred_ligands(
 
 // --------------------------------------------------
 pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Duration> {
-    let processed_dir = full_xtc.parent().unwrap();
+    let processed_dir = full_xtc.parent().expect("parent");
     let out_file = processed_dir.join("duration.json");
 
     if file_exists(&out_file) {
@@ -844,8 +851,8 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Dur
         let mut num_frames: Option<u64> = None;
         for line in stdout.split("\n") {
             if let Some(caps) = time_re.captures(line) {
-                let start = caps.get(1).unwrap().as_str();
-                let stop = caps.get(2).unwrap().as_str();
+                let start = caps.get(1).expect("start").as_str();
+                let stop = caps.get(2).expect("stop").as_str();
 
                 if let Ok(tmp) = start.parse::<u64>() {
                     time_start = Some(tmp);
@@ -861,7 +868,7 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Dur
                     info!("Failed to parse time_start from \"{stop}\" ({line})")
                 }
             } else if let Some(caps) = nframes_re.captures(line) {
-                let val = caps.get(1).unwrap().as_str();
+                let val = caps.get(1).expect("val").as_str();
                 if let Ok(tmp) = val.parse::<u64>() {
                     num_frames = Some(tmp);
                 } else {
@@ -876,9 +883,9 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Dur
             bail!("Failed to parse molly output:\n{stdout}")
         }
 
-        let time_start = time_start.unwrap() as f64;
-        let time_stop = time_stop.unwrap() as f64;
-        let num_frames = num_frames.unwrap() as f64;
+        let time_start = time_start.expect("start") as f64;
+        let time_stop = time_stop.expect("stop") as f64;
+        let num_frames = num_frames.expect("num_frames") as f64;
 
         if num_frames <= 1. {
             bail!("Trajectory file has only {num_frames} frame(s)");
@@ -915,7 +922,7 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Dur
         let totaltime_ns = (duration_ps / 1000.0).round();
         let sampling_frequency_ns = format!("{:.2}", totaltime_ns / num_frames)
             .parse::<f32>()
-            .unwrap();
+            .expect("freq");
         let duration = Duration {
             totaltime_ns: totaltime_ns as u32,
             sampling_frequency_ns,
@@ -970,7 +977,7 @@ pub fn get_doi(doi: &str) -> Result<metadata::Paper> {
         journal: doi_paper.journal.clone(),
         volume: doi_paper.volume,
         number: None,
-        year: *doi_paper.published.date_parts.first().unwrap(),
+        year: *doi_paper.published.date_parts.first().expect("year"),
         pages: Some(doi_paper.page.clone()),
         doi: Some(doi.to_string()),
     })

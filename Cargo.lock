@@ -1203,7 +1203,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "log",
- "multiset",
  "proptest",
  "purr",
  "regex",
@@ -1288,7 +1287,6 @@ dependencies = [
  "env_logger",
  "libmdrepo",
  "log",
- "multiset",
  "regex",
  "reqwest",
  "serde",
@@ -1331,12 +1329,6 @@ dependencies = [
  "wasi",
  "windows-sys 0.61.2",
 ]
-
-[[package]]
-name = "multiset"
-version = "0.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce8738c9ddd350996cb8b8b718192851df960803764bcdaa3afb44a63b1ddb5c"
 
 [[package]]
 name = "normalize-line-endings"

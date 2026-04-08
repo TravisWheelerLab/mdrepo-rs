@@ -39,7 +39,7 @@ fn run(args: Args) -> Result<()> {
     };
     let mut conn = mdr_db::connect(&url);
     let sim = ops::get_simulation(&mut conn, args.simulation_id)?;
-    let software = ops::get_software(&mut conn, sim.software_id.unwrap())?;
+    let software = ops::get_software(&mut conn, sim.software_id.expect("software_id"))?;
     let pdb = sim
         .pdb_id
         .map(|pdb_pk| ops::get_pdb(&mut conn, pdb_pk))
@@ -207,7 +207,7 @@ fn run(args: Args) -> Result<()> {
             contributors_res
                 .iter()
                 .map(|val| metadata::Contributor {
-                    name: val.name.clone().unwrap(),
+                    name: val.name.clone().expect("name"),
                     email: val.email.clone(),
                     institution: val.institution.clone(),
                     orcid: val.orcid.clone(),
@@ -242,12 +242,12 @@ fn run(args: Args) -> Result<()> {
     let meta = metadata::Meta {
         lead_contributor_orcid: lead_contributor_orcid
             .unwrap_or(DEFAULT_ORCID.to_string()),
-        trajectory_file_name: trajectory_file_name.unwrap(),
-        structure_file_name: structure_file_name.unwrap(),
-        topology_file_name: topology_file_name.unwrap(),
-        temperature_kelvin: sim.temperature.unwrap() as u32,
-        integration_timestep_fs: sim.integration_timestep_fs.unwrap() as u32,
-        short_description: sim.short_description.unwrap(),
+        trajectory_file_name: trajectory_file_name.expect("name"),
+        structure_file_name: structure_file_name.expect("name"),
+        topology_file_name: topology_file_name.expect("name"),
+        temperature_kelvin: sim.temperature.expect("temp") as u32,
+        integration_timestep_fs: sim.integration_timestep_fs.expect("time") as u32,
+        short_description: sim.short_description.expect("short_desc"),
         software_name: software.name,
         software_version: software.version.unwrap_or("".to_string()),
         mdrepo_id: Some(format!("MDR{:08}", args.simulation_id)),
