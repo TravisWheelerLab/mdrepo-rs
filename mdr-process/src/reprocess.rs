@@ -55,14 +55,13 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
     let wanted_ext = &[OsStr::new(".tpr"), OsStr::new(".gro")];
     if let Some(addl_files) = meta.additional_files {
         for file in addl_files {
-            if let Some(ext) = Path::new(&file.file_name).extension() {
-                if wanted_ext.contains(&ext) {
+            if let Some(ext) = Path::new(&file.file_name).extension()
+                && wanted_ext.contains(&ext) {
                     irods_fetch(
                         &irods_dir.join(&file.file_name),
                         &data_dir.join(&file.file_name),
                     )?;
                 }
-            }
         }
     }
 
