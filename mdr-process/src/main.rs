@@ -35,7 +35,7 @@ fn run(args: Cli) -> Result<()> {
 
     match &args.command {
         Some(Command::Process(args)) => {
-            validate::validate(&args.dirname)?;
+            validate::validate(&args.input_dir)?;
             process::process(args)?;
             println!("Success");
             Ok(())
