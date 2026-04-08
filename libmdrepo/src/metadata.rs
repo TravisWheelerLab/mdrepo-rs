@@ -254,7 +254,7 @@ impl Meta {
 
         if self.pdb_id.is_none()
             && self.uniprot_ids.is_none()
-            && !options.map_or(false, |val| val.allow_no_pdb_uniprot)
+            && !options.is_some_and(|val| val.allow_no_pdb_uniprot)
         {
             messages
                 .push("Missing PDB and Uniprot IDs (skip with --no-id)".to_string());

@@ -353,8 +353,8 @@ pub fn get_rmsd_rmsf(
 
 // --------------------------------------------------
 pub fn blast_uniprot(
-    fasta_sequence: &PathBuf,
-    uniprot_blast_dir: &PathBuf,
+    fasta_sequence: &Path,
+    uniprot_blast_dir: &Path,
 ) -> Result<Option<Vec<String>>> {
     if !uniprot_blast_dir.is_dir() {
         bail!(
@@ -513,7 +513,7 @@ pub fn make_import_json(
     meta_path: &PathBuf,
     input_dir: &Path,
     script_dir: &PathBuf,
-    uniprot_blast_dir: &PathBuf,
+    uniprot_blast_dir: &Path,
     processed_files: &ProcessedFiles,
     simulation_id: Option<u32>,
 ) -> Result<PathBuf> {
