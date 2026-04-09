@@ -52,7 +52,7 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
         irods_fetch(&irods_dir.join(filename), &data_dir.join(filename))?;
     }
 
-    let wanted_ext = &[OsStr::new(".tpr"), OsStr::new(".gro")];
+    let wanted_ext = &[OsStr::new("tpr"), OsStr::new("gro")];
     if let Some(addl_files) = meta.additional_files {
         for file in addl_files {
             if let Some(ext) = Path::new(&file.file_name).extension()
