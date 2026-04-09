@@ -1,7 +1,8 @@
 use crate::types::{
     BlastResult, CheckedLigand, DoiPaper, Duration, Export, ExportSimulation,
     ImportResult, InferredLigand, MdFile, PdbEntry, PdbGraphqlResponse, PdbResponse,
-    ProcessArgs, ProcessedFiles, PushResult, RmsdRmsf, UniprotEntry, UniprotResponse,
+    ProcessArgs, ProcessedFiles, PushResult, RmsdRmsf, UniprotDb, UniprotEntry,
+    UniprotResponse,
 };
 use anyhow::{anyhow, bail, Result};
 use csv::ReaderBuilder;
@@ -12,12 +13,13 @@ use libmdrepo::{
     metadata::{self, Meta, MetaCheckOptions},
 };
 use log::{debug, info};
+use regex::Regex;
 use sha1::{Digest, Sha1};
 use std::{
-    collections::HashMap,
     env,
     fs::{self, File},
     io::{BufReader, Write},
+    mem,
     path::{self, Path, PathBuf},
     process::Command,
 };
@@ -26,8 +28,9 @@ use which::which;
 // ── BLAST parameters ──────────────────────────────────────────────────────────
 const BLAST_EVALUE: &str = "1e-5";
 const BLAST_NUM_THREADS: &str = "4";
-const BLAST_MAX_TARGET_SEQS: &str = "10";
-const BLAST_MIN_PIDENT: f64 = 99.0;
+const BLAST_MAX_TARGET_SEQS_SWISSPROT: &str = "20";
+const BLAST_MAX_TARGET_SEQS_TREMBL: &str = "100";
+const BLAST_MIN_PIDENT: f64 = 100.0;
 
 // ── Unit conversions ──────────────────────────────────────────────────────────
 const FS_PER_PS: f64 = 1000.0;
@@ -50,7 +53,7 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
     let work_dir = args.work_dir.clone().unwrap_or(PathBuf::from(
         env::var("MDREPO_WORK_DIR").map_err(|e| anyhow!("MDREPO_WORK_DIR: {e}"))?,
     ));
-    let uniprot_blast_dir = work_dir.join("blast").join("uniprot");
+    let blast_dir = work_dir.join("blast");
 
     debug!(r#"Processed files will go to "{processed_dir:?}""#);
     if args.force && processed_dir.is_dir() {
@@ -61,7 +64,9 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
     let meta_path = input_dir.join("mdrepo-metadata.toml");
     let meta = Meta::from_file(&meta_path)?;
     let errors = meta.check(if args.no_id {
-        Some(MetaCheckOptions { allow_no_pdb_uniprot: true })
+        Some(MetaCheckOptions {
+            allow_no_pdb_uniprot: true,
+        })
     } else {
         None
     });
@@ -81,7 +86,7 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
         &meta_path,
         &input_dir,
         &script_dir,
-        &uniprot_blast_dir,
+        &blast_dir,
         &processed_files,
         args.simulation_id,
     )?;
@@ -142,12 +147,16 @@ fn run_import(
         args.extend(["--simulation-id".to_string(), id.to_string()]);
     }
 
-    let cmd = Command::new(uv).current_dir(script_dir).args(&args).output()?;
-    debug!("Running import_preprocessed.py");
-    if !cmd.status.success() {
-        bail!(str::from_utf8(&cmd.stderr)?.to_string());
+    let mut cmd = Command::new(uv);
+    cmd.current_dir(script_dir).args(&args);
+    debug!("Running {cmd:?}");
+
+    let output = cmd.output()?;
+    if !output.status.success() {
+        bail!(str::from_utf8(&output.stderr)?.to_string());
     }
-    if !out_file.is_file() {
+
+    if !file_exists(&out_file) {
         bail!(r#"Failed to create "{}""#, out_file.display());
     }
 
@@ -190,12 +199,16 @@ fn run_push(
         args.push("--remove-processed-dir".to_string());
     }
 
-    let cmd = Command::new(uv).current_dir(script_dir).args(&args).output()?;
-    debug!("Running push_sim_files.py");
-    if !cmd.status.success() {
-        bail!(str::from_utf8(&cmd.stderr)?.to_string());
+    let mut cmd = Command::new(uv);
+    cmd.current_dir(script_dir).args(&args);
+    debug!("Running {cmd:?}");
+
+    let output = cmd.output()?;
+    if !output.status.success() {
+        bail!(str::from_utf8(&output.stderr)?.to_string());
     }
-    if !out_file.is_file() {
+
+    if !file_exists(&out_file) {
         bail!(r#"Failed to create "{}""#, out_file.display());
     }
 
@@ -216,24 +229,24 @@ pub fn make_thumbnail(
     } else {
         info!("Creating thumbnail");
         let preview = script_dir.join("create_preview.py");
-        let cmd = Command::new(&uv)
-            .current_dir(script_dir)
-            .args([
-                "run",
-                preview.to_string_lossy().as_ref(),
-                "--trajectory",
-                sampled_trajectory.to_string_lossy().as_ref(),
-                "--structure",
-                min_pdb.to_string_lossy().as_ref(),
-                "--out-file",
-                thumbnail.to_string_lossy().as_ref(),
-            ])
-            .output()?;
+        let mut cmd = Command::new(&uv);
+        cmd.current_dir(script_dir).args([
+            "run",
+            preview.to_string_lossy().as_ref(),
+            "--trajectory",
+            sampled_trajectory.to_string_lossy().as_ref(),
+            "--structure",
+            min_pdb.to_string_lossy().as_ref(),
+            "--out-file",
+            thumbnail.to_string_lossy().as_ref(),
+        ]);
+        debug!("Running {cmd:?}");
+        let output = cmd.output()?;
 
-        info!("{}", str::from_utf8(&cmd.stdout)?);
+        info!("{}", str::from_utf8(&output.stdout)?);
 
-        if !cmd.status.success() {
-            bail!(str::from_utf8(&cmd.stderr)?.to_string());
+        if !output.status.success() {
+            bail!(str::from_utf8(&output.stderr)?.to_string());
         }
 
         if !file_exists(thumbnail) {
@@ -297,10 +310,9 @@ pub fn make_processed_files(
             "--outdir",
             processed_dir.to_string_lossy().as_ref(),
         ]);
-        debug!("{cmd:?}");
-        let output = cmd.output()?;
-        debug!("{output:?}");
+        debug!("Running {cmd:?}");
 
+        let output = cmd.output()?;
         if !output.status.success() {
             bail!(str::from_utf8(&output.stderr)?.to_string());
         }
@@ -355,24 +367,24 @@ pub fn get_rmsd_rmsf(
         info!("Creating RMSD/RMSF file");
         let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
         let script = script_dir.join("get_rmsd_rmsf.py");
-        let cmd = Command::new(&uv)
-            .current_dir(script_dir)
-            .args([
-                "run",
-                script.to_string_lossy().as_ref(),
-                "--out-file",
-                out_file.to_string_lossy().as_ref(),
-                "--structure",
-                min_pdb.to_string_lossy().as_ref(),
-                "--trajectory",
-                min_xtc.to_string_lossy().as_ref(),
-            ])
-            .output()?;
+        let mut cmd = Command::new(&uv);
+        cmd.current_dir(script_dir).args([
+            "run",
+            script.to_string_lossy().as_ref(),
+            "--out-file",
+            out_file.to_string_lossy().as_ref(),
+            "--structure",
+            min_pdb.to_string_lossy().as_ref(),
+            "--trajectory",
+            min_xtc.to_string_lossy().as_ref(),
+        ]);
+        debug!("Running {cmd:?}");
+        let output = cmd.output()?;
 
-        info!("{}", str::from_utf8(&cmd.stdout)?);
+        info!("{}", str::from_utf8(&output.stdout)?);
 
-        if !cmd.status.success() {
-            bail!(str::from_utf8(&cmd.stderr)?.to_string());
+        if !output.status.success() {
+            bail!(str::from_utf8(&output.stderr)?.to_string());
         }
 
         if !file_exists(&out_file) {
@@ -389,17 +401,18 @@ pub fn get_rmsd_rmsf(
 // --------------------------------------------------
 pub fn blast_uniprot(
     fasta_sequence: &Path,
-    uniprot_blast_dir: &Path,
-) -> Result<Option<Vec<String>>> {
-    if !uniprot_blast_dir.is_dir() {
-        bail!(
-            r#"Invalid Uniprot BLAST dir "{}""#,
-            uniprot_blast_dir.display()
-        );
+    blast_dir: &Path,
+    uniprot_db: UniprotDb,
+) -> Result<Vec<String>> {
+    if !blast_dir.is_dir() {
+        bail!(r#"Invalid BLAST dir "{}""#, blast_dir.display());
     }
 
     let processed_dir = fasta_sequence.parent().expect("parent");
-    let blast_results = processed_dir.join("blast.out");
+    let blast_results = processed_dir.join(format!(
+        "blast.{}.out",
+        uniprot_db.to_string().to_lowercase()
+    ));
 
     if file_exists(&blast_results) {
         info!("Uniprot BLAST results exists");
@@ -407,32 +420,42 @@ pub fn blast_uniprot(
         info!("Creating Uniprot BLAST results");
         let blastp =
             which("blastp").map_err(|e| anyhow!("Failed to find blastp ({e})"))?;
-        let cmd = Command::new(&blastp)
-            .args([
-                "-query",
-                fasta_sequence.to_string_lossy().as_ref(),
-                "-db",
-                uniprot_blast_dir
-                    .join("uniprot_sprot")
-                    .to_string_lossy()
-                    .as_ref(),
-                "-out",
-                blast_results.to_string_lossy().as_ref(),
-                "-outfmt",
-                "6",
-                "-evalue",
-                BLAST_EVALUE,
-                "-num_threads",
-                BLAST_NUM_THREADS,
-                "-max_target_seqs",
-                BLAST_MAX_TARGET_SEQS,
-            ])
-            .output()?;
+        let mut cmd = Command::new(&blastp);
+        let (blast_db, max_target_seqs) = match uniprot_db {
+            UniprotDb::Swissprot => (
+                blast_dir.join("swissprot").join("uniprot_sprot"),
+                BLAST_MAX_TARGET_SEQS_SWISSPROT,
+            ),
+            UniprotDb::Trembl => (
+                blast_dir.join("trembl").join("uniprot_trembl.fasta"),
+                BLAST_MAX_TARGET_SEQS_TREMBL,
+            ),
+        };
 
-        info!("{}", str::from_utf8(&cmd.stdout)?);
+        cmd.args([
+            "-query",
+            fasta_sequence.to_string_lossy().as_ref(),
+            "-db",
+            blast_db.to_string_lossy().as_ref(),
+            "-out",
+            blast_results.to_string_lossy().as_ref(),
+            "-outfmt",
+            "6",
+            "-evalue",
+            BLAST_EVALUE,
+            "-num_threads",
+            BLAST_NUM_THREADS,
+            "-max_target_seqs",
+            max_target_seqs,
+        ]);
+        debug!("Running {cmd:?}");
 
-        if !cmd.status.success() {
-            bail!(str::from_utf8(&cmd.stderr)?.to_string());
+        let output = cmd.output()?;
+
+        info!("{}", str::from_utf8(&output.stdout)?);
+
+        if !output.status.success() {
+            bail!(str::from_utf8(&output.stderr)?.to_string());
         }
 
         if !file_exists(&blast_results) {
@@ -444,26 +467,29 @@ pub fn blast_uniprot(
         File::open(&blast_results)
             .map_err(|e| anyhow!("{}: {e}", blast_results.display()))?,
     );
+
     let mut reader = ReaderBuilder::new()
         .delimiter(9) // Tab
         .has_headers(false)
         .from_reader(file);
 
+    let trembl_regex = Regex::new(r"^tr[|]([^|]+)[|]").expect("regex");
     let mut results = vec![];
     for result in reader.deserialize() {
         let hit: BlastResult = result?;
-        // Just pick the top-scoring one, as long as it has >99% id
         if hit.pident >= BLAST_MIN_PIDENT {
-            results.push(hit.saccver.to_string());
-            break;
+            let subject = hit.saccver.to_string();
+            match trembl_regex.captures(&subject) {
+                Some(caps) => {
+                    let trembl_id = caps.get(1).expect("capture").as_str();
+                    results.push(trembl_id.to_string());
+                }
+                _ => results.push(subject),
+            }
         }
     }
 
-    Ok(if results.is_empty() {
-        None
-    } else {
-        Some(results)
-    })
+    Ok(results)
 }
 
 // --------------------------------------------------
@@ -477,21 +503,21 @@ pub fn get_sequence(full_pdb: &Path, script_dir: &Path) -> Result<PathBuf> {
         info!("Creating sequence file");
         let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
         let script = script_dir.join("get_sequence_from_pdb.py");
-        let cmd = Command::new(&uv)
-            .current_dir(script_dir)
-            .args([
-                "run",
-                script.to_string_lossy().as_ref(),
-                "--out-file",
-                sequence_file.to_string_lossy().as_ref(),
-                full_pdb.to_string_lossy().as_ref(),
-            ])
-            .output()?;
+        let mut cmd = Command::new(&uv);
+        cmd.current_dir(script_dir).args([
+            "run",
+            script.to_string_lossy().as_ref(),
+            "--out-file",
+            sequence_file.to_string_lossy().as_ref(),
+            full_pdb.to_string_lossy().as_ref(),
+        ]);
+        debug!("Running {cmd:?}");
+        let output = cmd.output()?;
 
-        info!("{}", str::from_utf8(&cmd.stdout)?);
+        info!("{}", str::from_utf8(&output.stdout)?);
 
-        if !cmd.status.success() {
-            bail!(str::from_utf8(&cmd.stderr)?.to_string());
+        if !output.status.success() {
+            bail!(str::from_utf8(&output.stderr)?.to_string());
         }
 
         if !file_exists(&sequence_file) {
@@ -515,24 +541,24 @@ pub fn sample_trajectory(
         info!("Creating sampled trajectory");
         let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
         let sampler = script_dir.join("sample_trajectory.py");
-        let cmd = Command::new(&uv)
-            .current_dir(script_dir)
-            .args([
-                "run",
-                sampler.to_string_lossy().as_ref(),
-                "--trajectory",
-                min_xtc.to_string_lossy().as_ref(),
-                "--structure",
-                min_pdb.to_string_lossy().as_ref(),
-                "--outfile",
-                out_file.to_string_lossy().as_ref(),
-            ])
-            .output()?;
+        let mut cmd = Command::new(&uv);
+        cmd.current_dir(script_dir).args([
+            "run",
+            sampler.to_string_lossy().as_ref(),
+            "--trajectory",
+            min_xtc.to_string_lossy().as_ref(),
+            "--structure",
+            min_pdb.to_string_lossy().as_ref(),
+            "--outfile",
+            out_file.to_string_lossy().as_ref(),
+        ]);
+        debug!("Running {cmd:?}");
+        let output = cmd.output()?;
 
-        info!("{}", str::from_utf8(&cmd.stdout)?);
+        info!("{}", str::from_utf8(&output.stdout)?);
 
-        if !cmd.status.success() {
-            bail!(str::from_utf8(&cmd.stderr)?.to_string());
+        if !output.status.success() {
+            bail!(str::from_utf8(&output.stderr)?.to_string());
         }
 
         if !file_exists(out_file) {
@@ -548,7 +574,7 @@ pub fn make_import_json(
     meta_path: &Path,
     input_dir: &Path,
     script_dir: &Path,
-    uniprot_blast_dir: &Path,
+    blast_dir: &Path,
     processed_files: &ProcessedFiles,
     simulation_id: Option<u32>,
 ) -> Result<PathBuf> {
@@ -572,8 +598,11 @@ pub fn make_import_json(
 
     let unique_file_hash_string = get_unique_file_hash(&meta, input_dir);
 
+    let (uniprots, mut uniprot_warnings) =
+        get_uniprot_entries(meta.uniprot_ids.clone(), &fasta_sequence_file, blast_dir)?;
+
     let mut ligands = vec![];
-    let mut warnings = vec![];
+    let mut warnings = mem::take(&mut uniprot_warnings);
     if let Some(given_ligands) = &meta.ligands {
         // For now, we'll still take all the given ligands
         ligands = given_ligands.clone();
@@ -615,23 +644,6 @@ pub fn make_import_json(
                     smiles: ligand.structure.smiles,
                 }
             })
-        }
-    }
-
-    let mut uniprots: HashMap<String, UniprotEntry> = HashMap::new();
-    if let Some(uniprot_ids) = meta
-        .uniprot_ids
-        .or(blast_uniprot(&fasta_sequence_file, uniprot_blast_dir)?)
-    {
-        for uniprot_id in uniprot_ids {
-            if !uniprots.contains_key(&uniprot_id) {
-                match get_uniprot_entry(&uniprot_id) {
-                    Ok(entry) => {
-                        let _ = uniprots.insert(uniprot_id.to_string(), entry);
-                    }
-                    _ => info!(r#"Failed to get Uniprot entry for "{uniprot_id}""#),
-                }
-            }
         }
     }
 
@@ -750,7 +762,7 @@ pub fn make_import_json(
         software_name: meta.software_name,
         software_version: meta.software_version,
         pdb,
-        uniprots: uniprots.into_values().collect::<Vec<_>>(),
+        uniprots,
         duration: duration.totaltime_ns,
         sampling_frequency: duration.sampling_frequency_ns,
         integration_timestep_fs: meta.integration_timestep_fs,
@@ -787,6 +799,88 @@ pub fn make_import_json(
 }
 
 // --------------------------------------------------
+pub fn get_uniprot_entries(
+    given_uniprot_ids: Option<Vec<String>>,
+    fasta_sequence_file: &Path,
+    blast_dir: &Path,
+) -> Result<(Vec<UniprotEntry>, Vec<String>)> {
+    let mut uniprot_ids: Vec<String> = given_uniprot_ids
+        .unwrap_or_default()
+        .iter()
+        .map(|id| id.to_uppercase())
+        .collect();
+    dbg!(&uniprot_ids);
+    let mut warnings = vec![];
+
+    if uniprot_ids.is_empty() {
+        // There are no given Uniprot IDs, so search
+        let swissprot_ids =
+            blast_uniprot(&fasta_sequence_file, &blast_dir, UniprotDb::Swissprot)?;
+
+        if swissprot_ids.is_empty() {
+            // Second-tier hits from Trembl
+            let trembl_ids =
+                blast_uniprot(&fasta_sequence_file, blast_dir, UniprotDb::Trembl)?;
+
+            if let Some(first) = trembl_ids.first() {
+                uniprot_ids.push(first.clone());
+            }
+        } else {
+            // Take the best Swissprot match
+            if let Some(first) = swissprot_ids.first() {
+                uniprot_ids.push(first.clone());
+            }
+        }
+    } else {
+        // User-provided IDs might be duplicated
+        uniprot_ids.sort();
+        uniprot_ids.dedup();
+
+        // Check if the given IDs are found in Swissprot/Trembl
+        let swissprot_ids =
+            blast_uniprot(&fasta_sequence_file, blast_dir, UniprotDb::Swissprot)?;
+
+        dbg!(&swissprot_ids);
+
+        let not_swissprot: Vec<_> = uniprot_ids
+            .iter()
+            .filter(|id| !swissprot_ids.contains(&id))
+            .collect();
+        dbg!(&not_swissprot);
+
+        if !not_swissprot.is_empty() {
+            let trembl_ids =
+                blast_uniprot(&fasta_sequence_file, blast_dir, UniprotDb::Trembl)?;
+            dbg!(&trembl_ids);
+
+            let not_trembl: Vec<_> = not_swissprot
+                .iter()
+                .filter(|id| !trembl_ids.contains(&id))
+                .map(|val| val.to_string())
+                .collect();
+            dbg!(&not_trembl);
+
+            if !not_trembl.is_empty() {
+                warnings.push(format!(
+                    "Given Uniprot IDs not found in Swisspot or Trembl: {}",
+                    not_trembl.join(", "),
+                ));
+            }
+        }
+    }
+
+    let mut entries = vec![];
+    for uniprot_id in uniprot_ids {
+        match get_uniprot_entry(&uniprot_id) {
+            Ok(entry) => entries.push(entry),
+            Err(e) => info!("{e}"),
+        }
+    }
+
+    Ok((entries, warnings))
+}
+
+// --------------------------------------------------
 pub fn check_ligand(
     ligand: &metadata::Ligand,
     inferred_ligand: &InferredLigand,
@@ -794,21 +888,21 @@ pub fn check_ligand(
 ) -> Result<CheckedLigand> {
     let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
     let script = script_dir.join("compare_smiles.py");
-    let cmd = Command::new(&uv)
-        .current_dir(script_dir)
-        .args([
-            "run",
-            script.to_string_lossy().as_ref(),
-            &ligand.smiles,
-            &inferred_ligand.structure.smiles,
-        ])
-        .output()?;
+    let mut cmd = Command::new(&uv);
+    cmd.current_dir(script_dir).args([
+        "run",
+        script.to_string_lossy().as_ref(),
+        &ligand.smiles,
+        &inferred_ligand.structure.smiles,
+    ]);
+    debug!("Running {cmd:?}");
 
-    if !cmd.status.success() {
-        bail!(str::from_utf8(&cmd.stderr)?.to_string());
+    let output = cmd.output()?;
+    if !output.status.success() {
+        bail!(str::from_utf8(&output.stderr)?.to_string());
     }
 
-    let stdout = str::from_utf8(&cmd.stdout)?;
+    let stdout = str::from_utf8(&output.stdout)?;
     let checked = serde_json::from_str(stdout)?;
     Ok(checked)
 }
@@ -827,36 +921,39 @@ pub fn get_inferred_ligands(
         info!("Creating inferred ligands file");
         let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
         let mol_tools = script_dir.join("mol_tools.py");
-        let cmd = Command::new(&uv)
-            .current_dir(script_dir)
-            .args([
-                "run",
-                mol_tools.to_string_lossy().as_ref(),
-                "both",
-                "--pdb",
-                min_pdb.to_string_lossy().as_ref(),
-                "--gro",
-                min_gro.to_string_lossy().as_ref(),
-                "--outfile",
-                out_file.to_string_lossy().as_ref(),
-            ])
-            .output()?;
+        let mut cmd = Command::new(&uv);
+        cmd.current_dir(script_dir).args([
+            "run",
+            mol_tools.to_string_lossy().as_ref(),
+            "both",
+            "--pdb",
+            min_pdb.to_string_lossy().as_ref(),
+            "--gro",
+            min_gro.to_string_lossy().as_ref(),
+            "--outfile",
+            out_file.to_string_lossy().as_ref(),
+        ]);
 
-        info!("{}", str::from_utf8(&cmd.stdout)?);
+        debug!("Running {cmd:?}");
 
-        if !cmd.status.success() {
-            bail!(str::from_utf8(&cmd.stderr)?.to_string());
-        }
+        let output = cmd.output()?;
 
-        if !file_exists(&out_file) {
-            bail!(r#"Failed to create "{}""#, out_file.display());
+        info!("{}", str::from_utf8(&output.stdout)?);
+
+        // The script throws an exception when no ligands are found
+        // But the simulation may just be in APO form, so report and move on
+        if !output.status.success() {
+            debug!("{}", str::from_utf8(&output.stderr)?.to_string());
         }
     }
 
-    let contents = fs::read_to_string(&out_file)?;
-    let ligands: Vec<InferredLigand> = serde_json::from_str(&contents)?;
-
-    Ok(ligands)
+    if file_exists(&out_file) {
+        let contents = fs::read_to_string(&out_file)?;
+        let ligands: Vec<InferredLigand> = serde_json::from_str(&contents)?;
+        Ok(ligands)
+    } else {
+        Ok(vec![])
+    }
 }
 
 // --------------------------------------------------
@@ -870,15 +967,16 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Dur
         info!("Duration file exists");
     } else {
         info!("Creating duration file");
-        let cmd = Command::new("molly")
-            .args(["--info", full_xtc.to_string_lossy().as_ref()])
-            .output()?;
+        let mut cmd = Command::new("molly");
+        cmd.args(["--info", full_xtc.to_string_lossy().as_ref()]);
+        debug!("Running {cmd:?}");
+        let output = cmd.output()?;
 
-        if !cmd.status.success() {
-            bail!(str::from_utf8(&cmd.stderr)?.to_string());
+        if !output.status.success() {
+            bail!(str::from_utf8(&output.stderr)?.to_string());
         }
 
-        let stdout = str::from_utf8(&cmd.stdout)?.to_string();
+        let stdout = str::from_utf8(&output.stdout)?.to_string();
         let mut time_start: Option<u64> = None;
         let mut time_stop: Option<u64> = None;
         let mut num_frames: Option<u64> = None;
@@ -918,10 +1016,11 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Dur
                 }
             }
         }
-        let (time_start, time_stop, num_frames) = match (time_start, time_stop, num_frames) {
-            (Some(a), Some(b), Some(c)) => (a as f64, b as f64, c as f64),
-            _ => bail!("Failed to parse molly output:\n{stdout}"),
-        };
+        let (time_start, time_stop, num_frames) =
+            match (time_start, time_stop, num_frames) {
+                (Some(a), Some(b), Some(c)) => (a as f64, b as f64, c as f64),
+                _ => bail!("Failed to parse molly output:\n{stdout}"),
+            };
 
         if num_frames <= 1. {
             bail!("Trajectory file has only {num_frames} frame(s)");
@@ -1024,11 +1123,12 @@ pub fn get_uniprot_entry(uniprot_id: &str) -> Result<UniprotEntry> {
     let url = format!("https://rest.uniprot.org/uniprotkb/{uniprot_id}.json");
     let resp = reqwest::blocking::get(&url)?;
     if !resp.status().is_success() {
-        bail!(r#"Failed to GET "{url}" ({})""#, resp.status());
+        bail!(r#"Failed to fetch "{url}" ({})""#, resp.status());
     }
-    let uniprot: UniprotResponse = resp
-        .json()
-        .map_err(|e| anyhow!("Failed to parse Uniprot response: {e}"))?;
+
+    let uniprot: UniprotResponse = resp.json().map_err(|e| {
+        anyhow!(r#"Failed to parse Uniprot response for "{uniprot_id}": {e}"#)
+    })?;
 
     let desc = uniprot.protein_description;
     let name = if let Some(name) = desc.recommended_name {
@@ -1036,7 +1136,7 @@ pub fn get_uniprot_entry(uniprot_id: &str) -> Result<UniprotEntry> {
     } else if let Some(name) = desc.submission_names {
         name.full_name.value
     } else {
-        bail!("Uniprot entry for \"{uniprot_id}\" has no names")
+        bail!(r#"Uniprot entry for "{uniprot_id}" has no names"#)
     };
 
     Ok(UniprotEntry {
