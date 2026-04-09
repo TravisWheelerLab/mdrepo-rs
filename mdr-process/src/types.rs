@@ -138,7 +138,7 @@ pub struct TicketArgs {
 #[command(alias = "re")]
 pub struct ReprocessArgs {
     /// Simulation ID
-    #[arg(short, long, value_name = "INT")]
+    #[arg(value_name = "SIM_ID")]
     pub simulation_id: u32,
 
     /// Server
@@ -568,4 +568,11 @@ pub struct BlastResult {
     pub send: u32,
     pub evalue: f64,
     pub bitscore: u32,
+}
+
+// --------------------------------------------------
+#[derive(Debug, strum_macros::Display)]
+pub enum UniprotDb {
+    Swissprot,
+    Trembl,
 }
