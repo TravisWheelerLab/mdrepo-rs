@@ -5,11 +5,9 @@ use crate::{
 use anyhow::{anyhow, bail, Result};
 use dotenvy::dotenv;
 use libmdrepo::{common::file_exists, metadata::Meta};
-use log::{info, debug};
+use log::{debug, info};
 use std::{
-    env,
-    ffi::OsStr,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -52,20 +50,12 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
         irods_fetch(&irods_dir.join(filename), &data_dir.join(filename))?;
     }
 
-    let wanted_ext = &[OsStr::new("tpr"), OsStr::new("gro")];
     if let Some(addl_files) = meta.additional_files {
         for file in addl_files {
-            //irods_fetch(
-            //    &irods_dir.join(&file.file_name),
-            //    &data_dir.join(&file.file_name),
-            //)?;
-            if let Some(ext) = Path::new(&file.file_name).extension()
-                && wanted_ext.contains(&ext) {
-                    irods_fetch(
-                        &irods_dir.join(&file.file_name),
-                        &data_dir.join(&file.file_name),
-                    )?;
-                }
+            irods_fetch(
+                &irods_dir.join(&file.file_name),
+                &data_dir.join(&file.file_name),
+            )?;
         }
     }
 
@@ -92,7 +82,10 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
 // --------------------------------------------------
 fn irods_fetch(irods_path: &Path, local_path: &Path) -> Result<()> {
     if file_exists(local_path) {
-        debug!("Already downloaded");
+        debug!(
+            r#"Already downloaded "{}""#,
+            irods_path.file_name().expect("filename").display()
+        );
     } else {
         let mut cmd = Command::new("gocmd");
         cmd.args([
