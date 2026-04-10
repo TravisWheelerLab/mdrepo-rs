@@ -48,7 +48,11 @@ fn run(args: Args) -> Result<()> {
         output
     } else if args.in_place {
         let input = args.filename;
-        fs::copy(&input, format!("{input}.bak"))?;
+        let backup = format!("{input}.bak");
+        if Path::new(&backup).exists() {
+            bail!(r#"Backup file "{backup}" already exists"#);
+        }
+        fs::copy(&input, &backup)?;
         input
     } else {
         "-".to_string()
