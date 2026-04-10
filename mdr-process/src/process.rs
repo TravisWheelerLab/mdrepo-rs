@@ -1,8 +1,7 @@
 use crate::types::{
     BlastResult, CheckedLigand, DoiPaper, Duration, Export, ExportSimulation,
-    ImportResult, InferredLigand, MdFile, PdbEntry, PdbGraphqlResponse, PdbResponse,
-    ProcessArgs, ProcessedFiles, PushResult, RmsdRmsf, UniprotDb, UniprotEntry,
-    UniprotResponse,
+    ImportResult, InferredLigand, MdFile, PdbEntry, PdbResponse, ProcessArgs,
+    ProcessedFiles, PushResult, RmsdRmsf, UniprotDb, UniprotEntry, UniprotResponse,
 };
 use anyhow::{anyhow, bail, Result};
 use csv::ReaderBuilder;
@@ -88,7 +87,7 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
         &script_dir,
         &blast_dir,
         &processed_files,
-        args.simulation_id,
+        args.reprocess_simulation_id,
     )?;
 
     if !args.dry_run {
@@ -99,7 +98,7 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
             &import_json,
             &input_dir,
             &args.server.to_string(),
-            args.simulation_id,
+            args.reprocess_simulation_id,
             &processed_dir,
         )?;
         let push_res = run_push(
@@ -108,7 +107,7 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
             import_result,
             &input_dir,
             &args.server.to_string(),
-            args.simulation_id,
+            args.reprocess_simulation_id,
             &processed_dir,
         )?;
         debug!("{push_res:?}");
@@ -124,7 +123,7 @@ fn run_import(
     import_json: &Path,
     input_dir: &Path,
     server: &str,
-    simulation_id: Option<u32>,
+    reprocess_simulation_id: Option<u32>,
     processed_dir: &Path,
 ) -> Result<ImportResult> {
     let import_script = script_dir.join("import_preprocessed.py");
@@ -143,7 +142,8 @@ fn run_import(
         "--out-file".to_string(),
         out_file.to_string_lossy().to_string(),
     ];
-    if let Some(id) = simulation_id {
+
+    if let Some(id) = reprocess_simulation_id {
         args.extend(["--simulation-id".to_string(), id.to_string()]);
     }
 
@@ -171,7 +171,7 @@ fn run_push(
     import_result: ImportResult,
     input_dir: &Path,
     server: &str,
-    simulation_id: Option<u32>,
+    reprocess_simulation_id: Option<u32>,
     processed_dir: &Path,
 ) -> Result<Vec<PushResult>> {
     let push_script = script_dir.join("push_sim_files.py");
@@ -195,8 +195,15 @@ fn run_push(
         "--out-file".to_string(),
         out_file.to_string_lossy().to_string(),
     ];
-    if simulation_id.is_some() {
+
+    if reprocess_simulation_id.is_some() {
         args.push("--remove-processed-dir".to_string());
+        //args.extend_from_slice(&[
+        //    "--remove-processed-dir".to_string(),
+        //    "--file-types".to_string(),
+        //    "processed".to_string(),
+        //    "media".to_string(),
+        //]);
     }
 
     let mut cmd = Command::new(uv);
@@ -209,7 +216,8 @@ fn run_push(
     }
 
     if !file_exists(&out_file) {
-        bail!(r#"Failed to create "{}""#, out_file.display());
+        let stdout = str::from_utf8(&output.stderr)?;
+        bail!(r#"Failed to create "{}" ({stdout})"#, out_file.display());
     }
 
     serde_json::from_str(&read_file(&out_file)?)
@@ -576,7 +584,7 @@ pub fn make_import_json(
     script_dir: &Path,
     blast_dir: &Path,
     processed_files: &ProcessedFiles,
-    simulation_id: Option<u32>,
+    reprocess_simulation_id: Option<u32>,
 ) -> Result<PathBuf> {
     let meta = Meta::from_file(meta_path)?;
     let topology_path = input_dir.join(&meta.topology_file_name);
@@ -650,67 +658,64 @@ pub fn make_import_json(
     let mut pdb = None;
     if let Some(pdb_id) = &meta.pdb_id {
         match get_pdb_entry(pdb_id) {
-            Ok((pdb_tmp, _pdb_uniprots)) => {
+            Ok(pdb_tmp) => {
                 pdb = Some(pdb_tmp);
-
-                // TODO: Verify that we will not do this.
-                //for entry in pdb_uniprots {
-                //    if !uniprots.contains_key(&entry.uniprot_id) {
-                //        let _ = uniprots.insert(entry.uniprot_id.clone(), entry);
-                //    }
-                //}
             }
-            Err(e) => info!("{e}"),
+            Err(e) => warnings.push(e.to_string()),
         }
     }
 
-    let mut original_files: Vec<MdFile> = vec![MdFile {
-        name: meta_path
-            .file_name()
-            .expect("filename")
-            .to_string_lossy()
-            .to_string(),
-        file_type: "Metadata".to_string(),
-        size: meta_path.metadata()?.len(),
-        md5_sum: get_md5(meta_path)?,
-        description: None,
-        is_primary: None,
-    }];
-
-    for (file_type, filename) in &[
-        ("Trajectory", &meta.trajectory_file_name),
-        ("Structure", &meta.structure_file_name),
-        ("Topology", &meta.topology_file_name),
-    ] {
-        let local_path = input_dir.join(filename);
+    // No need to push original files when reprocessing
+    let mut original_files: Vec<MdFile> = vec![];
+    if reprocess_simulation_id.is_none() {
         original_files.push(MdFile {
-            name: filename.to_string(),
-            file_type: file_type.to_string(),
-            size: local_path.metadata()?.len(),
-            md5_sum: get_md5(&local_path)?,
+            name: meta_path
+                .file_name()
+                .expect("filename")
+                .to_string_lossy()
+                .to_string(),
+            file_type: "Metadata".to_string(),
+            size: meta_path.metadata()?.len(),
+            md5_sum: get_md5(meta_path)?,
             description: None,
-            is_primary: Some(true),
-        })
-    }
+            is_primary: None,
+        });
 
-    if let Some(files) = &meta.additional_files {
-        for file in files {
-            let path = input_dir.join(&file.file_name);
-            let md5_sum = get_md5(&path)?;
-            if original_files
-                .iter()
-                .filter(|f| f.md5_sum == md5_sum)
-                .collect::<Vec<_>>()
-                .is_empty()
-            {
-                original_files.push(MdFile {
-                    name: file.file_name.to_string(),
-                    file_type: file.file_type.to_string(),
-                    size: path.metadata()?.len(),
-                    md5_sum,
-                    description: file.description.clone(),
-                    is_primary: None,
-                })
+        for (file_type, filename) in &[
+            ("Trajectory", &meta.trajectory_file_name),
+            ("Structure", &meta.structure_file_name),
+            ("Topology", &meta.topology_file_name),
+        ] {
+            let local_path = input_dir.join(filename);
+            original_files.push(MdFile {
+                name: filename.to_string(),
+                file_type: file_type.to_string(),
+                size: local_path.metadata()?.len(),
+                md5_sum: get_md5(&local_path)?,
+                description: None,
+                is_primary: Some(true),
+            })
+        }
+
+        if let Some(files) = &meta.additional_files {
+            for file in files {
+                let path = input_dir.join(&file.file_name);
+                let md5_sum = get_md5(&path)?;
+                if original_files
+                    .iter()
+                    .filter(|f| f.md5_sum == md5_sum)
+                    .collect::<Vec<_>>()
+                    .is_empty()
+                {
+                    original_files.push(MdFile {
+                        name: file.file_name.to_string(),
+                        file_type: file.file_type.to_string(),
+                        size: path.metadata()?.len(),
+                        md5_sum,
+                        description: file.description.clone(),
+                        is_primary: None,
+                    })
+                }
             }
         }
     }
@@ -752,7 +757,7 @@ pub fn make_import_json(
 
     let fasta_sequence = fs::read_to_string(fasta_sequence_file)?;
     let simulation = ExportSimulation {
-        simulation_id,
+        simulation_id: reprocess_simulation_id,
         lead_contributor_orcid: meta.lead_contributor_orcid,
         unique_file_hash_string,
         user_accession: meta.user_accession,
@@ -785,6 +790,17 @@ pub fn make_import_json(
         papers,
     };
 
+    if !warnings.is_empty() {
+        let num_warnings = warnings.len();
+        info!(
+            "{num_warnings} warning{}",
+            if num_warnings == 1 { "" } else { "s" }
+        );
+        for (i, warning) in warnings.iter().enumerate() {
+            info!("{i}: {warning}");
+        }
+    }
+
     let export = Export {
         simulation,
         warnings,
@@ -809,7 +825,6 @@ pub fn get_uniprot_entries(
         .iter()
         .map(|id| id.to_uppercase())
         .collect();
-    dbg!(&uniprot_ids);
     let mut warnings = vec![];
 
     if uniprot_ids.is_empty() {
@@ -840,25 +855,20 @@ pub fn get_uniprot_entries(
         let swissprot_ids =
             blast_uniprot(&fasta_sequence_file, blast_dir, UniprotDb::Swissprot)?;
 
-        dbg!(&swissprot_ids);
-
         let not_swissprot: Vec<_> = uniprot_ids
             .iter()
             .filter(|id| !swissprot_ids.contains(&id))
             .collect();
-        dbg!(&not_swissprot);
 
         if !not_swissprot.is_empty() {
             let trembl_ids =
                 blast_uniprot(&fasta_sequence_file, blast_dir, UniprotDb::Trembl)?;
-            dbg!(&trembl_ids);
 
             let not_trembl: Vec<_> = not_swissprot
                 .iter()
                 .filter(|id| !trembl_ids.contains(&id))
                 .map(|val| val.to_string())
                 .collect();
-            dbg!(&not_trembl);
 
             if !not_trembl.is_empty() {
                 warnings.push(format!(
@@ -1147,7 +1157,7 @@ pub fn get_uniprot_entry(uniprot_id: &str) -> Result<UniprotEntry> {
 }
 
 // --------------------------------------------------
-pub fn get_pdb_entry(pdb_id: &str) -> Result<(PdbEntry, Vec<UniprotEntry>)> {
+pub fn get_pdb_entry(pdb_id: &str) -> Result<PdbEntry> {
     let pdb_id = pdb_id.to_uppercase();
     let url = format!("https://data.rcsb.org/rest/v1/core/entry/{pdb_id}");
     let resp = reqwest::blocking::get(&url)?;
@@ -1158,45 +1168,11 @@ pub fn get_pdb_entry(pdb_id: &str) -> Result<(PdbEntry, Vec<UniprotEntry>)> {
         .json()
         .map_err(|e| anyhow!("Failed to parse PDB response: {e}"))?;
 
-    let query = [
-        "{entry(entry_id:\"",
-        &pdb_id,
-        "\"){polymer_entities{uniprots{rcsb_id,rcsb_uniprot_protein{",
-        "name{value},sequence}}}}}",
-    ]
-    .join("");
-    let url = format!(
-        "https://data.rcsb.org/graphql?query={}",
-        urlencoding::encode(&query)
-    );
-
-    let resp = reqwest::blocking::get(&url)?;
-    if !resp.status().is_success() {
-        bail!("Failed to GET \"{url}\" ({})", resp.status());
-    }
-    let graphql_resp: PdbGraphqlResponse = resp
-        .json()
-        .map_err(|e| anyhow!("Failed to parse PDB response: {e}"))?;
-
-    let mut uniprots: Vec<UniprotEntry> = vec![];
-    for entry in graphql_resp.data.entry.polymer_entities {
-        for uniprot in entry.uniprots {
-            uniprots.push(UniprotEntry {
-                uniprot_id: uniprot.rcsb_id,
-                name: uniprot.rcsb_uniprot_protein.name.value,
-                sequence: uniprot.rcsb_uniprot_protein.sequence,
-            })
-        }
-    }
-
-    Ok((
-        PdbEntry {
-            pdb_id: pdb_id.to_string(),
-            title: pdb_resp.struct_.title.to_string(),
-            classification: pdb_resp.struct_keywords.pdbx_keywords.to_string(),
-        },
-        uniprots,
-    ))
+    Ok(PdbEntry {
+        pdb_id: pdb_id.to_string(),
+        title: pdb_resp.struct_.title.to_string(),
+        classification: pdb_resp.struct_keywords.pdbx_keywords.to_string(),
+    })
 }
 
 // --------------------------------------------------
