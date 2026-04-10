@@ -1,9 +1,6 @@
 use anyhow::{bail, Result};
 use clap::Parser;
-use libmdrepo::{
-    metadata::Meta,
-    metadatav1::MetaV1,
-};
+use libmdrepo::{metadata::Meta, metadatav1::MetaV1};
 use std::{
     fs::{self, File},
     io::{self, Write},
@@ -59,7 +56,6 @@ fn run(args: Args) -> Result<()> {
 
     let mut out_fh = open_outfile(&outfile)?;
     write!(out_fh, "{}", meta.to_toml()?)?;
-    println!(r#"Done, wrote to "{}""#, &outfile);
     Ok(())
 }
 
