@@ -17,6 +17,13 @@ pub static DOI_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 pub static NOT_WHITESPACE_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\S+").unwrap());
 
+pub static MOLLY_TIME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^time:\s*(\d+)-(\d+(?:\.\d)?)\s+ps").unwrap()
+});
+
+pub static MOLLY_NFRAMES_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^nframes:\s*(\d+)").unwrap());
+
 pub const SOLVENT_CONCENTRATION_MIN: f64 = 0.;
 pub const SOLVENT_CONCENTRATION_MAX: f64 = 1.;
 pub const WATER_DENSITY_MIN: f64 = 900.;

@@ -10,16 +10,17 @@ use which::which;
 
 // --------------------------------------------------
 pub fn get_ticket_user(args: &TicketArgs) -> Result<TicketInfo> {
-    let landing_dir = &args.landing_dir.clone().unwrap_or(PathBuf::from(
-        env::var("LANDING_DIR").map_err(|e| anyhow!("LANDING_DIR: {e}"))?,
+    let work_dir = &args.work_dir.clone().unwrap_or(PathBuf::from(
+        env::var("MDREPO_WORK_DIR").map_err(|e| anyhow!("MDREPO_WORK_DIR: {e}"))?,
     ));
 
-    let ticket_file = &landing_dir
+    let ticket_file = work_dir
+        .join("landing")
         .join(args.server.to_string())
         .join(format!("ticket-{}", args.ticket_id))
         .join("ticket.json");
 
-    let contents = fs::read_to_string(ticket_file)
+    let contents = fs::read_to_string(&ticket_file)
         .map_err(|e| anyhow!("{}: {e}", ticket_file.display()))?;
 
     let ticket: TicketInfo = serde_json::from_str(&contents)?;
@@ -35,10 +36,10 @@ pub fn process(args: &TicketArgs) -> Result<()> {
     let script_dir = &args.script_dir.clone().unwrap_or(PathBuf::from(
         env::var("SCRIPT_DIR").map_err(|e| anyhow!("SCRIPT_DIR: {e}"))?,
     ));
-
-    let landing_dir = &args.landing_dir.clone().unwrap_or(PathBuf::from(
-        env::var("LANDING_DIR").map_err(|e| anyhow!("LANDING_DIR: {e}"))?,
+    let work_dir = args.work_dir.clone().unwrap_or(PathBuf::from(
+        env::var("MDREPO_WORK_DIR").map_err(|e| anyhow!("MDREPO_WORK_DIR: {e}"))?,
     ));
+    let landing_dir = &work_dir.join("landing");
     let landing_dir = &landing_dir.join(args.server.to_string());
     if !landing_dir.is_dir() {
         fs::create_dir_all(landing_dir)?;
@@ -96,15 +97,16 @@ pub fn process(args: &TicketArgs) -> Result<()> {
     for ticket_dir in ticket_dirs {
         debug!(r#"Processing ticket directory "{}""#, ticket_dir.display());
         match process::process(&ProcessArgs {
-            dirname: ticket_dir.clone(),
+            input_dir: ticket_dir.clone(),
             script_dir: Some(script_dir.clone()),
+            work_dir: Some(work_dir.clone()),
             out_dir: None,
-            json_dir: None,
             server: args.server.clone(),
-            simulation_id: None,
+            reprocess_simulation_id: None,
             // The TOML will have already been validated, so allow missing IDs
             no_id: true,
             force: args.force,
+            dry_run: args.dry_run,
         }) {
             Ok(()) => {
                 info!(

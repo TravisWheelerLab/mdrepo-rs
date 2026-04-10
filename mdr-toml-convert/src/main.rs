@@ -166,38 +166,23 @@ fn run(args: Args) -> Result<()> {
         replicate_id: None,
         pdb_id,
         dois: None,
-        uniprot_ids: if uniprot_ids.is_empty() {
-            None
-        } else {
-            Some(uniprot_ids)
-        },
+        uniprot_ids: non_empty(uniprot_ids),
         water,
-        ligands: if ligands.is_empty() {
-            None
-        } else {
-            Some(ligands)
-        },
-        solvents: if solvents.is_empty() {
-            None
-        } else {
-            Some(solvents)
-        },
-        papers: if papers.is_empty() {
-            None
-        } else {
-            Some(papers)
-        },
-        contributors: if contributors.is_empty() {
-            None
-        } else {
-            Some(contributors)
-        },
+        ligands: non_empty(ligands),
+        solvents: non_empty(solvents),
+        papers: non_empty(papers),
+        contributors: non_empty(contributors),
     };
 
     let mut out_file = open_outfile(&args.outfile)?;
     write!(out_file, "{}", meta.to_toml()?)?;
     println!(r#"Done, wrote to "{}""#, &args.outfile);
     Ok(())
+}
+
+// --------------------------------------------------
+fn non_empty<T>(v: Vec<T>) -> Option<Vec<T>> {
+    if v.is_empty() { None } else { Some(v) }
 }
 
 // --------------------------------------------------

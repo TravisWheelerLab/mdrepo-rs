@@ -2,12 +2,12 @@ use crate::{
     process,
     types::{ProcessArgs, ReprocessArgs},
 };
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use dotenvy::dotenv;
 use libmdrepo::{common::file_exists, metadata::Meta};
-use log::debug;
+use log::{debug, info};
 use std::{
-    fs,
+    env, fs,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -15,12 +15,19 @@ use std::{
 // --------------------------------------------------
 pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
     dotenv().ok();
+    let work_dir = args.work_dir.clone().unwrap_or(PathBuf::from(
+        env::var("MDREPO_WORK_DIR").map_err(|e| anyhow!("MDREPO_WORK_DIR: {e}"))?,
+    ));
     let simulation_id = args.simulation_id;
     let mdrepo_id = format!("MDR{simulation_id:08}");
     debug!("Reprocessing simulation ID {mdrepo_id}");
 
-    let server = &args.server;
-    let data_dir = &args.work_dir.join(server.to_string()).join(&mdrepo_id);
+    let server = args.server.clone();
+    let data_dir = &work_dir
+        .join("reprocess")
+        .join(server.to_string())
+        .join(&mdrepo_id);
+
     if !data_dir.is_dir() {
         fs::create_dir_all(data_dir)?;
     }
@@ -53,18 +60,19 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
     }
 
     process::process(&ProcessArgs {
-        dirname: data_dir.clone(),
+        input_dir: data_dir.clone(),
         script_dir: None,
+        work_dir: Some(work_dir),
         out_dir: None,
-        json_dir: None,
-        server: args.server.clone(),
-        simulation_id: Some(simulation_id),
+        server,
+        reprocess_simulation_id: Some(simulation_id),
         force: args.force,
-        // If it had no PDB/Uniprots before, let it stand
-        no_id: true,
+        no_id: true, // If it had no PDB/Uniprots before, let it stand
+        dry_run: args.dry_run,
     })?;
 
     if !args.preserve {
+        info!(r#"Removing "{}""#, data_dir.display());
         fs::remove_dir_all(data_dir)?;
     }
 
@@ -72,15 +80,12 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
 }
 
 // --------------------------------------------------
-fn irods_fetch(irods_path: &Path, local_path: &PathBuf) -> Result<()> {
-    debug!(
-        r#"Get "{}" -> "{}""#,
-        irods_path.display(),
-        local_path.display()
-    );
-
+fn irods_fetch(irods_path: &Path, local_path: &Path) -> Result<()> {
     if file_exists(local_path) {
-        debug!("Already downloaded");
+        debug!(
+            r#"Already downloaded "{}""#,
+            irods_path.file_name().expect("filename").display()
+        );
     } else {
         let mut cmd = Command::new("gocmd");
         cmd.args([

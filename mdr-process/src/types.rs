@@ -64,27 +64,27 @@ pub enum Command {
 pub struct ProcessArgs {
     /// Input directory
     #[arg(value_name = "IN_DIR")]
-    pub dirname: PathBuf,
-
-    /// Script directory
-    #[arg(short('S'), long, value_name = "SCRIPTS")]
-    pub script_dir: Option<PathBuf>,
-
-    /// Output directory for processed files
-    #[arg(short, long, value_name = "OUT_DIR")]
-    pub out_dir: Option<PathBuf>,
-
-    /// Output directory for JSON import file
-    #[arg(short, long, value_name = "JSON_DIR")]
-    pub json_dir: Option<PathBuf>,
+    pub input_dir: PathBuf,
 
     /// Server
     #[arg(short, long, value_name = "SERVER", default_value = "staging")]
     pub server: Server,
 
+    /// Script directory
+    #[arg(short('S'), long, value_name = "SCRIPT_DIR")]
+    pub script_dir: Option<PathBuf>,
+
+    /// Working directory
+    #[arg(short, long, value_name = "WORK_DIR")]
+    pub work_dir: Option<PathBuf>,
+
+    /// Output directory for processed files
+    #[arg(short, long, value_name = "OUT_DIR")]
+    pub out_dir: Option<PathBuf>,
+
     /// Simulation ID
     #[arg(long, value_name = "SIMULATION_ID")]
-    pub simulation_id: Option<u32>,
+    pub reprocess_simulation_id: Option<u32>,
 
     /// Allow missing PDB/Uniprot IDs in metadata
     #[arg(short, long)]
@@ -93,6 +93,10 @@ pub struct ProcessArgs {
     /// Force removal of any existing "processed" directory
     #[arg(short, long)]
     pub force: bool,
+
+    /// Process files/create import JSON but do not import/push
+    #[arg(short, long)]
+    pub dry_run: bool,
 }
 
 // --------------------------------------------------
@@ -108,25 +112,25 @@ pub struct TicketArgs {
     )]
     pub ticket_id: u64,
 
-    /// Script directory
-    #[arg(short('S'), long, value_name = "DIR")]
-    pub script_dir: Option<PathBuf>,
-
-    /// Landing directory for downloaded files
-    #[arg(short, long, value_name = "DIR")]
-    pub landing_dir: Option<PathBuf>,
-
-    /// Output directory for JSON import file
-    #[arg(short, long, value_name = "JSON_DIR")]
-    pub json_dir: Option<PathBuf>,
-
     /// Server
     #[arg(short, long, value_name = "SERVER", default_value = "staging")]
     pub server: Server,
 
+    /// Script directory
+    #[arg(short('S'), long, value_name = "SCRIPT_DIR")]
+    pub script_dir: Option<PathBuf>,
+
+    /// Root working directory for MDRepo
+    #[arg(short, long, value_name = "WORK_DIR")]
+    pub work_dir: Option<PathBuf>,
+
     /// Force removal of any existing "processed" directory
     #[arg(short, long)]
     pub force: bool,
+
+    /// Process files/create import JSON but do not import/push
+    #[arg(short, long)]
+    pub dry_run: bool,
 }
 
 // --------------------------------------------------
@@ -134,30 +138,20 @@ pub struct TicketArgs {
 #[command(alias = "re")]
 pub struct ReprocessArgs {
     /// Simulation ID
-    #[arg(short, long, value_name = "INT")]
+    #[arg(value_name = "SIM_ID")]
     pub simulation_id: u32,
 
+    /// Server
+    #[arg(short, long, value_name = "SERVER", default_value = "staging")]
+    pub server: Server,
+
     /// Script directory
-    #[arg(long, value_name = "SCRIPTS")]
+    #[arg(short('S'), long, value_name = "SCRIPT_DIR")]
     pub script_dir: Option<PathBuf>,
 
-    // TODO: Think of adding "server" to this path?
     /// Output directory for processed files
-    #[arg(
-        short,
-        long,
-        value_name = "WORK_DIR",
-        default_value = "/opt/mdrepo/reprocess"
-    )]
-    pub work_dir: PathBuf,
-
-    /// Output directory for JSON import file
-    #[arg(short, long, value_name = "JSON_DIR", default_value = "import_json")]
-    pub json_dir: Option<PathBuf>,
-
-    /// Server
-    #[arg(short('S'), long, value_name = "SERVER", default_value = "staging")]
-    pub server: Server,
+    #[arg(short, long, value_name = "WORK_DIR")]
+    pub work_dir: Option<PathBuf>,
 
     /// Preserve working directory
     #[arg(long)]
@@ -166,6 +160,10 @@ pub struct ReprocessArgs {
     /// Force removal of any existing "processed" directory
     #[arg(short, long)]
     pub force: bool,
+
+    /// Process files/create import JSON but do not import/push
+    #[arg(short, long)]
+    pub dry_run: bool,
 }
 
 // --------------------------------------------------
@@ -345,12 +343,6 @@ pub struct PdbStruct {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct PdbStructKeywords {
     pub pdbx_keywords: String,
-}
-
-// --------------------------------------------------
-#[derive(Debug, Deserialize, Serialize)]
-pub struct PdbGraphqlResponse {
-    pub data: PdbData,
 }
 
 // --------------------------------------------------
@@ -536,6 +528,7 @@ pub struct InferredLigandStructure {
     pub resname: String,
 }
 
+// --------------------------------------------------
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CheckedLigand {
     pub smi1_canonical: String,
@@ -552,4 +545,28 @@ pub struct CheckedLigand {
     pub inchi1: String,
     pub inchi2: String,
     pub connectivity_layer: Option<String>,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct BlastResult {
+    pub qaccver: u32,
+    pub saccver: String,
+    pub pident: f64,
+    pub length: u32,
+    pub mismatch: u32,
+    pub gapopen: u32,
+    pub qstart: u32,
+    pub qend: u32,
+    pub sstart: u32,
+    pub send: u32,
+    pub evalue: f64,
+    pub bitscore: u32,
+}
+
+// --------------------------------------------------
+#[derive(Debug, strum_macros::Display)]
+pub enum UniprotDb {
+    Swissprot,
+    Trembl,
 }

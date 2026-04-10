@@ -1,7 +1,7 @@
 use crate::common::read_file;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::Path;
 use toml::value::Value as TomlValue;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -113,7 +113,7 @@ pub struct MetaV1 {
 }
 
 impl MetaV1 {
-    pub fn from_file(path: &PathBuf) -> Result<Self> {
+    pub fn from_file(path: &Path) -> Result<Self> {
         let contents = read_file(path)?;
         let mut toml: MetaV1 = toml::from_str(&contents)
             .map_err(|e| anyhow!(r#"Failed to parse "{}": {e}"#, path.display()))?;

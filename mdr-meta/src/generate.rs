@@ -76,7 +76,7 @@ pub fn generate(args: &GenArgs) -> Result<Meta> {
             description: None,
         })
         .collect();
-    additional_files.sort_by_key(|f| f.file_name.to_string());
+    additional_files.sort_by(|a, b| a.file_name.cmp(&b.file_name));
 
     let mut meta = Meta::example_minimal();
 
