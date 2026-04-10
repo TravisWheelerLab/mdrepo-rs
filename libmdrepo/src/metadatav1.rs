@@ -1,4 +1,7 @@
-use crate::common::read_file;
+use crate::{
+    common::read_file,
+    metadata::{self, Meta},
+};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -145,7 +148,6 @@ impl MetaV1 {
 
                     let number = paper.number.clone().map(|val| {
                         if let Numlike::TomlVal(n) = val {
-                            
                             match n {
                                 TomlValue::String(v) => Numlike::Stringy(v.to_string()),
                                 TomlValue::Integer(v) => {
@@ -202,6 +204,173 @@ impl MetaV1 {
 
         self.proteins = new_proteins;
     }
+
+    pub fn to_v2(&self) -> Meta {
+        let external_links = match &self.initial.external_link {
+            Some(link) => Some(vec![metadata::ExternalLink {
+                url: link.clone(),
+                label: None,
+            }]),
+            _ => None,
+        };
+
+        let reqd = &self.required_files;
+        let additional_files = self.additional_files.clone().map(|files| {
+            files
+                .iter()
+                .map(|f| metadata::AdditionalFile {
+                    file_name: f.file_name.clone(),
+                    file_type: f.file_type.clone(),
+                    description: f.description.clone(),
+                })
+                .collect::<Vec<_>>()
+        });
+        let (forcefield, forcefield_comments) = match &self.forcefield {
+            Some(f) => (f.forcefield.clone(), f.forcefield_comments.clone()),
+            _ => (None, None),
+        };
+        let protonation_method = match &self.protonation_method {
+            Some(p) => p.protonation_method.clone(),
+            _ => None,
+        };
+
+        let mut pdb_id: Option<String> = None;
+        let mut uniprot_ids: Vec<String> = vec![];
+        for protein in &self.proteins {
+            if protein.molecule_id_type == Some(MoleculeType::PDB) {
+                pdb_id = protein.molecule_id.clone();
+            } else if protein.molecule_id_type == Some(MoleculeType::Uniprot) {
+                if let Some(uniprot_id) = protein.molecule_id.clone() {
+                    uniprot_ids.push(uniprot_id);
+                }
+            }
+        }
+
+        let water = if let Some(w) = &self.water {
+            match (w.model.clone(), w.density.clone()) {
+                (Some(model), Some(density_kg_m3)) => Some(metadata::Water {
+                    model,
+                    density_kg_m3,
+                }),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        let mut ligands = vec![];
+        if let Some(vals) = &self.ligands {
+            for v in vals {
+                ligands.push(metadata::Ligand {
+                    name: v.name.clone(),
+                    smiles: v.smiles.clone(),
+                })
+            }
+        }
+
+        let mut solvents = vec![];
+        if let Some(vals) = &self.solvents {
+            for v in vals {
+                solvents.push(metadata::Solvent {
+                    name: v.name.clone(),
+                    concentration_mol_liter: v.ion_concentration,
+                })
+            }
+        }
+
+        let mut papers = vec![];
+        if let Some(vals) = &self.papers {
+            for v in vals {
+                papers.push(metadata::Paper {
+                    title: v.title.clone(),
+                    authors: v.authors.clone(),
+                    journal: v.journal.clone(),
+                    volume: v.volume.to_integer().unwrap() as u32,
+                    number: v.number.clone().map(|v| v.to_string().unwrap()),
+                    year: v.year,
+                    pages: v.pages.clone(),
+                    doi: v.doi.clone(),
+                });
+            }
+        }
+
+        let mut contributors = vec![];
+        if let Some(vals) = &self.contributors {
+            for v in vals {
+                contributors.push(metadata::Contributor {
+                    name: v.name.clone(),
+                    email: v.email.clone(),
+                    institution: v.institution.clone(),
+                    orcid: v.orcid.clone(),
+                });
+            }
+        }
+
+        let temperature_kelvin = self
+            .temperature
+            .as_ref()
+            .map_or(0, |t| t.temperature.unwrap_or(0));
+        let integration_timestep_fs = self
+            .timestep_information
+            .as_ref()
+            .map_or(0., |t| t.integration_time_step.unwrap_or(0.))
+            as u32;
+
+        Meta {
+            mdrepo_id: None,
+            lead_contributor_orcid: self.initial.lead_contributor_orcid.clone(),
+            trajectory_file_name: reqd.trajectory_file_name.clone(),
+            structure_file_name: reqd.structure_file_name.clone(),
+            topology_file_name: reqd.topology_file_name.clone(),
+            temperature_kelvin,
+            integration_timestep_fs,
+            short_description: self
+                .initial
+                .short_description
+                .clone()
+                .unwrap_or("".to_string()),
+            description: self.initial.description.clone(),
+            software_name: self.software.name.clone(),
+            software_version: self.software.version.clone().unwrap_or("NA".to_string()),
+            toml_version: Some(2),
+            user_accession: None,
+            external_links,
+            run_commands: self.initial.commands.clone(),
+            additional_files,
+            forcefield,
+            forcefield_comments,
+            protonation_method,
+            replicate_id: None,
+            pdb_id,
+            dois: None,
+            uniprot_ids: if uniprot_ids.is_empty() {
+                None
+            } else {
+                Some(uniprot_ids)
+            },
+            water,
+            ligands: if ligands.is_empty() {
+                None
+            } else {
+                Some(ligands)
+            },
+            solvents: if solvents.is_empty() {
+                None
+            } else {
+                Some(solvents)
+            },
+            papers: if papers.is_empty() {
+                None
+            } else {
+                Some(papers)
+            },
+            contributors: if contributors.is_empty() {
+                None
+            } else {
+                Some(contributors)
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -229,7 +398,7 @@ pub struct Initial {
     pub duration_ns: Option<u32>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AdditionalFile {
     #[serde(alias = "additional_file_type")]
     pub file_type: String,
