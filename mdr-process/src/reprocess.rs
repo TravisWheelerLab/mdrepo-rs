@@ -5,7 +5,7 @@ use crate::{
 use anyhow::{anyhow, bail, Result};
 use dotenvy::dotenv;
 use libmdrepo::{common::file_exists, metadata::Meta};
-use log::debug;
+use log::{info, debug};
 use std::{
     env,
     ffi::OsStr,
@@ -55,6 +55,10 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
     let wanted_ext = &[OsStr::new("tpr"), OsStr::new("gro")];
     if let Some(addl_files) = meta.additional_files {
         for file in addl_files {
+            //irods_fetch(
+            //    &irods_dir.join(&file.file_name),
+            //    &data_dir.join(&file.file_name),
+            //)?;
             if let Some(ext) = Path::new(&file.file_name).extension()
                 && wanted_ext.contains(&ext) {
                     irods_fetch(
@@ -71,13 +75,14 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
         work_dir: Some(work_dir),
         out_dir: None,
         server,
-        simulation_id: Some(simulation_id),
+        reprocess_simulation_id: Some(simulation_id),
         force: args.force,
         no_id: true, // If it had no PDB/Uniprots before, let it stand
         dry_run: args.dry_run,
     })?;
 
     if !args.preserve {
+        info!(r#"Removing "{}""#, data_dir.display());
         fs::remove_dir_all(data_dir)?;
     }
 
@@ -86,12 +91,6 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
 
 // --------------------------------------------------
 fn irods_fetch(irods_path: &Path, local_path: &Path) -> Result<()> {
-    debug!(
-        r#"Get "{}" -> "{}""#,
-        irods_path.display(),
-        local_path.display()
-    );
-
     if file_exists(local_path) {
         debug!("Already downloaded");
     } else {
