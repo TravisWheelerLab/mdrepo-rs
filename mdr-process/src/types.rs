@@ -84,7 +84,7 @@ pub struct ProcessArgs {
 
     /// Simulation ID
     #[arg(long, value_name = "SIMULATION_ID")]
-    pub simulation_id: Option<u32>,
+    pub reprocess_simulation_id: Option<u32>,
 
     /// Allow missing PDB/Uniprot IDs in metadata
     #[arg(short, long)]
@@ -343,12 +343,6 @@ pub struct PdbStruct {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct PdbStructKeywords {
     pub pdbx_keywords: String,
-}
-
-// --------------------------------------------------
-#[derive(Debug, Deserialize, Serialize)]
-pub struct PdbGraphqlResponse {
-    pub data: PdbData,
 }
 
 // --------------------------------------------------

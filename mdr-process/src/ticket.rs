@@ -102,7 +102,7 @@ pub fn process(args: &TicketArgs) -> Result<()> {
             work_dir: Some(work_dir.clone()),
             out_dir: None,
             server: args.server.clone(),
-            simulation_id: None,
+            reprocess_simulation_id: None,
             // The TOML will have already been validated, so allow missing IDs
             no_id: true,
             force: args.force,
