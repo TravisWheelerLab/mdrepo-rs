@@ -247,7 +247,7 @@ impl MetaV1 {
         }
 
         let water = if let Some(w) = &self.water {
-            match (w.model.clone(), w.density.clone()) {
+            match (w.model.clone(), w.density) {
                 (Some(model), Some(density_kg_m3)) => Some(metadata::Water {
                     model,
                     density_kg_m3,

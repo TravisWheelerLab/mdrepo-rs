@@ -1,8 +1,8 @@
 use anyhow::{bail, Result};
 use clap::Parser;
 use libmdrepo::{
-    metadata::{self, Meta},
-    metadatav1::{self, MetaV1},
+    metadata::Meta,
+    metadatav1::MetaV1,
 };
 use std::{
     fs::{self, File},
@@ -40,11 +40,11 @@ fn run(args: Args) -> Result<()> {
         bail!("Will not overwrite input file with output file")
     }
 
-    if Meta::from_file(&Path::new(&args.filename)).is_ok() {
+    if Meta::from_file(Path::new(&args.filename)).is_ok() {
         bail!(r#""{}" is already in v2 format"#, &args.filename);
     }
 
-    let v1 = MetaV1::from_file(&Path::new(&args.filename))?;
+    let v1 = MetaV1::from_file(Path::new(&args.filename))?;
     let meta = v1.to_v2();
 
     let outfile = if let Some(output) = args.outfile {
