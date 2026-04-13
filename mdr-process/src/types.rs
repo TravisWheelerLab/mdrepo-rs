@@ -561,7 +561,7 @@ pub struct BlastResult {
     pub sstart: u32,
     pub send: u32,
     pub evalue: f64,
-    pub bitscore: u32,
+    pub bitscore: f64,
 }
 
 // --------------------------------------------------
