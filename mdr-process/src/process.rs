@@ -800,7 +800,7 @@ pub fn make_import_json(
             if num_warnings == 1 { "" } else { "s" }
         );
         for (i, warning) in warnings.iter().enumerate() {
-            info!("{i}: {warning}");
+            info!("{}: {warning}", i + 1);
         }
     }
 

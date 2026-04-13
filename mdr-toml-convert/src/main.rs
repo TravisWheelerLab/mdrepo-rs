@@ -1,13 +1,10 @@
 use anyhow::{bail, Result};
 use clap::Parser;
-use libmdrepo::{
-    metadata::{self, Meta},
-    metadatav1::{self, MetaV1},
-};
+use libmdrepo::{metadata::Meta, metadatav1::MetaV1};
 use std::{
-    fs::File,
+    fs::{self, File},
     io::{self, Write},
-    path::PathBuf,
+    path::Path,
 };
 
 #[derive(Parser, Debug)]
@@ -15,11 +12,15 @@ use std::{
 pub struct Args {
     /// Input TOML file
     #[arg(value_name = "FILE")]
-    pub filename: PathBuf,
+    pub filename: String,
 
     /// Output filename
-    #[arg(short, long, value_name = "OUTPUT", default_value = "-")]
-    outfile: String,
+    #[arg(short, long, value_name = "OUTPUT")]
+    outfile: Option<String>,
+
+    /// Output filename
+    #[arg(short, long)]
+    in_place: bool,
 }
 
 // --------------------------------------------------
@@ -32,157 +33,30 @@ fn main() {
 
 // --------------------------------------------------
 fn run(args: Args) -> Result<()> {
-    if args.filename == args.outfile {
+    if args.filename == args.outfile.clone().unwrap_or("".to_string()) {
         bail!("Will not overwrite input file with output file")
     }
 
-    if Meta::from_file(&args.filename).is_ok() {
-        bail!(r#""{}" is already in v2 format"#, &args.filename.display());
+    if Meta::from_file(Path::new(&args.filename)).is_ok() {
+        bail!(r#""{}" is already in v2 format"#, &args.filename);
     }
 
-    let v1 = MetaV1::from_file(&args.filename)?;
-    let external_links = match &v1.initial.external_link {
-        Some(link) => Some(vec![metadata::ExternalLink {
-            url: link.clone(),
-            label: None,
-        }]),
-        _ => None,
-    };
-    let reqd = v1.required_files;
-    let additional_files = v1.additional_files.map(|files| {
-        files
-            .iter()
-            .map(|f| metadata::AdditionalFile {
-                file_name: f.file_name.clone(),
-                file_type: f.file_type.clone(),
-                description: f.description.clone(),
-            })
-            .collect::<Vec<_>>()
-    });
-    let (forcefield, forcefield_comments) = match v1.forcefield {
-        Some(f) => (f.forcefield, f.forcefield_comments),
-        _ => (None, None),
-    };
-    let protonation_method = match v1.protonation_method {
-        Some(p) => p.protonation_method,
-        _ => None,
-    };
+    let v1 = MetaV1::from_file(Path::new(&args.filename))?;
+    let meta = v1.to_v2();
 
-    let mut pdb_id: Option<String> = None;
-    let mut uniprot_ids: Vec<String> = vec![];
-    for protein in v1.proteins {
-        if protein.molecule_id_type == Some(metadatav1::MoleculeType::PDB) {
-            pdb_id = protein.molecule_id;
-        } else if protein.molecule_id_type == Some(metadatav1::MoleculeType::Uniprot)
-            && let Some(uniprot_id) = protein.molecule_id {
-                uniprot_ids.push(uniprot_id);
-            }
-    }
-
-    let water = if let Some(w) = v1.water {
-        match (w.model, w.density) {
-            (Some(model), Some(density_kg_m3)) => Some(metadata::Water {
-                model,
-                density_kg_m3,
-            }),
-            _ => None,
-        }
+    let outfile = if let Some(output) = args.outfile {
+        output
+    } else if args.in_place {
+        let input = args.filename;
+        fs::copy(&input, format!("{input}.bak"))?;
+        input
     } else {
-        None
+        "-".to_string()
     };
 
-    let mut ligands = vec![];
-    if let Some(vals) = v1.ligands {
-        for v in vals {
-            ligands.push(metadata::Ligand {
-                name: v.name,
-                smiles: v.smiles,
-            })
-        }
-    }
-
-    let mut solvents = vec![];
-    if let Some(vals) = v1.solvents {
-        for v in vals {
-            solvents.push(metadata::Solvent {
-                name: v.name,
-                concentration_mol_liter: v.ion_concentration,
-            })
-        }
-    }
-
-    let mut papers = vec![];
-    if let Some(vals) = v1.papers {
-        for v in vals {
-            papers.push(metadata::Paper {
-                title: v.title,
-                authors: v.authors,
-                journal: v.journal,
-                volume: v.volume.to_integer().unwrap() as u32,
-                number: v.number.map(|v| v.to_string().unwrap()),
-                year: v.year,
-                pages: v.pages,
-                doi: v.doi,
-            });
-        }
-    }
-
-    let mut contributors = vec![];
-    if let Some(vals) = v1.contributors {
-        for v in vals {
-            contributors.push(metadata::Contributor {
-                name: v.name,
-                email: v.email,
-                institution: v.institution,
-                orcid: v.orcid,
-            });
-        }
-    }
-
-    let meta = Meta {
-        mdrepo_id: None,
-        lead_contributor_orcid: v1.initial.lead_contributor_orcid.clone(),
-        trajectory_file_name: reqd.trajectory_file_name.clone(),
-        structure_file_name: reqd.structure_file_name.clone(),
-        topology_file_name: reqd.topology_file_name.clone(),
-        temperature_kelvin: v1.temperature.unwrap().temperature.unwrap(),
-        integration_timestep_fs: v1
-            .timestep_information
-            .unwrap()
-            .integration_time_step
-            .unwrap() as u32,
-        short_description: v1.initial.short_description.unwrap_or("".to_string()),
-        description: v1.initial.description,
-        software_name: v1.software.name,
-        software_version: v1.software.version.unwrap_or("NA".to_string()),
-        toml_version: Some(2),
-        user_accession: None,
-        external_links,
-        run_commands: v1.initial.commands,
-        additional_files,
-        forcefield,
-        forcefield_comments,
-        protonation_method,
-        replicate_id: None,
-        pdb_id,
-        dois: None,
-        uniprot_ids: non_empty(uniprot_ids),
-        water,
-        ligands: non_empty(ligands),
-        solvents: non_empty(solvents),
-        papers: non_empty(papers),
-        contributors: non_empty(contributors),
-    };
-
-    let mut out_file = open_outfile(&args.outfile)?;
-    write!(out_file, "{}", meta.to_toml()?)?;
-    println!(r#"Done, wrote to "{}""#, &args.outfile);
+    let mut out_fh = open_outfile(&outfile)?;
+    write!(out_fh, "{}", meta.to_toml()?)?;
     Ok(())
-}
-
-// --------------------------------------------------
-fn non_empty<T>(v: Vec<T>) -> Option<Vec<T>> {
-    if v.is_empty() { None } else { Some(v) }
 }
 
 // --------------------------------------------------
