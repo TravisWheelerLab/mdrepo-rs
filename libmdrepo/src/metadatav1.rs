@@ -546,3 +546,50 @@ pub struct Water {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub water_density_units: Option<String>,
 }
+
+#[cfg(test)]
+mod metav1_tests {
+    use super::MetaV1;
+    use anyhow::Result;
+    use std::path::Path;
+    const INPUT1: &str = "tests/inputs/metadata/MDR00015378.v1.toml";
+
+    #[test]
+    fn from_file() -> Result<()> {
+        let res = MetaV1::from_file(&Path::new(INPUT1));
+        assert!(res.is_ok());
+        let meta = res.expect("result");
+        let short_desc = meta.initial.short_description.expect("short_desc");
+        assert!(
+            short_desc.starts_with("8 ns simulation of the 5aom PDB entry (P04637)")
+        );
+
+        let contributors = meta.contributors;
+        assert!(contributors.is_some());
+
+        let contributors = contributors.expect("contributors");
+        assert_eq!(contributors.len(), 14);
+
+        Ok(())
+    }
+
+    #[test]
+    fn to_v2() -> Result<()> {
+        let res = MetaV1::from_file(&Path::new(INPUT1));
+        assert!(res.is_ok());
+        let meta_v1 = res.expect("result");
+        let meta_v2 = meta_v1.to_v2();
+
+        assert!(meta_v2
+            .short_description
+            .starts_with("8 ns simulation of the 5aom PDB entry (P04637)"));
+
+        let contributors = meta_v2.contributors;
+        assert!(contributors.is_some());
+
+        let contributors = contributors.expect("contributors");
+        assert_eq!(contributors.len(), 14);
+
+        Ok(())
+    }
+}
