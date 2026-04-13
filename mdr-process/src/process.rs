@@ -423,11 +423,16 @@ pub fn blast_uniprot(
     ));
 
     if file_exists(&blast_results) {
+        fs::remove_file(&blast_results)?;
+    }
+
+    if file_exists(&blast_results) {
         info!("Uniprot BLAST results exists");
     } else {
         info!("Creating Uniprot BLAST results");
         let blastp =
             which("blastp").map_err(|e| anyhow!("Failed to find blastp ({e})"))?;
+
         let mut cmd = Command::new(&blastp);
         let (blast_db, max_target_seqs) = match uniprot_db {
             UniprotDb::Swissprot => (
@@ -465,34 +470,32 @@ pub fn blast_uniprot(
         if !output.status.success() {
             bail!(str::from_utf8(&output.stderr)?.to_string());
         }
-
-        if !file_exists(&blast_results) {
-            bail!(r#"Failed to create "{}""#, blast_results.display());
-        }
     }
 
-    let file = BufReader::new(
-        File::open(&blast_results)
-            .map_err(|e| anyhow!("{}: {e}", blast_results.display()))?,
-    );
-
-    let mut reader = ReaderBuilder::new()
-        .delimiter(9) // Tab
-        .has_headers(false)
-        .from_reader(file);
-
-    let trembl_regex = Regex::new(r"^tr[|]([^|]+)[|]").expect("regex");
     let mut results = vec![];
-    for result in reader.deserialize() {
-        let hit: BlastResult = result?;
-        if hit.pident >= BLAST_MIN_PIDENT {
-            let subject = hit.saccver.to_string();
-            match trembl_regex.captures(&subject) {
-                Some(caps) => {
-                    let trembl_id = caps.get(1).expect("capture").as_str();
-                    results.push(trembl_id.to_string());
+    if file_exists(&blast_results) {
+        let file = BufReader::new(
+            File::open(&blast_results)
+                .map_err(|e| anyhow!("{}: {e}", blast_results.display()))?,
+        );
+
+        let mut reader = ReaderBuilder::new()
+            .delimiter(9) // Tab
+            .has_headers(false)
+            .from_reader(file);
+
+        let trembl_regex = Regex::new(r"^tr[|]([^|]+)[|]").expect("regex");
+        for result in reader.deserialize() {
+            let hit: BlastResult = result?;
+            if hit.pident >= BLAST_MIN_PIDENT {
+                let subject = hit.saccver.to_string();
+                match trembl_regex.captures(&subject) {
+                    Some(caps) => {
+                        let trembl_id = caps.get(1).expect("capture").as_str();
+                        results.push(trembl_id.to_string());
+                    }
+                    _ => results.push(subject),
                 }
-                _ => results.push(subject),
             }
         }
     }
