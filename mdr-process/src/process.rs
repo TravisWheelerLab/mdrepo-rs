@@ -4,7 +4,6 @@ use crate::types::{
     ProcessedFiles, PushResult, RmsdRmsf, UniprotDb, UniprotEntry, UniprotResponse,
 };
 use anyhow::{anyhow, bail, Result};
-use csv::ReaderBuilder;
 use dotenvy::dotenv;
 use libmdrepo::{
     common::{file_exists, get_md5, read_file},
@@ -479,14 +478,15 @@ pub fn blast_uniprot(
                 .map_err(|e| anyhow!("{}: {e}", blast_results.display()))?,
         );
 
-        let mut reader = ReaderBuilder::new()
+        let mut reader = csv::ReaderBuilder::new()
             .delimiter(9) // Tab
             .has_headers(false)
             .from_reader(file);
 
         let trembl_regex = Regex::new(r"^tr[|]([^|]+)[|]").expect("regex");
         for result in reader.deserialize() {
-            let hit: BlastResult = result?;
+            let hit: BlastResult =
+                result.map_err(|e| anyhow!("{}: {e}", blast_results.display()))?;
             if hit.pident >= BLAST_MIN_PIDENT {
                 let subject = hit.saccver.to_string();
                 match trembl_regex.captures(&subject) {
