@@ -10,7 +10,7 @@ use libmdrepo::{
     constants::{MOLLY_NFRAMES_REGEX, MOLLY_TIME_REGEX},
     metadata::{self, Meta, MetaCheckOptions},
 };
-use log::{debug, info};
+use log::debug;
 use regex::Regex;
 use sha1::{Digest, Sha1};
 use std::{
@@ -127,7 +127,7 @@ fn run_import(
 ) -> Result<ImportResult> {
     let import_script = script_dir.join("import_preprocessed.py");
     let out_file = processed_dir.join("imported.json");
-    info!(r#"Import "{}""#, import_json.display());
+    debug!(r#"Import "{}""#, import_json.display());
 
     let mut args = vec![
         "run".to_string(),
@@ -175,7 +175,7 @@ fn run_push(
 ) -> Result<Vec<PushResult>> {
     let push_script = script_dir.join("push_sim_files.py");
     let out_file = processed_dir.join("pushed.json");
-    info!(
+    debug!(
         r#"Push files for "{}" -> simulation "{}""#,
         import_result.filename, import_result.simulation_id
     );
@@ -232,9 +232,9 @@ pub fn make_thumbnail(
 ) -> Result<()> {
     let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
     if file_exists(thumbnail) {
-        info!("Thumbnail exists");
+        debug!("Thumbnail exists");
     } else {
-        info!("Creating thumbnail");
+        debug!("Creating thumbnail");
         let preview = script_dir.join("create_preview.py");
         let mut cmd = Command::new(&uv);
         cmd.current_dir(script_dir).args([
@@ -250,7 +250,7 @@ pub fn make_thumbnail(
         debug!("Running {cmd:?}");
         let output = cmd.output()?;
 
-        info!("{}", str::from_utf8(&output.stdout)?);
+        debug!("{}", str::from_utf8(&output.stdout)?);
 
         if !output.status.success() {
             bail!(str::from_utf8(&output.stderr)?.to_string());
@@ -282,11 +282,11 @@ pub fn make_processed_files(
     .map(|f| processed_dir.join(f));
 
     if full_min_files.iter().all(|f| file_exists(f)) {
-        info!("Full/minimal files all exist");
+        debug!("Full/minimal files all exist");
     } else {
         let micromamba = which("micromamba")
             .map_err(|e| anyhow!("Failed to find micromamba ({e})"))?;
-        info!("Making full/minimal files");
+        debug!("Making full/minimal files");
 
         let cpp_traj = &script_dir.join("cpptraj_gmx_traj_manipulation.py");
         if !cpp_traj.is_file() {
@@ -369,9 +369,9 @@ pub fn get_rmsd_rmsf(
     let out_file = processed_dir.join("rmsd_rmsf.json");
 
     if file_exists(&out_file) {
-        info!("RMSD/RMSF file exists");
+        debug!("RMSD/RMSF file exists");
     } else {
-        info!("Creating RMSD/RMSF file");
+        debug!("Creating RMSD/RMSF file");
         let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
         let script = script_dir.join("get_rmsd_rmsf.py");
         let mut cmd = Command::new(&uv);
@@ -388,7 +388,7 @@ pub fn get_rmsd_rmsf(
         debug!("Running {cmd:?}");
         let output = cmd.output()?;
 
-        info!("{}", str::from_utf8(&output.stdout)?);
+        debug!("{}", str::from_utf8(&output.stdout)?);
 
         if !output.status.success() {
             bail!(str::from_utf8(&output.stderr)?.to_string());
@@ -426,9 +426,9 @@ pub fn blast_uniprot(
     }
 
     if file_exists(&blast_results) {
-        info!("Uniprot BLAST results exists");
+        debug!("Uniprot BLAST results exists");
     } else {
-        info!("Creating Uniprot BLAST results");
+        debug!("Creating Uniprot BLAST results");
         let blastp =
             which("blastp").map_err(|e| anyhow!("Failed to find blastp ({e})"))?;
 
@@ -464,7 +464,7 @@ pub fn blast_uniprot(
 
         let output = cmd.output()?;
 
-        info!("{}", str::from_utf8(&output.stdout)?);
+        debug!("{}", str::from_utf8(&output.stdout)?);
 
         if !output.status.success() {
             bail!(str::from_utf8(&output.stderr)?.to_string());
@@ -509,9 +509,9 @@ pub fn get_sequence(full_pdb: &Path, script_dir: &Path) -> Result<PathBuf> {
     let sequence_file = processed_dir.join("sequence.fa");
 
     if file_exists(&sequence_file) {
-        info!("Sequence file exists");
+        debug!("Sequence file exists");
     } else {
-        info!("Creating sequence file");
+        debug!("Creating sequence file");
         let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
         let script = script_dir.join("get_sequence_from_pdb.py");
         let mut cmd = Command::new(&uv);
@@ -525,7 +525,7 @@ pub fn get_sequence(full_pdb: &Path, script_dir: &Path) -> Result<PathBuf> {
         debug!("Running {cmd:?}");
         let output = cmd.output()?;
 
-        info!("{}", str::from_utf8(&output.stdout)?);
+        debug!("{}", str::from_utf8(&output.stdout)?);
 
         if !output.status.success() {
             bail!(str::from_utf8(&output.stderr)?.to_string());
@@ -547,9 +547,9 @@ pub fn sample_trajectory(
     script_dir: &Path,
 ) -> Result<()> {
     if file_exists(out_file) {
-        info!("Sampled trajectory exists");
+        debug!("Sampled trajectory exists");
     } else {
-        info!("Creating sampled trajectory");
+        debug!("Creating sampled trajectory");
         let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
         let sampler = script_dir.join("sample_trajectory.py");
         let mut cmd = Command::new(&uv);
@@ -566,7 +566,7 @@ pub fn sample_trajectory(
         debug!("Running {cmd:?}");
         let output = cmd.output()?;
 
-        info!("{}", str::from_utf8(&output.stdout)?);
+        debug!("{}", str::from_utf8(&output.stdout)?);
 
         if !output.status.success() {
             bail!(str::from_utf8(&output.stderr)?.to_string());
@@ -753,7 +753,7 @@ pub fn make_import_json(
         for doi in dois {
             match get_doi(doi) {
                 Ok(paper) => papers.push(paper),
-                Err(e) => info!("{e}"),
+                Err(e) => debug!("{e}"),
             }
         }
     }
@@ -795,12 +795,12 @@ pub fn make_import_json(
 
     if !warnings.is_empty() {
         let num_warnings = warnings.len();
-        info!(
+        debug!(
             "{num_warnings} warning{}",
             if num_warnings == 1 { "" } else { "s" }
         );
         for (i, warning) in warnings.iter().enumerate() {
-            info!("{}: {warning}", i + 1);
+            debug!("{}: {warning}", i + 1);
         }
     }
 
@@ -810,7 +810,7 @@ pub fn make_import_json(
     };
 
     let import_json = &input_dir.join("processed").join("import.json");
-    info!(r#"Writing JSON to "{}""#, &import_json.display());
+    debug!(r#"Writing JSON to "{}""#, &import_json.display());
     let file = File::create(import_json)?;
     writeln!(&file, "{}", &serde_json::to_string_pretty(&export)?)?;
 
@@ -886,7 +886,7 @@ pub fn get_uniprot_entries(
     for uniprot_id in uniprot_ids {
         match get_uniprot_entry(&uniprot_id) {
             Ok(entry) => entries.push(entry),
-            Err(e) => info!("{e}"),
+            Err(e) => debug!("{e}"),
         }
     }
 
@@ -929,9 +929,9 @@ pub fn get_inferred_ligands(
     let processed_dir = min_pdb.parent().expect("parent");
     let out_file = processed_dir.join("inferred_ligands.json");
     if file_exists(&out_file) {
-        info!("Inferred ligands file exists");
+        debug!("Inferred ligands file exists");
     } else {
-        info!("Creating inferred ligands file");
+        debug!("Creating inferred ligands file");
         let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
         let mol_tools = script_dir.join("mol_tools.py");
         let mut cmd = Command::new(&uv);
@@ -951,7 +951,7 @@ pub fn get_inferred_ligands(
 
         let output = cmd.output()?;
 
-        info!("{}", str::from_utf8(&output.stdout)?);
+        debug!("{}", str::from_utf8(&output.stdout)?);
 
         // The script throws an exception when no ligands are found
         // But the simulation may just be in APO form, so report and move on
@@ -977,9 +977,9 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Dur
     let out_file = processed_dir.join("duration.json");
 
     if file_exists(&out_file) {
-        info!("Duration file exists");
+        debug!("Duration file exists");
     } else {
-        info!("Creating duration file");
+        debug!("Creating duration file");
         let mut cmd = Command::new("molly");
         cmd.args(["--info", full_xtc.to_string_lossy().as_ref()]);
         debug!("Running {cmd:?}");
@@ -1007,7 +1007,7 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Dur
                 if let Ok(tmp) = start.parse::<u64>() {
                     time_start = Some(tmp);
                 } else {
-                    info!("Failed to parse time_start from \"{start}\" ({line})")
+                    debug!("Failed to parse time_start from \"{start}\" ({line})")
                 }
 
                 if let Ok(tmp) = stop.parse::<u64>() {
@@ -1015,7 +1015,7 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Dur
                 } else if let Ok(tmp) = stop.parse::<f64>() {
                     time_stop = format!("{}", tmp.round()).parse::<u64>().ok();
                 } else {
-                    info!("Failed to parse time_start from \"{stop}\" ({line})")
+                    debug!("Failed to parse time_start from \"{stop}\" ({line})")
                 }
             } else if let Some(caps) = MOLLY_NFRAMES_REGEX.captures(line) {
                 let val = caps
@@ -1025,7 +1025,7 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Dur
                 if let Ok(tmp) = val.parse::<u64>() {
                     num_frames = Some(tmp);
                 } else {
-                    info!("Failed to parse num_frames from \"{val}\" ({line})")
+                    debug!("Failed to parse num_frames from \"{val}\" ({line})")
                 }
             }
         }
@@ -1053,7 +1053,7 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Dur
         if nstxout > 1e7 {
             let corrected_nstxout = nstxout / XTC_INFLATION_FACTOR;
             if (1e3..=1e7).contains(&corrected_nstxout) {
-                info!(
+                debug!(
                     "XTC timestamps appear inflated by 1000x \
                          (nstxout={nstxout:.0}, corrected={corrected_nstxout:.0}). \
                          Applying correction."

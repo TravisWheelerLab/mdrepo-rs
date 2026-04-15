@@ -5,7 +5,7 @@ use crate::{
 use anyhow::{anyhow, bail, Result};
 use dotenvy::dotenv;
 use libmdrepo::{common::file_exists, metadata::Meta};
-use log::{debug, info};
+use log::debug;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -72,7 +72,7 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
     })?;
 
     if !args.preserve {
-        info!(r#"Removing "{}""#, data_dir.display());
+        debug!(r#"Removing "{}""#, data_dir.display());
         fs::remove_dir_all(data_dir)?;
     }
 

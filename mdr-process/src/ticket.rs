@@ -49,7 +49,7 @@ pub fn process(args: &TicketArgs) -> Result<()> {
     let fetch = script_dir.join("fetch_uploads.py");
     let ticket_dir = &landing_dir.join(format!("ticket-{}", args.ticket_id));
 
-    info!(
+    debug!(
         r#"Fetching ticket "{}" -> "{}""#,
         args.ticket_id,
         ticket_dir.display()
@@ -109,13 +109,13 @@ pub fn process(args: &TicketArgs) -> Result<()> {
             dry_run: args.dry_run,
         }) {
             Ok(()) => {
-                info!(
+                debug!(
                     r#"Finished processing ticket directory "{}""#,
                     ticket_dir.display()
                 );
             }
             Err(e) => {
-                info!("{e}");
+                debug!("{e}");
                 bail!(
                     r#"Error processing ticket directory "{}""#,
                     ticket_dir.display()
