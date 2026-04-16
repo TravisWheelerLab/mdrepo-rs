@@ -8,7 +8,7 @@ use std::{fmt, path::PathBuf};
 #[command(arg_required_else_help = true, version, about)]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Option<Command>,
+    pub command: Command,
 
     /// Log level
     #[arg(short, long)]

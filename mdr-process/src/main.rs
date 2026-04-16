@@ -34,18 +34,18 @@ fn run(args: Cli) -> Result<()> {
         .init();
 
     match &args.command {
-        Some(Command::Process(args)) => {
+        Command::Process(args) => {
             validate::validate(&args.input_dir)?;
             process::process(args)?;
             println!("Success");
             Ok(())
         }
-        Some(Command::Reprocess(args)) => {
+        Command::Reprocess(args) => {
             reprocess::reprocess(args)?;
             println!("Success");
             Ok(())
         }
-        Some(Command::MetaCheck(args)) => {
+        Command::MetaCheck(args) => {
             let messages = match Meta::from_file(&args.filename) {
                 Ok(meta) => {
                     let opts = if args.no_id {
@@ -67,7 +67,7 @@ fn run(args: Cli) -> Result<()> {
             println!("{}", messages.join("\n"));
             Ok(())
         }
-        Some(Command::Ticket(args)) => {
+        Command::Ticket(args) => {
             match ticket::process(args) {
                 Err(e) => {
                     let message = match ticket::get_ticket_user(args) {
@@ -81,10 +81,9 @@ fn run(args: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Some(Command::Validate(args)) => {
+        Command::Validate(args) => {
             validate::validate(&args.dirname)?;
             Ok(())
         }
-        None => unreachable!(),
     }
 }
