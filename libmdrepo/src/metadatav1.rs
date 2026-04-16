@@ -285,7 +285,7 @@ impl MetaV1 {
                     title: v.title.clone(),
                     authors: v.authors.clone(),
                     journal: v.journal.clone(),
-                    volume: v.volume.to_integer().unwrap() as u32,
+                    volume: v.volume.to_integer().expect("volume") as u32,
                     number: v.number.clone().map(|v| v.to_string().unwrap()),
                     year: v.year,
                     pages: v.pages.clone(),
