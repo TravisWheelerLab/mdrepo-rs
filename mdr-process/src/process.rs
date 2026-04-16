@@ -1216,3 +1216,36 @@ pub fn get_unique_file_hash(meta: &Meta, input_dir: &Path) -> String {
 
     md5s.join(",")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn topology_hash_is_deterministic() {
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, "topology content").unwrap();
+        let h1 = get_topology_hash(f.path()).unwrap();
+        let h2 = get_topology_hash(f.path()).unwrap();
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn topology_hash_differs_for_different_content() {
+        let mut f1 = NamedTempFile::new().unwrap();
+        let mut f2 = NamedTempFile::new().unwrap();
+        write!(f1, "content A").unwrap();
+        write!(f2, "content B").unwrap();
+        assert_ne!(
+            get_topology_hash(f1.path()).unwrap(),
+            get_topology_hash(f2.path()).unwrap()
+        );
+    }
+
+    #[test]
+    fn topology_hash_missing_file_errors() {
+        assert!(get_topology_hash(Path::new("/nonexistent")).is_err());
+    }
+}

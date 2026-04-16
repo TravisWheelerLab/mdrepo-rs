@@ -1319,6 +1319,7 @@ dependencies = [
  "sha1",
  "strum",
  "strum_macros",
+ "tempfile",
  "toml 0.9.12+spec-1.1.0",
  "urlencoding",
  "validator",

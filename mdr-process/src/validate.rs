@@ -126,3 +126,62 @@ pub fn validate(dir: &Path) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn rejects_nonexistent_dir() {
+        assert!(validate(Path::new("/nonexistent/path")).is_err());
+    }
+
+    #[test]
+    fn rejects_empty_dir() {
+        let dir = tempdir().unwrap();
+        let err = validate(dir.path()).unwrap_err();
+        assert!(err.to_string().contains("empty"));
+    }
+
+    #[test]
+    fn rejects_dir_without_toml() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("sim.xtc"), b"data").unwrap();
+        let err = validate(dir.path()).unwrap_err();
+        assert!(err.to_string().contains("Missing"));
+    }
+
+    #[test]
+    fn rejects_invalid_toml() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("mdrepo-metadata.toml"), "not {{ valid").unwrap();
+        assert!(validate(dir.path()).is_err());
+    }
+
+    #[test]
+    fn accepts_valid_submission() {
+        let dir = tempdir().unwrap();
+        let toml = r#"
+            lead_contributor_orcid = "0000-0000-0000-0000"
+            trajectory_file_name = "sim.xtc"
+            structure_file_name = "sim.pdb"
+            topology_file_name = "sim.top"
+            temperature_kelvin = 300
+            integration_timestep_fs = 2
+            short_description = "A test simulation"
+            software_name = "GROMACS"
+            software_version = "2023"
+            pdb_id = "1ABC"
+            [water]
+            model = "TIP3P"
+            density_kg_m3 = 1000.0
+        "#;
+        fs::write(dir.path().join("mdrepo-metadata.toml"), toml).unwrap();
+        fs::write(dir.path().join("sim.xtc"), b"trajectory").unwrap();
+        fs::write(dir.path().join("sim.pdb"), b"structure").unwrap();
+        fs::write(dir.path().join("sim.top"), b"topology").unwrap();
+        assert!(validate(dir.path()).is_ok());
+    }
+}
