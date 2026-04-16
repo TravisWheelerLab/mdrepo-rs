@@ -124,7 +124,5 @@ pub fn validate(dir: &Path) -> Result<()> {
         );
     }
 
-    println!("Validation complete");
-
     Ok(())
 }

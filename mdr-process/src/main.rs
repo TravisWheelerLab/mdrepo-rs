@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
 use clap::Parser;
 use libmdrepo::metadata::{Meta, MetaCheckOptions};
+use log::info;
 use mdr_process::{
     process, reprocess, ticket,
     types::{Cli, Command, LogLevel},
@@ -21,8 +22,9 @@ fn run(args: Cli) -> Result<()> {
     env_logger::Builder::new()
         .filter_level(match args.log {
             Some(LogLevel::Debug) => log::LevelFilter::Debug,
-            Some(LogLevel::Info) => log::LevelFilter::Info,
-            _ => log::LevelFilter::Off,
+            _ => log::LevelFilter::Info,
+            //Some(LogLevel::Info) => log::LevelFilter::Info,
+            //_ => log::LevelFilter::Off,
         })
         .target(match args.log_file {
             // Optional log file, default to STDOUT
@@ -36,13 +38,17 @@ fn run(args: Cli) -> Result<()> {
     match &args.command {
         Command::Process(args) => {
             validate::validate(&args.input_dir)?;
-            process::process(args)?;
-            println!("Success");
+            match process::process(args) {
+                Err(e) => info!("Error: {e}"),
+                _ => info!("Success"),
+            }
             Ok(())
         }
         Command::Reprocess(args) => {
-            reprocess::reprocess(args)?;
-            println!("Success");
+            match reprocess::reprocess(args) {
+                Err(e) => info!("Error: {e}"),
+                _ => info!("Success"),
+            }
             Ok(())
         }
         Command::MetaCheck(args) => {
@@ -64,7 +70,10 @@ fn run(args: Cli) -> Result<()> {
                 )],
             };
 
-            println!("{}", messages.join("\n"));
+            if !messages.is_empty() {
+                println!("{}", messages.join("\n"));
+            }
+
             Ok(())
         }
         Command::Ticket(args) => {
@@ -73,11 +82,10 @@ fn run(args: Cli) -> Result<()> {
                     let message = match ticket::get_ticket_user(args) {
                         Ok(ticket) => format!("{e}\nNotify User\n{ticket:#?}"),
                         Err(e2) => format!("{e} ({e2})"),
-                        //_ => e.to_string(),
                     };
                     bail!(message);
                 }
-                _ => println!("Success"),
+                _ => info!("Success"),
             }
             Ok(())
         }
