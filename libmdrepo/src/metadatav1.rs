@@ -131,78 +131,50 @@ impl MetaV1 {
             self.initial.date = Datelike::Stringy(dt.to_string())
         }
 
-        if let Some(papers) = &self.papers {
-            let new_papers: Vec<_> = papers
-                .iter()
-                .map(|paper| {
-                    let volume = if let Numlike::TomlVal(val) = &paper.volume {
-                        match val {
-                            TomlValue::String(v) => Numlike::Stringy(v.to_string()),
-                            TomlValue::Integer(v) => Numlike::Stringy(v.to_string()),
-                            TomlValue::Float(v) => Numlike::Stringy(v.to_string()),
-                            _ => Numlike::Stringy("".to_string()),
-                        }
-                    } else {
-                        paper.volume.clone()
-                    };
+        if let Some(papers) = &mut self.papers {
+            for paper in papers.iter_mut() {
+                let new_volume = if let Numlike::TomlVal(val) = &paper.volume {
+                    Some(match val {
+                        TomlValue::String(v) => Numlike::Stringy(v.to_string()),
+                        TomlValue::Integer(v) => Numlike::Stringy(v.to_string()),
+                        TomlValue::Float(v) => Numlike::Stringy(v.to_string()),
+                        _ => Numlike::Stringy("".to_string()),
+                    })
+                } else {
+                    None
+                };
+                if let Some(v) = new_volume {
+                    paper.volume = v;
+                }
 
-                    let number = paper.number.clone().map(|val| {
-                        if let Numlike::TomlVal(n) = val {
-                            match n {
-                                TomlValue::String(v) => Numlike::Stringy(v.to_string()),
-                                TomlValue::Integer(v) => {
-                                    Numlike::Stringy(v.to_string())
-                                }
-                                TomlValue::Float(v) => Numlike::Stringy(v.to_string()),
-                                _ => Numlike::Stringy("".to_string()),
-                            }
-                        } else {
-                            val.clone()
-                        }
-                    });
-
-                    let mut new_paper = paper.clone();
-                    new_paper.volume = volume;
-                    new_paper.number = number;
-                    new_paper
-                })
-                .collect();
-
-            self.papers = Some(new_papers);
+                let new_number = if let Some(Numlike::TomlVal(n)) = &paper.number {
+                    Some(Some(match n {
+                        TomlValue::String(v) => Numlike::Stringy(v.to_string()),
+                        TomlValue::Integer(v) => Numlike::Stringy(v.to_string()),
+                        TomlValue::Float(v) => Numlike::Stringy(v.to_string()),
+                        _ => Numlike::Stringy("".to_string()),
+                    }))
+                } else {
+                    None
+                };
+                if let Some(n) = new_number {
+                    paper.number = n;
+                }
+            }
         }
 
-        // TODO: fix
         // Older versions of the TOML had separate fields for PDB/Uniprot
-        let new_proteins: Vec<_> = self
-            .proteins
-            .iter()
-            .map(|protein| {
-                if let Some(pdb_id) = &protein.pdb_id {
-                    Protein {
-                        molecule_id_type: Some(MoleculeType::PDB),
-                        molecule_id: Some(pdb_id.to_string()),
-                        pdb_id: None,
-                        uniprot_id: None,
-                    }
-                } else if let Some(uniprot_id) = &protein.uniprot_id {
-                    Protein {
-                        molecule_id_type: Some(MoleculeType::Uniprot),
-                        molecule_id: Some(uniprot_id.to_string()),
-                        pdb_id: None,
-                        uniprot_id: None,
-                    }
-                } else {
-                    Protein {
-                        molecule_id_type: protein.molecule_id_type.clone(),
-                        molecule_id: protein.molecule_id.clone(),
-                        pdb_id: None,
-                        uniprot_id: None,
-                    }
-                }
-            })
-            .collect();
-
-        self.proteins = new_proteins;
+        for protein in &mut self.proteins {
+            if protein.pdb_id.is_some() {
+                protein.molecule_id_type = Some(MoleculeType::PDB);
+                protein.molecule_id = protein.pdb_id.take();
+            } else if protein.uniprot_id.is_some() {
+                protein.molecule_id_type = Some(MoleculeType::Uniprot);
+                protein.molecule_id = protein.uniprot_id.take();
+            }
+            protein.pdb_id = None;
+            protein.uniprot_id = None;
+        }
         Ok(())
     }
 
@@ -216,7 +188,7 @@ impl MetaV1 {
         };
 
         let reqd = &self.required_files;
-        let additional_files = self.additional_files.clone().map(|files| {
+        let additional_files = self.additional_files.as_ref().map(|files| {
             files
                 .iter()
                 .map(|f| metadata::AdditionalFile {
@@ -287,7 +259,7 @@ impl MetaV1 {
                     authors: v.authors.clone(),
                     journal: v.journal.clone(),
                     volume: v.volume.to_integer().ok_or_else(|| anyhow!("paper volume is not an integer"))? as u32,
-                    number: v.number.clone().and_then(|v| v.to_string()),
+                    number: v.number.as_ref().and_then(|v| v.to_string()),
                     year: v.year,
                     pages: v.pages.clone(),
                     doi: v.doi.clone(),
@@ -328,11 +300,12 @@ impl MetaV1 {
             short_description: self
                 .initial
                 .short_description
-                .clone()
-                .unwrap_or("".to_string()),
+                .as_deref()
+                .unwrap_or("")
+                .to_string(),
             description: self.initial.description.clone(),
             software_name: self.software.name.clone(),
-            software_version: self.software.version.clone().unwrap_or("NA".to_string()),
+            software_version: self.software.version.as_deref().unwrap_or("NA").to_string(),
             toml_version: Some(2),
             user_accession: None,
             external_links,
