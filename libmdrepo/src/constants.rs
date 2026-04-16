@@ -17,9 +17,8 @@ pub static DOI_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 pub static NOT_WHITESPACE_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\S+").unwrap());
 
-pub static MOLLY_TIME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^time:\s*(\d+)-(\d+(?:\.\d)?)\s+ps").unwrap()
-});
+pub static MOLLY_TIME_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^time:\s*(\d+)-(\d+(?:\.\d)?)\s+ps").unwrap());
 
 pub static MOLLY_NFRAMES_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^nframes:\s*(\d+)").unwrap());
@@ -68,7 +67,6 @@ pub const VALID_WATER_MODEL: &[&str] = &[
     "SPC",
     "SPC/E",
     "SPC/Fd",
-    "SPC/Fw",
     "SPC/Fw",
     "ST2",
     "SWM4-NDP",
