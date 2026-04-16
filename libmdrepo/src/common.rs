@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Result};
+use lazy_regex::regex;
 use log::info;
-use regex::Regex;
 use std::{
     fs::{self, File},
     io::Write,
@@ -26,10 +26,12 @@ pub fn read_file(path: &Path) -> Result<String> {
 // --------------------------------------------------
 pub fn get_md5(path: &Path) -> Result<String> {
     info!("Getting MD5 '{}'", path.display());
-    let input_dir = path.parent().expect("parent_dir");
+    let input_dir = path
+        .parent()
+        .ok_or_else(|| anyhow!("No parent directory for '{}'", path.display()))?;
     let filename = path
         .file_name()
-        .expect("filename")
+        .ok_or_else(|| anyhow!("No filename for '{}'", path.display()))?
         .to_string_lossy()
         .to_string();
     let md5_file = input_dir.join(format!("{filename}.md5"));
@@ -42,7 +44,7 @@ pub fn get_md5(path: &Path) -> Result<String> {
         }
         let stdout = str::from_utf8(&cmd.stdout)?.to_string();
         let stdout = stdout.trim_end();
-        let re = Regex::new(r"^([a-f0-9]{32})\s+").unwrap();
+        let re = regex!(r"^([a-f0-9]{32})\s+");
         let caps = re
             .captures(stdout)
             .ok_or(anyhow!(r#"Unexpected MD5: {stdout}"#))?;

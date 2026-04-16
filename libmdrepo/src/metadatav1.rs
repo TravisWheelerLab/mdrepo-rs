@@ -120,11 +120,11 @@ impl MetaV1 {
         let contents = read_file(path)?;
         let mut toml: MetaV1 = toml::from_str(&contents)
             .map_err(|e| anyhow!(r#"Failed to parse "{}": {e}"#, path.display()))?;
-        toml.fix();
+        toml.fix()?;
         Ok(toml)
     }
 
-    pub fn fix(&mut self) {
+    pub fn fix(&mut self) -> Result<()> {
         // Some confusion over dates as quoted strings or unquoted TOML values
         // But there's no JSON "date" format
         if let Datelike::TomlDate(dt) = self.initial.date {
@@ -203,9 +203,10 @@ impl MetaV1 {
             .collect();
 
         self.proteins = new_proteins;
+        Ok(())
     }
 
-    pub fn to_v2(&self) -> Meta {
+    pub fn to_v2(&self) -> Result<Meta> {
         let external_links = match &self.initial.external_link {
             Some(link) => Some(vec![metadata::ExternalLink {
                 url: link.clone(),
@@ -285,8 +286,8 @@ impl MetaV1 {
                     title: v.title.clone(),
                     authors: v.authors.clone(),
                     journal: v.journal.clone(),
-                    volume: v.volume.to_integer().expect("volume") as u32,
-                    number: v.number.clone().map(|v| v.to_string().unwrap()),
+                    volume: v.volume.to_integer().ok_or_else(|| anyhow!("paper volume is not an integer"))? as u32,
+                    number: v.number.clone().and_then(|v| v.to_string()),
                     year: v.year,
                     pages: v.pages.clone(),
                     doi: v.doi.clone(),
@@ -316,7 +317,7 @@ impl MetaV1 {
             .map_or(0., |t| t.integration_time_step.unwrap_or(0.))
             as u32;
 
-        Meta {
+        Ok(Meta {
             mdrepo_id: None,
             lead_contributor_orcid: self.initial.lead_contributor_orcid.clone(),
             trajectory_file_name: reqd.trajectory_file_name.clone(),
@@ -369,7 +370,7 @@ impl MetaV1 {
             } else {
                 Some(contributors)
             },
-        }
+        })
     }
 }
 
@@ -577,8 +578,8 @@ mod metav1_tests {
     fn to_v2() -> Result<()> {
         let res = MetaV1::from_file(&Path::new(INPUT1));
         assert!(res.is_ok());
-        let meta_v1 = res.expect("result");
-        let meta_v2 = meta_v1.to_v2();
+        let meta_v1 = res?;
+        let meta_v2 = meta_v1.to_v2()?;
 
         assert!(meta_v2
             .short_description
@@ -587,7 +588,7 @@ mod metav1_tests {
         let contributors = meta_v2.contributors;
         assert!(contributors.is_some());
 
-        let contributors = contributors.expect("contributors");
+        let contributors = contributors.ok_or_else(|| anyhow::anyhow!("no contributors"))?;
         assert_eq!(contributors.len(), 14);
 
         Ok(())

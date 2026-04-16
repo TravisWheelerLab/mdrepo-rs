@@ -25,7 +25,11 @@ pub fn generate(args: &GenArgs) -> Result<Meta> {
             continue;
         }
 
-        let file_name = path.file_name().unwrap().to_string_lossy().to_string();
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("No filename for '{}'", path.display()))?
+            .to_string_lossy()
+            .to_string();
         if file_name.starts_with(".") || file_name.starts_with("#") {
             continue;
         }

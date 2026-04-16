@@ -42,7 +42,7 @@ fn run(args: Args) -> Result<()> {
     }
 
     let v1 = MetaV1::from_file(Path::new(&args.filename))?;
-    let meta = v1.to_v2();
+    let meta = v1.to_v2()?;
 
     let outfile = if let Some(output) = args.outfile {
         output

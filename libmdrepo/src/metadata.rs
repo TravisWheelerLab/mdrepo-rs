@@ -1,5 +1,6 @@
 use crate::{common::read_file, constants};
 use anyhow::{anyhow, bail, Result};
+use chrono::Datelike;
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow::Borrowed,
@@ -444,7 +445,7 @@ pub struct Paper {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub number: Option<String>,
 
-    #[validate(range(min = 1900, max = 2030))]
+    #[validate(custom(function = "validate_paper_year"))]
     pub year: u32,
 
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
@@ -487,6 +488,14 @@ pub struct Water {
        range(min = constants::WATER_DENSITY_MIN, max = constants::WATER_DENSITY_MAX)
     )]
     pub density_kg_m3: f64,
+}
+
+fn validate_paper_year(year: u32) -> Result<(), ValidationError> {
+    let max_year = (chrono::Utc::now().year() + 5) as u32;
+    if year < 1900 || year > max_year {
+        return Err(ValidationError::new("paper_year"));
+    }
+    Ok(())
 }
 
 fn validate_dois(dois: &[String]) -> Result<(), ValidationError> {
@@ -765,7 +774,7 @@ mod proptest_tests {
         // --- Range: Paper year ---
 
         #[test]
-        fn valid_paper_year_passes(year in 1900u32..=2030u32) {
+        fn valid_paper_year_passes(year in 1900u32..=(chrono::Utc::now().year() as u32 + 5)) {
             let paper = Paper {
                 title: "Title".to_string(),
                 authors: "Author".to_string(),
@@ -782,7 +791,7 @@ mod proptest_tests {
         #[test]
         fn out_of_range_paper_year_fails(year in prop_oneof![
             0u32..1900u32,
-            2031u32..=u32::MAX,
+            (chrono::Utc::now().year() as u32 + 6)..=u32::MAX,
         ]) {
             let paper = Paper {
                 title: "Title".to_string(),

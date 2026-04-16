@@ -365,7 +365,9 @@ pub fn get_rmsd_rmsf(
     min_xtc: &Path,
     script_dir: &Path,
 ) -> Result<RmsdRmsf> {
-    let processed_dir = min_pdb.parent().expect("parent");
+    let processed_dir = min_pdb
+        .parent()
+        .ok_or_else(|| anyhow!("No parent directory for '{}'", min_pdb.display()))?;
     let out_file = processed_dir.join("rmsd_rmsf.json");
 
     if file_exists(&out_file) {
@@ -415,7 +417,9 @@ pub fn blast_uniprot(
         bail!(r#"Invalid BLAST dir "{}""#, blast_dir.display());
     }
 
-    let processed_dir = fasta_sequence.parent().expect("parent");
+    let processed_dir = fasta_sequence
+        .parent()
+        .ok_or_else(|| anyhow!("No parent directory for '{}'", fasta_sequence.display()))?;
     let blast_results = processed_dir.join(format!(
         "blast.{}.out",
         uniprot_db.to_string().to_lowercase()
@@ -483,7 +487,7 @@ pub fn blast_uniprot(
             .has_headers(false)
             .from_reader(file);
 
-        let trembl_regex = Regex::new(r"^tr[|]([^|]+)[|]").expect("regex");
+        let trembl_regex = Regex::new(r"^tr[|]([^|]+)[|]")?;
         for result in reader.deserialize() {
             let hit: BlastResult =
                 result.map_err(|e| anyhow!("{}: {e}", blast_results.display()))?;
@@ -491,7 +495,10 @@ pub fn blast_uniprot(
                 let subject = hit.saccver.to_string();
                 match trembl_regex.captures(&subject) {
                     Some(caps) => {
-                        let trembl_id = caps.get(1).expect("capture").as_str();
+                        let trembl_id = caps
+                            .get(1)
+                            .ok_or_else(|| anyhow!("regex capture group 1 not found"))?
+                            .as_str();
                         results.push(trembl_id.to_string());
                     }
                     _ => results.push(subject),
@@ -505,7 +512,9 @@ pub fn blast_uniprot(
 
 // --------------------------------------------------
 pub fn get_sequence(full_pdb: &Path, script_dir: &Path) -> Result<PathBuf> {
-    let processed_dir = full_pdb.parent().expect("parent");
+    let processed_dir = full_pdb
+        .parent()
+        .ok_or_else(|| anyhow!("No parent directory for '{}'", full_pdb.display()))?;
     let sequence_file = processed_dir.join("sequence.fa");
 
     if file_exists(&sequence_file) {
@@ -674,7 +683,7 @@ pub fn make_import_json(
         original_files.push(MdFile {
             name: meta_path
                 .file_name()
-                .expect("filename")
+                .ok_or_else(|| anyhow!("No filename for '{}'", meta_path.display()))?
                 .to_string_lossy()
                 .to_string(),
             file_type: "Metadata".to_string(),
@@ -737,7 +746,7 @@ pub fn make_import_json(
         processed_export.push(MdFile {
             name: path
                 .file_name()
-                .expect("filename")
+                .ok_or_else(|| anyhow!("No filename for '{}'", path.display()))?
                 .to_string_lossy()
                 .to_string(),
             file_type: file_type.to_string(),
@@ -926,7 +935,9 @@ pub fn get_inferred_ligands(
     min_gro: &Path,
     script_dir: &Path,
 ) -> Result<Vec<InferredLigand>> {
-    let processed_dir = min_pdb.parent().expect("parent");
+    let processed_dir = min_pdb
+        .parent()
+        .ok_or_else(|| anyhow!("No parent directory for '{}'", min_pdb.display()))?;
     let out_file = processed_dir.join("inferred_ligands.json");
     if file_exists(&out_file) {
         debug!("Inferred ligands file exists");
@@ -1125,7 +1136,11 @@ pub fn get_doi(doi: &str) -> Result<metadata::Paper> {
         journal: doi_paper.journal.clone(),
         volume: doi_paper.volume,
         number: None,
-        year: *doi_paper.published.date_parts.first().expect("year"),
+        year: *doi_paper
+            .published
+            .date_parts
+            .first()
+            .ok_or_else(|| anyhow!("DOI publication data has no year"))?,
         pages: Some(doi_paper.page.clone()),
         doi: Some(doi.to_string()),
     })

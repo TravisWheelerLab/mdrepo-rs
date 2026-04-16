@@ -84,7 +84,10 @@ fn irods_fetch(irods_path: &Path, local_path: &Path) -> Result<()> {
     if file_exists(local_path) {
         debug!(
             r#"Already downloaded "{}""#,
-            irods_path.file_name().expect("filename").display()
+            irods_path
+                .file_name()
+                .ok_or_else(|| anyhow!("No filename for '{}'", irods_path.display()))?
+                .to_string_lossy()
         );
     } else {
         let mut cmd = Command::new("gocmd");

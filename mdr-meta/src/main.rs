@@ -97,7 +97,7 @@ fn parse_file(filename: &str) -> Result<Meta> {
         "-" => {
             let mut lines = vec![];
             for line in io::stdin().lines() {
-                lines.push(line.unwrap());
+                lines.push(line?);
             }
             let contents = lines.join("\n");
 

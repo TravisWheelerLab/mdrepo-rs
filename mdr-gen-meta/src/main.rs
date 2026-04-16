@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use clap::Parser;
 use dotenvy::dotenv;
 use libmdrepo::{constants, metadata};
@@ -39,7 +39,7 @@ fn run(args: Args) -> Result<()> {
     };
     let mut conn = mdr_db::connect(&url)?;
     let sim = ops::get_simulation(&mut conn, args.simulation_id)?;
-    let software = ops::get_software(&mut conn, sim.software_id.expect("software_id"))?;
+    let software = ops::get_software(&mut conn, sim.software_id.ok_or_else(|| anyhow!("simulation has no software_id"))?)?;
     let pdb = sim
         .pdb_id
         .map(|pdb_pk| ops::get_pdb(&mut conn, pdb_pk))
@@ -206,13 +206,15 @@ fn run(args: Args) -> Result<()> {
         Some(
             contributors_res
                 .iter()
-                .map(|val| metadata::Contributor {
-                    name: val.name.clone().expect("name"),
-                    email: val.email.clone(),
-                    institution: val.institution.clone(),
-                    orcid: val.orcid.clone(),
+                .map(|val| -> Result<metadata::Contributor> {
+                    Ok(metadata::Contributor {
+                        name: val.name.clone().ok_or_else(|| anyhow!("contributor has no name"))?,
+                        email: val.email.clone(),
+                        institution: val.institution.clone(),
+                        orcid: val.orcid.clone(),
+                    })
                 })
-                .collect::<Vec<_>>(),
+                .collect::<Result<Vec<_>>>()?,
         )
     };
 
@@ -242,12 +244,12 @@ fn run(args: Args) -> Result<()> {
     let meta = metadata::Meta {
         lead_contributor_orcid: lead_contributor_orcid
             .unwrap_or(DEFAULT_ORCID.to_string()),
-        trajectory_file_name: trajectory_file_name.expect("name"),
-        structure_file_name: structure_file_name.expect("name"),
-        topology_file_name: topology_file_name.expect("name"),
-        temperature_kelvin: sim.temperature.expect("temp") as u32,
-        integration_timestep_fs: sim.integration_timestep_fs.expect("time") as u32,
-        short_description: sim.short_description.expect("short_desc"),
+        trajectory_file_name: trajectory_file_name.ok_or_else(|| anyhow!("simulation has no trajectory file"))?,
+        structure_file_name: structure_file_name.ok_or_else(|| anyhow!("simulation has no structure file"))?,
+        topology_file_name: topology_file_name.ok_or_else(|| anyhow!("simulation has no topology file"))?,
+        temperature_kelvin: sim.temperature.ok_or_else(|| anyhow!("simulation has no temperature"))? as u32,
+        integration_timestep_fs: sim.integration_timestep_fs.ok_or_else(|| anyhow!("simulation has no integration timestep"))? as u32,
+        short_description: sim.short_description.ok_or_else(|| anyhow!("simulation has no short description"))?,
         software_name: software.name,
         software_version: software.version.unwrap_or("".to_string()),
         mdrepo_id: Some(format!("MDR{:08}", args.simulation_id)),

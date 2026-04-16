@@ -1,27 +1,25 @@
-use regex::Regex;
-use std::sync::LazyLock;
+use lazy_regex::{lazy_regex, Lazy, Regex};
 
 pub const MAX_FILE_SIZE_GB: u64 = 40;
 pub const MAX_FILE_SIZE_BYTES: u64 = MAX_FILE_SIZE_GB * 10u64.pow(9);
 
-pub static ORCID_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\d{4}-\d{4}-\d{4}-[A-Z\d]{4}$").unwrap());
+pub static ORCID_REGEX: Lazy<Regex> =
+    lazy_regex!(r"^\d{4}-\d{4}-\d{4}-[A-Z\d]{4}$");
 
-pub static PDB_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[A-Za-z0-9]{4}$").unwrap());
+pub static PDB_REGEX: Lazy<Regex> =
+    lazy_regex!(r"^[A-Za-z0-9]{4}$");
 
-pub static DOI_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?:https://doi.org/)?(10\.\d{4,5}\/[\S]+[^;,.\s])$").unwrap()
-});
+pub static DOI_REGEX: Lazy<Regex> =
+    lazy_regex!(r"^(?:https://doi.org/)?(10\.\d{4,5}\/[\S]+[^;,.\s])$");
 
-pub static NOT_WHITESPACE_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\S+").unwrap());
+pub static NOT_WHITESPACE_REGEX: Lazy<Regex> =
+    lazy_regex!(r"\S+");
 
-pub static MOLLY_TIME_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^time:\s*(\d+)-(\d+(?:\.\d)?)\s+ps").unwrap());
+pub static MOLLY_TIME_REGEX: Lazy<Regex> =
+    lazy_regex!(r"^time:\s*(\d+)-(\d+(?:\.\d)?)\s+ps");
 
-pub static MOLLY_NFRAMES_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^nframes:\s*(\d+)").unwrap());
+pub static MOLLY_NFRAMES_REGEX: Lazy<Regex> =
+    lazy_regex!(r"^nframes:\s*(\d+)");
 
 pub const SOLVENT_CONCENTRATION_MIN: f64 = 0.;
 pub const SOLVENT_CONCENTRATION_MAX: f64 = 1.;
