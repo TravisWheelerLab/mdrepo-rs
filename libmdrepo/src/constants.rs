@@ -1,26 +1,22 @@
-use lazy_regex::{lazy_regex, Lazy, Regex};
+use lazy_regex::{Lazy, Regex, lazy_regex};
 use std::collections::HashMap;
 
 pub const MAX_FILE_SIZE_GB: u64 = 40;
 pub const MAX_FILE_SIZE_BYTES: u64 = MAX_FILE_SIZE_GB * 10u64.pow(9);
 
-pub static ORCID_REGEX: Lazy<Regex> =
-    lazy_regex!(r"^\d{4}-\d{4}-\d{4}-[A-Z\d]{4}$");
+pub static ORCID_REGEX: Lazy<Regex> = lazy_regex!(r"^\d{4}-\d{4}-\d{4}-[A-Z\d]{4}$");
 
-pub static PDB_REGEX: Lazy<Regex> =
-    lazy_regex!(r"^[A-Za-z0-9]{4}$");
+pub static PDB_REGEX: Lazy<Regex> = lazy_regex!(r"^[A-Za-z0-9]{4}$");
 
 pub static DOI_REGEX: Lazy<Regex> =
     lazy_regex!(r"^(?:https://doi.org/)?(10\.\d{4,5}\/[\S]+[^;,.\s])$");
 
-pub static NOT_WHITESPACE_REGEX: Lazy<Regex> =
-    lazy_regex!(r"\S+");
+pub static NOT_WHITESPACE_REGEX: Lazy<Regex> = lazy_regex!(r"\S+");
 
 pub static MOLLY_TIME_REGEX: Lazy<Regex> =
     lazy_regex!(r"^time:\s*(\d+)-(\d+(?:\.\d)?)\s+ps");
 
-pub static MOLLY_NFRAMES_REGEX: Lazy<Regex> =
-    lazy_regex!(r"^nframes:\s*(\d+)");
+pub static MOLLY_NFRAMES_REGEX: Lazy<Regex> = lazy_regex!(r"^nframes:\s*(\d+)");
 
 pub const SOLVENT_CONCENTRATION_MIN: f64 = 0.;
 pub const SOLVENT_CONCENTRATION_MAX: f64 = 1.;
@@ -44,7 +40,6 @@ pub const VALID_WATER_MODEL: &[&str] = &[
     "EVB",
     "F3C",
     "HIPPO",
-    "iAMOEBA",
     "KKY",
     "LEWIS",
     "MARTINI polarizable water",
@@ -52,15 +47,12 @@ pub const VALID_WATER_MODEL: &[&str] = &[
     "MB-pol",
     "MCY",
     "MS-EVB",
-    "mW",
     "OPC",
     "OPC3",
     "OSS2",
     "POL3",
-    "q-SPC/Fw",
-    "q-TIP4P/F",
-    "ReaxFF",
     "RWK",
+    "ReaxFF",
     "SCME",
     "SDK/CMM",
     "SPC",
@@ -70,8 +62,8 @@ pub const VALID_WATER_MODEL: &[&str] = &[
     "ST2",
     "SWM4-NDP",
     "SWM6",
-    "TIP3P-FB",
     "TIP3P",
+    "TIP3P-FB",
     "TIP3P/Fs",
     "TIP4P",
     "TIP4P-CG",
@@ -87,6 +79,10 @@ pub const VALID_WATER_MODEL: &[&str] = &[
     "TTM2-F",
     "TTM3-F",
     "TTM4-F",
+    "iAMOEBA",
+    "mW",
+    "q-SPC/Fw",
+    "q-TIP4P/F",
 ];
 
 // Here are common trajectory file extensions used in molecular dynamics simulations:
@@ -196,19 +192,20 @@ pub const TOPOLOGY_FILE_EXTS: &[&str] =
     &["top", "gro", "psf", "prmtop", "parm7", "prm", "rtf", "tpr"];
 
 const GROMACS_VERSIONS: &[&str] = &[
-    "3.3", "3.3.3", "4.0", "4.0.7", "4.5", "4.5.7", "4.6", "4.6.7", "5.0", "5.0.7", "5.1",
-    "5.1.5", "2016", "2016.1", "2016.2", "2016.3", "2016.4", "2016.5", "2016.6", "2018",
-    "2018.1", "2018.2", "2018.3", "2018.4", "2018.5", "2018.6", "2018.7", "2018.8", "2019",
-    "2019.1", "2019.2", "2019.3", "2019.4", "2019.5", "2019.6", "2020", "2020.1", "2020.2",
-    "2020.3", "2020.4", "2020.5", "2020.6", "2020.7", "2021", "2021.1", "2021.2", "2021.3",
-    "2021.4", "2021.5", "2021.6", "2021.7", "2022", "2022.1", "2022.2", "2022.3", "2022.4",
-    "2022.5", "2022.6", "2023", "2023.1", "2023.2", "2023.3", "2023.4", "2023.5", "2024",
-    "2024.1", "2024.2", "2024.3", "2024.4",
+    "3.3", "3.3.3", "4.0", "4.0.7", "4.5", "4.5.7", "4.6", "4.6.7", "5.0", "5.0.7",
+    "5.1", "5.1.5", "2016", "2016.1", "2016.2", "2016.3", "2016.4", "2016.5", "2016.6",
+    "2018", "2018.1", "2018.2", "2018.3", "2018.4", "2018.5", "2018.6", "2018.7",
+    "2018.8", "2019", "2019.1", "2019.2", "2019.3", "2019.4", "2019.5", "2019.6",
+    "2020", "2020.1", "2020.2", "2020.3", "2020.4", "2020.5", "2020.6", "2020.7",
+    "2021", "2021.1", "2021.2", "2021.3", "2021.4", "2021.5", "2021.6", "2021.7",
+    "2022", "2022.1", "2022.2", "2022.3", "2022.4", "2022.5", "2022.6", "2023",
+    "2023.1", "2023.2", "2023.3", "2023.4", "2023.5", "2024", "2024.1", "2024.2",
+    "2024.3", "2024.4",
 ];
 
 const AMBER_VERSIONS: &[&str] = &[
-    "1", "2", "3", "4", "4.1", "5", "6", "7", "8", "9", "10", "11", "12", "14", "16", "18",
-    "20", "22", "24",
+    "1", "2", "3", "4", "4.1", "5", "6", "7", "8", "9", "10", "11", "12", "14", "16",
+    "18", "20", "22", "24",
 ];
 
 const NAMD_VERSIONS: &[&str] = &[
@@ -216,8 +213,8 @@ const NAMD_VERSIONS: &[&str] = &[
 ];
 
 const CHARMM_VERSIONS: &[&str] = &[
-    "c27", "c28", "c29", "c30", "c31", "c32", "c33", "c34", "c35", "c36", "c37", "c38", "c39",
-    "c40", "c41", "c42", "c43", "c44", "c45", "c46", "c47", "c48",
+    "c27", "c28", "c29", "c30", "c31", "c32", "c33", "c34", "c35", "c36", "c37", "c38",
+    "c39", "c40", "c41", "c42", "c43", "c44", "c45", "c46", "c47", "c48",
 ];
 
 pub static VALID_SOFTWARE: Lazy<HashMap<&'static str, &'static [&'static str]>> =
