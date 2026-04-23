@@ -1,13 +1,8 @@
 use crate::{common::read_file, constants};
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use chrono::Datelike;
 use serde::{Deserialize, Serialize};
-use std::{
-    borrow::Cow::Borrowed,
-    collections::HashMap,
-    ffi::OsStr,
-    path::Path,
-};
+use std::{borrow::Cow::Borrowed, collections::HashMap, ffi::OsStr, path::Path};
 use validator::{Validate, ValidationError, ValidationErrorsKind};
 
 #[derive(Debug, Deserialize, Serialize, Validate)]
@@ -156,6 +151,29 @@ impl Meta {
             }
         }
 
+        let software_name = self.software_name.as_str();
+        if let Some(valid_versions) = constants::VALID_SOFTWARE.get(software_name) {
+            if !valid_versions.iter().any(|&v| v == self.software_version) {
+                messages.push(format!(
+                    r#"software_version: "{}" invalid for "{software_name}", choose from {}"#,
+                    &self.software_version,
+                    valid_versions.join(", ")
+                ))
+            }
+        } else {
+            let mut valid_software_names: Vec<String> = constants::VALID_SOFTWARE
+                .keys()
+                .map(|val| val.to_string())
+                .collect();
+            // Must be sorted for testing
+            valid_software_names.sort();
+            messages.push(format!(
+                r#"software_name: "{}" invalid, choose from {}"#,
+                self.software_name,
+                valid_software_names.join(", "),
+            ))
+        }
+
         // Check file extensions of required files
         let ext_checks = [
             (
@@ -185,7 +203,7 @@ impl Meta {
                     ))
                 }
             } else {
-                messages.push(format!(r#"{field}: Filename is missing extension"#))
+                messages.push(format!(r#"{field}: filename is missing extension"#))
             }
         }
 
@@ -507,7 +525,13 @@ fn validate_dois(dois: &[String]) -> Result<(), ValidationError> {
 
 fn validate_water_model(model: &str) -> Result<(), ValidationError> {
     if !constants::VALID_WATER_MODEL.contains(&model) {
-        return Err(ValidationError::new("water_model"));
+        return Err(ValidationError::new("water_model").with_message(
+            format!(
+                r#"invalid, choose from {}"#,
+                constants::VALID_WATER_MODEL.join(", ")
+            )
+            .into(),
+        ));
     }
     Ok(())
 }
@@ -591,7 +615,7 @@ fn format_validation_error(err: &ValidationError) -> String {
                 _ => "".to_string(),
             }
         }
-        _ => "invalid".to_string(),
+        _ => err.message.as_deref().unwrap_or("invalid").to_string(),
     };
 
     format!("value {given} {message}")
@@ -1076,6 +1100,7 @@ mod tests {
     fn meta_check_bad() -> Result<()> {
         let meta = Meta::from_file(&PathBuf::from(TOML_BAD1))?;
         let errors = &meta.check(None);
+        dbg!(&errors);
         let expected = vec![
             r#"additional_files[1].description: value " " invalid"#,
             r#"additional_files[1].file_name: value " " invalid"#,
@@ -1092,20 +1117,29 @@ mod tests {
             r#"pdb_id: value "5am" invalid"#,
             r#"short_description: value " " invalid"#,
             r#"solvents[1].name: value " " invalid"#,
-            r#"structure_file_name: Filename is missing extension"#,
+            r#"structure_file_name: filename is missing extension"#,
             r#"structure_file_name: value " " invalid"#,
             r#"temperature_kelvin: value 0 must be >= 275 and <= 700"#,
             r#"toml_version: value 4 must be = 2"#,
-            r#"topology_file_name: Filename is missing extension"#,
+            r#"topology_file_name: filename is missing extension"#,
             r#"topology_file_name: value " " invalid"#,
-            r#"trajectory_file_name: Filename is missing extension"#,
+            r#"trajectory_file_name: filename is missing extension"#,
             r#"trajectory_file_name: value " " invalid"#,
             r#"water.density_kg_m3: value 1000000.0 must be >= 900.0 and <= 1100.0"#,
-            r#"water.model: value "XYZ" invalid"#,
+            concat!(
+                r#"water.model: value "XYZ" invalid, choose from AMOEBA, BF, BK3, BMW, "#,
+                "COS/G2, COS/G3, CVFF, DC, ELBA, EVB, F3C, HIPPO, KKY, LEWIS, MARTINI polarizable water, ",
+                "MARTINI water, MB-pol, MCY, MS-EVB, OPC, OPC3, OSS2, POL3, RWK, ReaxFF, SCME, SDK/CMM, ",
+                "SPC, SPC/E, SPC/Fd, SPC/Fw, ST2, SWM4-NDP, SWM6, TIP3P, TIP3P-FB, TIP3P/Fs, TIP4P, TIP4P-CG, ",
+                "TIP4P-D, TIP4P-FB, TIP4P/2005, TIP4P/Ew, TIP4P/Ice, TIP5P, TIP5P/2018, TIP5P/E, TIP6P, ",
+                "TTM2-F, TTM3-F, TTM4-F, iAMOEBA, mW, q-SPC/Fw, q-TIP4P/F"
+            ),
             r#"Filename " " is duplicated 4 times"#,
+            r#"software_name: "AMBERX" invalid, choose from AMBER, CHARMM, GROMACS, NAMD"#,
         ];
         assert_eq!(errors.len(), expected.len());
         for message in expected {
+            dbg!(&message);
             assert!(errors.contains(&message.to_string()));
         }
         Ok(())
