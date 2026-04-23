@@ -418,7 +418,7 @@ pub struct ExportSimulation {
     pub fasta_sequence: String,
     pub replicate_id: Option<String>,
     pub water: Option<metadata::Water>,
-    pub topology_hash: String,
+    pub structure_hash: String,
     pub contributors: Vec<metadata::Contributor>,
     pub original_files: Vec<MdFile>,
     pub processed_files: Vec<MdFile>,
@@ -508,11 +508,11 @@ pub struct InferredLigand {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct InferredLigandName {
     pub smiles_input: String,
-    pub cid: u32,
+    pub cid: Option<u32>,
     pub iupac_name: Option<String>,
     pub common_name: Option<String>,
     pub formula: Option<String>,
-    pub charge: u32,
+    pub charge: Option<u32>,
     pub synonyms: Option<Vec<String>>,
 }
 
