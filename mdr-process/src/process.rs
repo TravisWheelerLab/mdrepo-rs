@@ -3,7 +3,7 @@ use crate::types::{
     ImportResult, InferredLigand, MdFile, PdbEntry, PdbResponse, ProcessArgs,
     ProcessedFiles, PushResult, RmsdRmsf, UniprotDb, UniprotEntry, UniprotResponse,
 };
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use dotenvy::dotenv;
 use libmdrepo::{
     common::{file_exists, get_md5, read_file},
@@ -417,9 +417,9 @@ pub fn blast_uniprot(
         bail!(r#"Invalid BLAST dir "{}""#, blast_dir.display());
     }
 
-    let processed_dir = fasta_sequence
-        .parent()
-        .ok_or_else(|| anyhow!("No parent directory for '{}'", fasta_sequence.display()))?;
+    let processed_dir = fasta_sequence.parent().ok_or_else(|| {
+        anyhow!("No parent directory for '{}'", fasta_sequence.display())
+    })?;
     let blast_results = processed_dir.join(format!(
         "blast.{}.out",
         uniprot_db.to_string().to_lowercase()
@@ -599,8 +599,8 @@ pub fn make_import_json(
     reprocess_simulation_id: Option<u32>,
 ) -> Result<PathBuf> {
     let meta = Meta::from_file(meta_path)?;
-    let topology_path = input_dir.join(&meta.topology_file_name);
-    let topology_hash = get_topology_hash(&topology_path)?;
+    let structure_path = input_dir.join(&meta.structure_file_name);
+    let structure_hash = get_file_hash(&structure_path)?;
     let fasta_sequence_file = get_sequence(&processed_files.full_pdb, script_dir)?;
     let rmsd_rmsf = get_rmsd_rmsf(
         &processed_files.min_pdb,
@@ -793,7 +793,7 @@ pub fn make_import_json(
         fasta_sequence,
         replicate_id: meta.replicate_id,
         water: meta.water,
-        topology_hash,
+        structure_hash,
         contributors: meta.contributors.unwrap_or_default(),
         original_files,
         processed_files: processed_export,
@@ -1106,8 +1106,8 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Dur
 }
 
 // --------------------------------------------------
-pub fn get_topology_hash(topology: &Path) -> Result<String> {
-    let contents = fs::read(topology)?;
+pub fn get_file_hash(path: &Path) -> Result<String> {
+    let contents = fs::read(path)?;
     let digest = Sha1::digest(&contents);
     Ok(format!("{digest:x}"))
 }
@@ -1227,8 +1227,8 @@ mod tests {
     fn topology_hash_is_deterministic() {
         let mut f = NamedTempFile::new().unwrap();
         write!(f, "topology content").unwrap();
-        let h1 = get_topology_hash(f.path()).unwrap();
-        let h2 = get_topology_hash(f.path()).unwrap();
+        let h1 = get_file_hash(f.path()).unwrap();
+        let h2 = get_file_hash(f.path()).unwrap();
         assert_eq!(h1, h2);
     }
 
@@ -1239,13 +1239,13 @@ mod tests {
         write!(f1, "content A").unwrap();
         write!(f2, "content B").unwrap();
         assert_ne!(
-            get_topology_hash(f1.path()).unwrap(),
-            get_topology_hash(f2.path()).unwrap()
+            get_file_hash(f1.path()).unwrap(),
+            get_file_hash(f2.path()).unwrap()
         );
     }
 
     #[test]
     fn topology_hash_missing_file_errors() {
-        assert!(get_topology_hash(Path::new("/nonexistent")).is_err());
+        assert!(get_file_hash(Path::new("/nonexistent")).is_err());
     }
 }
