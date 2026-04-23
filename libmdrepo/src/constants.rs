@@ -217,6 +217,8 @@ const CHARMM_VERSIONS: &[&str] = &[
     "c39", "c40", "c41", "c42", "c43", "c44", "c45", "c46", "c47", "c48",
 ];
 
+const SPONGE_VERSIONS: &[&str] = &["1.1", "1.2", "1.3", "1.4"];
+
 pub static VALID_SOFTWARE: Lazy<HashMap<&'static str, &'static [&'static str]>> =
     Lazy::new(|| {
         HashMap::from([
@@ -224,5 +226,6 @@ pub static VALID_SOFTWARE: Lazy<HashMap<&'static str, &'static [&'static str]>> 
             ("AMBER", AMBER_VERSIONS),
             ("NAMD", NAMD_VERSIONS),
             ("CHARMM", CHARMM_VERSIONS),
+            ("SPONGE", SPONGE_VERSIONS),
         ])
     });
