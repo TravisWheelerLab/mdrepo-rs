@@ -10,9 +10,9 @@ temperature_kelvin = 0
 
 integration_timestep_fs = 2000
 
-software_name = "AMBER"
+software_name = "AMBERX"
 
-software_version = "20"
+software_version = "X"
 
 toml_version = 4
 

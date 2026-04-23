@@ -12,15 +12,16 @@ lead_contributor_orcid: value "0000-0001-9961-144" invalid
 ligands[1].smiles: value "smiles_string" invalid
 pdb_id: value "5am" invalid
 short_description: value " " invalid
+software_name: "AMBERX" invalid, choose from AMBER, CHARMM, GROMACS, NAMD
 solvents[1].name: value " " invalid
-structure_file_name: Filename is missing extension
+structure_file_name: filename is missing extension
 structure_file_name: value " " invalid
 temperature_kelvin: value 0 must be >= 275 and <= 700
 toml_version: value 4 must be = 2
-topology_file_name: Filename is missing extension
+topology_file_name: filename is missing extension
 topology_file_name: value " " invalid
-trajectory_file_name: Filename is missing extension
+trajectory_file_name: filename is missing extension
 trajectory_file_name: value " " invalid
 water.density_kg_m3: value 1000000.0 must be >= 900.0 and <= 1100.0
-water.model: value "XYZ" invalid
+water.model: value "XYZ" invalid, choose from AMOEBA, BF, BK3, BMW, COS/G2, COS/G3, CVFF, DC, ELBA, EVB, F3C, HIPPO, KKY, LEWIS, MARTINI polarizable water, MARTINI water, MB-pol, MCY, MS-EVB, OPC, OPC3, OSS2, POL3, RWK, ReaxFF, SCME, SDK/CMM, SPC, SPC/E, SPC/Fd, SPC/Fw, ST2, SWM4-NDP, SWM6, TIP3P, TIP3P-FB, TIP3P/Fs, TIP4P, TIP4P-CG, TIP4P-D, TIP4P-FB, TIP4P/2005, TIP4P/Ew, TIP4P/Ice, TIP5P, TIP5P/2018, TIP5P/E, TIP6P, TTM2-F, TTM3-F, TTM4-F, iAMOEBA, mW, q-SPC/Fw, q-TIP4P/F
 Filename " " is duplicated 4 times
