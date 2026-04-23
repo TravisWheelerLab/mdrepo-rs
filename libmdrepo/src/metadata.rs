@@ -1100,7 +1100,6 @@ mod tests {
     fn meta_check_bad() -> Result<()> {
         let meta = Meta::from_file(&PathBuf::from(TOML_BAD1))?;
         let errors = &meta.check(None);
-        dbg!(&errors);
         let expected = vec![
             r#"additional_files[1].description: value " " invalid"#,
             r#"additional_files[1].file_name: value " " invalid"#,
@@ -1135,11 +1134,10 @@ mod tests {
                 "TTM2-F, TTM3-F, TTM4-F, iAMOEBA, mW, q-SPC/Fw, q-TIP4P/F"
             ),
             r#"Filename " " is duplicated 4 times"#,
-            r#"software_name: "AMBERX" invalid, choose from AMBER, CHARMM, GROMACS, NAMD"#,
+            r#"software_name: "AMBERX" invalid, choose from AMBER, CHARMM, GROMACS, NAMD, SPONGE"#,
         ];
         assert_eq!(errors.len(), expected.len());
         for message in expected {
-            dbg!(&message);
             assert!(errors.contains(&message.to_string()));
         }
         Ok(())
