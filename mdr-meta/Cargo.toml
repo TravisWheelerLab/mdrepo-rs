@@ -7,6 +7,7 @@ edition = "2024"
 anyhow = "1.0.102"
 clap = { version = "4.6.0", features = ["derive"] }
 libmdrepo = { path = "../libmdrepo" }
+self_update = { version = "0.41", features = ["archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate"] }
 strum = { version = "0.28.0", features = ["derive"] }
 strum_macros = "0.28"
 

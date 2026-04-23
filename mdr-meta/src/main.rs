@@ -85,6 +85,17 @@ fn run(args: Cli) -> Result<()> {
             let meta = parse_file(&args.filename)?;
             write!(out_file, "{}", meta.to_toml()?)?;
         }
+        Some(Command::Upgrade) => {
+            let status = self_update::backends::github::Update::configure()
+                .repo_owner("TravisWheelerLab")
+                .repo_name("mdrepo-rs")
+                .bin_name("mdr-meta")
+                .show_download_progress(true)
+                .current_version(self_update::cargo_crate_version!())
+                .build()?
+                .update()?;
+            println!("Update status: `{}`!", status.version());
+        }
         _ => unreachable!(),
     }
 

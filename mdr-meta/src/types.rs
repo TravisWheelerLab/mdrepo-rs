@@ -26,6 +26,9 @@ pub enum Command {
 
     /// Print metadata in TOML format
     ToToml(ToTomlArgs),
+
+    /// Upgrade binary to the latest release
+    Upgrade,
 }
 
 #[derive(Debug, PartialEq, Clone)]
