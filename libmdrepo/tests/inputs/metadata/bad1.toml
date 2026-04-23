@@ -58,7 +58,7 @@ concentration_mol_liter = 0
 
 [[solvents]]
 name = "Cl"
-concentration_mol_liter = 0.15
+concentration_mol_liter = 1.15
 
 [[contributors]]
 name = "Alex Leifson"

@@ -356,7 +356,7 @@ impl Meta {
                         .to_string(),
             }]),
             solvents: Some(vec![Solvent {
-                name: "Na".to_string(),
+                name: "Sodium".to_string(),
                 concentration_mol_liter: 0.15,
             }]),
             papers: None,
@@ -490,8 +490,8 @@ pub struct Solvent {
 
     #[validate(
        range(
-           min = constants::SOLVENT_CONCENTRATION_MIN,
-           max = constants::SOLVENT_CONCENTRATION_MAX
+           exclusive_min = constants::SOLVENT_CONCENTRATION_EXCLUSIVE_MIN,
+           exclusive_max = constants::SOLVENT_CONCENTRATION_EXCLUSIVE_MAX
        )
     )]
     pub concentration_mol_liter: f64,
@@ -615,16 +615,21 @@ fn format_validation_error(err: &ValidationError) -> String {
         Borrowed("range") => {
             let min = err.params.get("min");
             let max = err.params.get("max");
-            match (min, max) {
-                (Some(x), None) => format!("must be >= {x}"),
-                (None, Some(x)) => format!("must be <= {x}"),
-                (Some(x), Some(y)) => {
+            let exclusive_min = err.params.get("exclusive_min");
+            let exclusive_max = err.params.get("exclusive_max");
+            match (min, max, exclusive_min, exclusive_max) {
+                (Some(x), None, None, None) => format!("must be >= {x}"),
+                (None, Some(x), None, None) => format!("must be <= {x}"),
+                (Some(x), Some(y), None, None) => {
                     if x == y {
                         format!("must be = {x}")
                     } else {
                         format!("must be >= {x} and <= {y}")
                     }
                 }
+                (None, None, Some(x), None) => format!("must be > {x}"),
+                (None, None, None, Some(x)) => format!("must be < {x}"),
+                (None, None, Some(x), Some(y)) => format!("must be > {x} and < {y}"),
                 _ => "".to_string(),
             }
         }
@@ -788,9 +793,9 @@ mod proptest_tests {
         // --- Range: Solvent concentration ---
 
         #[test]
-        fn valid_solvent_concentration_passes(conc in 0.0f64..=1.0f64) {
+        fn valid_solvent_concentration_passes(conc in 0.001f64..0.999f64) {
             let solvent = Solvent {
-                name: "Na".to_string(),
+                name: "Sodium".to_string(),
                 concentration_mol_liter: conc,
             };
             prop_assert!(solvent.validate().is_ok());
@@ -798,11 +803,11 @@ mod proptest_tests {
 
         #[test]
         fn out_of_range_solvent_concentration_fails(conc in prop_oneof![
-            -10.0f64..-0.001f64,
-            1.001f64..10.0f64,
+            -10.0f64..=0.0f64,
+            1.0f64..10.0f64,
         ]) {
             let solvent = Solvent {
-                name: "Na".to_string(),
+                name: "Sodium".to_string(),
                 concentration_mol_liter: conc,
             };
             prop_assert!(solvent.validate().is_err());
@@ -1028,7 +1033,7 @@ mod tests {
         if let Some(solvents) = &meta.solvents {
             assert_eq!(solvents.len(), 2);
             if let Some(solvent) = solvents.first() {
-                assert_eq!(solvent.name, "Na".to_string());
+                assert_eq!(solvent.name, "Sodium".to_string());
                 assert_eq!(solvent.concentration_mol_liter, 0.15);
             }
         }
@@ -1129,7 +1134,10 @@ mod tests {
             r#"ligands[1].smiles: value "smiles_string" invalid"#,
             r#"pdb_id: value "5am" invalid"#,
             r#"short_description: value " " invalid"#,
-            r#"solvents[1].name: value " " invalid"#,
+            r#"solvents[1].concentration_mol_liter: value 0.0 must be > 0.0 and < 1.0"#,
+            r#"solvents[1].name: value " " invalid, choose from Sodium, Chloride, Potassium, Phosphoric acid"#,
+            r#"solvents[2].concentration_mol_liter: value 1.15 must be > 0.0 and < 1.0"#,
+            r#"solvents[2].name: value "Cl" invalid, choose from Sodium, Chloride, Potassium, Phosphoric acid"#,
             r#"structure_file_name: filename is missing extension"#,
             r#"structure_file_name: value " " invalid"#,
             r#"temperature_kelvin: value 0 must be >= 275 and <= 700"#,
@@ -1148,7 +1156,7 @@ mod tests {
                 "TTM2-F, TTM3-F, TTM4-F, iAMOEBA, mW, q-SPC/Fw, q-TIP4P/F"
             ),
             r#"Filename " " is duplicated 4 times"#,
-            r#"software_name: "AMBERX" invalid, choose from AMBER, CHARMM, GROMACS, NAMD"#,
+            r#"software_name: "AMBERX" invalid, choose from AMBER, CHARMM, GROMACS, NAMD, SPONGE"#,
         ];
         assert_eq!(errors.len(), expected.len());
         for message in expected {

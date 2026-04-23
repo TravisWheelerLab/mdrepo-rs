@@ -40,11 +40,11 @@ name = "AQE"
 smiles = "C1CC[C@@]2(CCCN(C2)c3ccnc4[nH]cc(c5sccn5)c34)NC1"
 
 [[solvents]]
-name = "Na"
+name = "Sodium"
 concentration_mol_liter = 0.15
 
 [[solvents]]
-name = "Cl"
+name = "Chloride"
 concentration_mol_liter = 0.15
 
 [[papers]]

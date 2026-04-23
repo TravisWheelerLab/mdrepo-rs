@@ -18,8 +18,8 @@ pub static MOLLY_TIME_REGEX: Lazy<Regex> =
 
 pub static MOLLY_NFRAMES_REGEX: Lazy<Regex> = lazy_regex!(r"^nframes:\s*(\d+)");
 
-pub const SOLVENT_CONCENTRATION_MIN: f64 = 0.;
-pub const SOLVENT_CONCENTRATION_MAX: f64 = 1.;
+pub const SOLVENT_CONCENTRATION_EXCLUSIVE_MIN: f64 = 0.;
+pub const SOLVENT_CONCENTRATION_EXCLUSIVE_MAX: f64 = 1.;
 pub const WATER_DENSITY_MIN: f64 = 900.;
 pub const WATER_DENSITY_MAX: f64 = 1100.;
 pub const METADATA_TOML_VERSION: u32 = 2;
