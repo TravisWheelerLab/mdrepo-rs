@@ -485,7 +485,7 @@ pub struct Ligand {
 
 #[derive(Debug, Clone, Deserialize, Serialize, Validate)]
 pub struct Solvent {
-    #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
+    #[validate(custom(function = "validate_solvent_name"))]
     pub name: String,
 
     #[validate(
@@ -529,6 +529,19 @@ fn validate_water_model(model: &str) -> Result<(), ValidationError> {
             format!(
                 r#"invalid, choose from {}"#,
                 constants::VALID_WATER_MODEL.join(", ")
+            )
+            .into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_solvent_name(name: &str) -> Result<(), ValidationError> {
+    if !constants::VALID_SOLVENT_NAME.contains(&name) {
+        return Err(ValidationError::new("solvent_name").with_message(
+            format!(
+                r#"invalid, choose from {}"#,
+                constants::VALID_SOLVENT_NAME.join(", ")
             )
             .into(),
         ));
