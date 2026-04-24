@@ -12,8 +12,11 @@ lead_contributor_orcid: value "0000-0001-9961-144" invalid
 ligands[1].smiles: value "smiles_string" invalid
 pdb_id: value "5am" invalid
 short_description: value " " invalid
-software_name: "AMBERX" invalid, choose from AMBER, CHARMM, GROMACS, NAMD
-solvents[1].name: value " " invalid
+software_name: "AMBERX" invalid, choose from AMBER, CHARMM, GROMACS, NAMD, SPONGE
+solvents[1].concentration_mol_liter: value 0.0 must be > 0.0 and < 1.0
+solvents[1].name: value " " invalid, choose from Sodium, Chloride, Potassium, Phosphoric acid
+solvents[2].concentration_mol_liter: value 1.15 must be > 0.0 and < 1.0
+solvents[2].name: value "Cl" invalid, choose from Sodium, Chloride, Potassium, Phosphoric acid
 structure_file_name: filename is missing extension
 structure_file_name: value " " invalid
 temperature_kelvin: value 0 must be >= 275 and <= 700
