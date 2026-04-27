@@ -1,4 +1,4 @@
-use lazy_regex::{Lazy, Regex, lazy_regex};
+use lazy_regex::{lazy_regex, Lazy, Regex};
 use std::collections::HashMap;
 
 pub const MAX_FILE_SIZE_GB: u64 = 40;
@@ -191,6 +191,13 @@ pub const STRUCTURE_FILE_EXTS: &[&str] = &["pdb", "gro"];
 pub const TOPOLOGY_FILE_EXTS: &[&str] =
     &["top", "gro", "psf", "prmtop", "parm7", "prm", "rtf", "tpr"];
 
+const ACEMD_VERSIONS: &[&str] = &[
+    "4.0.20", "4.0.18", "4.0.17", "4.0.16", "4.0.15", "4.0.11", "4.0.9", "4.0.1",
+    "4.0.0", "3.7.3", "3.7.2", "3.7.1", "3.7.0", "3.6.0", "3.5.1", "3.5.0", "3.4.1",
+    "3.4.0", "3.3.0", "3.2.4", "3.2.3", "3.2.2", "3.2.1", "3.2.0", "3.1.2", "3.1.1",
+    "3.1.0", "3.0.4", "3.0.3", "3.0.2", "3.0.1", "3.0.0",
+];
+
 const GROMACS_VERSIONS: &[&str] = &[
     "3.3", "3.3.3", "4.0", "4.0.7", "4.5", "4.5.7", "4.6", "4.6.7", "5.0", "5.0.7",
     "5.1", "5.1.5", "2016", "2016.1", "2016.2", "2016.3", "2016.4", "2016.5", "2016.6",
@@ -233,10 +240,11 @@ pub const VALID_SOLVENT_NAME: &[&str] = &[
 pub static VALID_SOFTWARE: Lazy<HashMap<&'static str, &'static [&'static str]>> =
     Lazy::new(|| {
         HashMap::from([
-            ("GROMACS", GROMACS_VERSIONS),
+            ("ACEMD", ACEMD_VERSIONS),
             ("AMBER", AMBER_VERSIONS),
-            ("NAMD", NAMD_VERSIONS),
             ("CHARMM", CHARMM_VERSIONS),
+            ("GROMACS", GROMACS_VERSIONS),
+            ("NAMD", NAMD_VERSIONS),
             ("SPONGE", SPONGE_VERSIONS),
         ])
     });

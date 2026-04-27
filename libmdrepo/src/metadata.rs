@@ -1,5 +1,5 @@
 use crate::{common::read_file, constants};
-use anyhow::{Result, anyhow, bail};
+use anyhow::{anyhow, bail, Result};
 use chrono::Datelike;
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow::Borrowed, collections::HashMap, ffi::OsStr, path::Path};
@@ -61,7 +61,7 @@ pub struct Meta {
 
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub user_accession: Option<String>,
+    pub alias: Option<String>,
 
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -326,7 +326,7 @@ impl Meta {
             software_name: "GROMACS".to_string(),
             software_version: "2024.5".to_string(),
             toml_version: Some(2),
-            user_accession: Some("ABC123".to_string()),
+            alias: Some("ABC123".to_string()),
             external_links: Some(vec![ExternalLink {
                 url: "http://aol.com".to_string(),
                 label: Some("My Link".to_string()),
@@ -379,7 +379,7 @@ impl Meta {
             software_name: "GROMACS".to_string(),
             software_version: "2024.5".to_string(),
             toml_version: None,
-            user_accession: None,
+            alias: None,
             external_links: None,
             run_commands: None,
             additional_files: None,
@@ -1150,10 +1150,11 @@ mod tests {
                 "TTM2-F, TTM3-F, TTM4-F, iAMOEBA, mW, q-SPC/Fw, q-TIP4P/F"
             ),
             r#"Filename " " is duplicated 4 times"#,
-            r#"software_name: "AMBERX" invalid, choose from AMBER, CHARMM, GROMACS, NAMD, SPONGE"#,
+            r#"software_name: "AMBERX" invalid, choose from ACEMD, AMBER, CHARMM, GROMACS, NAMD, SPONGE"#,
         ];
         assert_eq!(errors.len(), expected.len());
         for message in expected {
+            dbg!(&message);
             assert!(errors.contains(&message.to_string()));
         }
         Ok(())

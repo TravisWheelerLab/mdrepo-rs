@@ -4,11 +4,11 @@ use std::fmt;
 #[derive(Debug, Parser)]
 pub struct Args {
     /// Simulation ID
-    #[arg(short, long, value_name = "SIM_ID", required = true)]
+    #[arg(value_name = "SIM_ID", required = true)]
     pub simulation_id: i64,
 
     /// Server
-    #[arg(short('S'), long, value_name = "SERVER", default_value = "staging")]
+    #[arg(short, long, value_name = "SERVER", default_value = "staging")]
     pub server: Server,
 
     /// Database DSN

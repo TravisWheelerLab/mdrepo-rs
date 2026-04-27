@@ -10,7 +10,7 @@
   "software_version": "2024.5",
   "description": "<longer description>",
   "toml_version": 2,
-  "user_accession": "ABC123",
+  "alias": "ABC123",
   "run_commands": "gmx_mpi mdrun",
   "forcefield": "CHARMM36m",
   "forcefield_comments": "ligand params: CGenFF and SwissParam",

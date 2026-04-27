@@ -273,7 +273,7 @@ fn run(args: Args) -> Result<()> {
         mdrepo_id: Some(format!("MDR{:08}", args.simulation_id)),
         description: sim.description,
         toml_version: Some(constants::METADATA_TOML_VERSION),
-        user_accession: sim.user_accession,
+        alias: sim.alias,
         run_commands: sim.run_commands,
         forcefield: sim.forcefield,
         forcefield_comments: sim.forcefield_comments,
