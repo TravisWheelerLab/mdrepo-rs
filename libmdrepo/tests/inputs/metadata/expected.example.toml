@@ -31,7 +31,7 @@ name = "Foropafant"
 smiles = "CC(C)C1=CC(=C(C(=C1)C(C)C)C2=CSC(=N2)N(CCN(C)C)CC3=CN=CC=C3)C(C)C"
 
 [[solvents]]
-name = "Na"
+name = "Sodium"
 concentration_mol_liter = 0.15
 
 [[external_links]]
