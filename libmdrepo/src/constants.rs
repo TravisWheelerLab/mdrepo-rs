@@ -219,8 +219,16 @@ const CHARMM_VERSIONS: &[&str] = &[
 
 const SPONGE_VERSIONS: &[&str] = &["1.1", "1.2", "1.3", "1.4"];
 
-pub const VALID_SOLVENT_NAME: &[&str] =
-    &["Sodium", "Chloride", "Potassium", "Phosphoric acid"];
+pub const VALID_SOLVENT_NAME: &[&str] = &[
+    "Cl-",
+    "Cl",
+    "K",
+    "K+",
+    "Na",
+    "Na+",
+    "Phosphoric acid",
+    "Urea",
+];
 
 pub static VALID_SOFTWARE: Lazy<HashMap<&'static str, &'static [&'static str]>> =
     Lazy::new(|| {
