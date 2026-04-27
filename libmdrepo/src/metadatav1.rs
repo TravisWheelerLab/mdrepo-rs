@@ -2,7 +2,7 @@ use crate::{
     common::read_file,
     metadata::{self, Meta},
 };
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use toml::value::Value as TomlValue;
@@ -241,10 +241,10 @@ impl MetaV1 {
             }
         }
 
-        let mut solvents = vec![];
+        let mut solutes = vec![];
         if let Some(vals) = &self.solvents {
             for v in vals {
-                solvents.push(metadata::Solvent {
+                solutes.push(metadata::Solute {
                     name: v.name.clone(),
                     concentration_mol_liter: v.ion_concentration,
                 })
@@ -258,7 +258,11 @@ impl MetaV1 {
                     title: v.title.clone(),
                     authors: v.authors.clone(),
                     journal: v.journal.clone(),
-                    volume: v.volume.to_integer().ok_or_else(|| anyhow!("paper volume is not an integer"))? as u32,
+                    volume: v
+                        .volume
+                        .to_integer()
+                        .ok_or_else(|| anyhow!("paper volume is not an integer"))?
+                        as u32,
                     number: v.number.as_ref().and_then(|v| v.to_string()),
                     year: v.year,
                     pages: v.pages.clone(),
@@ -305,7 +309,12 @@ impl MetaV1 {
                 .to_string(),
             description: self.initial.description.clone(),
             software_name: self.software.name.clone(),
-            software_version: self.software.version.as_deref().unwrap_or("NA").to_string(),
+            software_version: self
+                .software
+                .version
+                .as_deref()
+                .unwrap_or("NA")
+                .to_string(),
             toml_version: Some(2),
             user_accession: None,
             external_links,
@@ -314,7 +323,6 @@ impl MetaV1 {
             forcefield,
             forcefield_comments,
             protonation_method,
-            replicate_id: None,
             pdb_id,
             dois: None,
             uniprot_ids: if uniprot_ids.is_empty() {
@@ -328,10 +336,10 @@ impl MetaV1 {
             } else {
                 Some(ligands)
             },
-            solvents: if solvents.is_empty() {
+            solutes: if solutes.is_empty() {
                 None
             } else {
-                Some(solvents)
+                Some(solutes)
             },
             papers: if papers.is_empty() {
                 None
@@ -554,14 +562,17 @@ mod metav1_tests {
         let meta_v1 = res?;
         let meta_v2 = meta_v1.to_v2()?;
 
-        assert!(meta_v2
-            .short_description
-            .starts_with("8 ns simulation of the 5aom PDB entry (P04637)"));
+        assert!(
+            meta_v2
+                .short_description
+                .starts_with("8 ns simulation of the 5aom PDB entry (P04637)")
+        );
 
         let contributors = meta_v2.contributors;
         assert!(contributors.is_some());
 
-        let contributors = contributors.ok_or_else(|| anyhow::anyhow!("no contributors"))?;
+        let contributors =
+            contributors.ok_or_else(|| anyhow::anyhow!("no contributors"))?;
         assert_eq!(contributors.len(), 14);
 
         Ok(())

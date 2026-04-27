@@ -22,8 +22,6 @@ description = "An 8 ns simulation of the 5aom PDB entries which includes Uniprot
 
 user_accession = "ABC123"
 
-replicate_id = "XYZ"
-
 run_commands = "gmx_mpi mdrun -s fname.tpr -deffnm fname -v -c fname.pdb -cpi fname.cpt -maxh clock_time -noappend -update gpu -bonded gpu -pme gpu -pmefft gpu -nb gpu"
 
 pdb_id = "5am"
@@ -52,11 +50,11 @@ smiles = 'smiles_string'
 name = "AQE"
 smiles = "C1CC[C@@]2(CCCN(C2)c3ccnc4[nH]cc(c5sccn5)c34)NC1"
 
-[[solvents]]
+[[solutes]]
 name = " "
 concentration_mol_liter = 0
 
-[[solvents]]
+[[solutes]]
 name = "Chloride"
 concentration_mol_liter = 1.15
 

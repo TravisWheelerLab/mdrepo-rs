@@ -15,7 +15,6 @@
   "forcefield": "CHARMM36m",
   "forcefield_comments": "ligand params: CGenFF and SwissParam",
   "protonation_method": "PropKa",
-  "replicate_id": "MyReplicateGroupABC",
   "pdb_id": "5emo",
   "uniprot_ids": [
     "A0A0H2UWN8",
@@ -31,9 +30,9 @@
       "smiles": "CC(C)C1=CC(=C(C(=C1)C(C)C)C2=CSC(=N2)N(CCN(C)C)CC3=CN=CC=C3)C(C)C"
     }
   ],
-  "solvents": [
+  "solutes": [
     {
-      "name": "Sodium",
+      "name": "Na+",
       "concentration_mol_liter": 0.15
     }
   ],

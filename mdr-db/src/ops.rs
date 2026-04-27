@@ -531,7 +531,9 @@ pub fn list_pdbs(
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<Pdb>)> {
     use crate::schema::md_pdb::dsl::id;
-    let count = pdb_query(search.as_deref()).select(count_star()).first(conn)?;
+    let count = pdb_query(search.as_deref())
+        .select(count_star())
+        .first(conn)?;
     let results = pdb_query(search.as_deref())
         .order(id.desc())
         .limit(limit(lim))
@@ -664,7 +666,9 @@ pub fn list_pubs(
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<Pub>)> {
     use crate::schema::md_pub::dsl::id;
-    let count = pub_query(search.as_deref()).select(count_star()).first(conn)?;
+    let count = pub_query(search.as_deref())
+        .select(count_star())
+        .first(conn)?;
     let results = pub_query(search.as_deref())
         .order(id.desc())
         .limit(limit(lim))
@@ -1009,7 +1013,9 @@ pub fn list_software(
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<Software>)> {
     use crate::schema::md_software::dsl::id;
-    let count = software_query(search.as_deref()).select(count_star()).first(conn)?;
+    let count = software_query(search.as_deref())
+        .select(count_star())
+        .first(conn)?;
     let results = software_query(search.as_deref())
         .order(id.desc())
         .limit(limit(lim))
@@ -1051,14 +1057,14 @@ pub fn delete_software(conn: &mut PgConnection, rid: i64) -> QueryResult<usize> 
     diesel::delete(md_software::table.find(rid)).execute(conn)
 }
 
-// ── md_solvent ────────────────────────────────────────────────────────────────
+// ── md_solute ────────────────────────────────────────────────────────────────
 
-fn solvent_query(
+fn solute_query(
     search: Option<&str>,
     sim_id: Option<i64>,
-) -> md_solvent::BoxedQuery<'static, Pg> {
-    use crate::schema::md_solvent::dsl::*;
-    let mut q = md_solvent.into_boxed();
+) -> md_solute::BoxedQuery<'static, Pg> {
+    use crate::schema::md_solute::dsl::*;
+    let mut q = md_solute.into_boxed();
     if let Some(t) = search {
         let p = format!("%{t}%");
         q = q.filter(name.ilike(p));
@@ -1069,56 +1075,53 @@ fn solvent_query(
     q
 }
 
-pub fn list_solvents(
+pub fn list_solutes(
     conn: &mut PgConnection,
     search: Option<String>,
     sim_id: Option<i64>,
     lim: Option<i64>,
     offset: Option<i64>,
-) -> QueryResult<(i64, Vec<Solvent>)> {
-    use crate::schema::md_solvent::dsl::id;
-    let count = solvent_query(search.as_deref(), sim_id)
+) -> QueryResult<(i64, Vec<Solute>)> {
+    use crate::schema::md_solute::dsl::id;
+    let count = solute_query(search.as_deref(), sim_id)
         .select(count_star())
         .first(conn)?;
-    let results = solvent_query(search.as_deref(), sim_id)
+    let results = solute_query(search.as_deref(), sim_id)
         .order(id.desc())
         .limit(limit(lim))
         .offset(offset.unwrap_or(0))
-        .select(Solvent::as_select())
+        .select(Solute::as_select())
         .load(conn)?;
     Ok((count, results))
 }
 
-pub fn get_solvent(conn: &mut PgConnection, rid: i64) -> QueryResult<Solvent> {
-    md_solvent::table
+pub fn get_solute(conn: &mut PgConnection, rid: i64) -> QueryResult<Solute> {
+    md_solute::table
         .find(rid)
-        .select(Solvent::as_select())
+        .select(Solute::as_select())
         .first(conn)
 }
 
-pub fn insert_solvent(
-    conn: &mut PgConnection,
-    new: NewSolvent,
-) -> QueryResult<Solvent> {
-    diesel::insert_into(md_solvent::table)
+pub fn insert_solute(conn: &mut PgConnection, new: NewSolute) -> QueryResult<Solute> {
+    diesel::insert_into(md_solute::table)
         .values(&new)
-        .returning(Solvent::as_returning())
+        .returning(Solute::as_returning())
         .get_result(conn)
 }
 
-pub fn update_solvent(
+pub fn update_solute(
     conn: &mut PgConnection,
     rid: i64,
-    cs: SolventUpdate,
-) -> QueryResult<Solvent> {
-    diesel::update(md_solvent::table.find(rid))
+    cs: SoluteUpdate,
+) -> QueryResult<Solute> {
+    diesel::update(md_solute::table.find(rid))
         .set(&cs)
-        .returning(Solvent::as_returning())
+        .returning(Solute::as_returning())
         .get_result(conn)
 }
 
-pub fn delete_solvent(conn: &mut PgConnection, rid: i64) -> QueryResult<usize> {
-    diesel::delete(md_solvent::table.find(rid)).execute(conn)
+pub fn delete_solute(conn: &mut PgConnection, rid: i64) -> QueryResult<usize> {
+    diesel::delete(md_solute::table.find(rid)).execute(conn)
 }
 
 // ── md_submission_completed_event ─────────────────────────────────────────────
@@ -1278,7 +1281,9 @@ pub fn list_uniprots(
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<Uniprot>)> {
     use crate::schema::md_uniprot::dsl::id;
-    let count = uniprot_query(search.as_deref()).select(count_star()).first(conn)?;
+    let count = uniprot_query(search.as_deref())
+        .select(count_star())
+        .first(conn)?;
     let results = uniprot_query(search.as_deref())
         .order(id.desc())
         .limit(limit(lim))

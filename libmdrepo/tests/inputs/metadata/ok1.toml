@@ -14,7 +14,6 @@ run_commands = "gmx_mpi mdrun -s fname.tpr -deffnm fname -v -c fname.pdb -cpi fn
 forcefield = "ff14SB"
 forcefield_comments = "Also gaff2 for ligands"
 protonation_method = "AutoDockFR"
-replicate_id = "XYZ"
 pdb_id = "5aom"
 uniprot_ids = [
     "P04637",
@@ -39,11 +38,11 @@ smiles = "Oc1ccc(Cl)cc1NC(=O)C2CCNCC2"
 name = "AQE"
 smiles = "C1CC[C@@]2(CCCN(C2)c3ccnc4[nH]cc(c5sccn5)c34)NC1"
 
-[[solvents]]
+[[solutes]]
 name = "Na+"
 concentration_mol_liter = 0.15
 
-[[solvents]]
+[[solutes]]
 name = "Cl-"
 concentration_mol_liter = 0.15
 

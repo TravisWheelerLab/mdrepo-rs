@@ -27,7 +27,6 @@
   ],
   "forcefield": " ",
   "protonation_method": "AutoDockFR",
-  "replicate_id": "XYZ",
   "pdb_id": "5am",
   "uniprot_ids": [
     "P04637",
@@ -47,7 +46,7 @@
       "smiles": "C1CC[C@@]2(CCCN(C2)c3ccnc4[nH]cc(c5sccn5)c34)NC1"
     }
   ],
-  "solvents": [
+  "solutes": [
     {
       "name": " ",
       "concentration_mol_liter": 0.0

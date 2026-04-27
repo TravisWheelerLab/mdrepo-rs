@@ -416,14 +416,13 @@ pub struct ExportSimulation {
     pub integration_timestep_fs: u32,
     pub temperature_kelvin: u32,
     pub fasta_sequence: String,
-    pub replicate_id: Option<String>,
     pub water: Option<metadata::Water>,
     pub structure_hash: String,
     pub contributors: Vec<metadata::Contributor>,
     pub original_files: Vec<MdFile>,
     pub processed_files: Vec<MdFile>,
     pub ligands: Vec<metadata::Ligand>,
-    pub solvents: Vec<metadata::Solvent>,
+    pub solutes: Vec<metadata::Solute>,
     pub papers: Vec<metadata::Paper>,
 }
 

@@ -1,5 +1,5 @@
 use crate::{common::read_file, constants};
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use chrono::Datelike;
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow::Borrowed, collections::HashMap, ffi::OsStr, path::Path};
@@ -351,9 +351,9 @@ impl Meta {
                         .to_string(),
             }]),
             solutes: Some(vec![Solute {
-                name: "Sodium".to_string(),
+                name: "Na+".to_string(),
                 concentration_mol_liter: 0.15,
-            }),
+            }]),
             papers: None,
             dois: Some(vec!["10.1017/j.str.2019.08.032".to_string()]),
             contributors: Some(vec![Contributor {

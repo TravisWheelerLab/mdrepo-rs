@@ -182,7 +182,7 @@ diesel::table! {
 
 diesel::table! {
     use diesel::sql_types::*;
-    md_solvent (id) {
+    md_solute (id) {
         id -> Int8,
         name -> Varchar,
         concentration -> Float8,
@@ -356,7 +356,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     md_simulation_replicate_group,
     md_simulation_uniprot,
     md_software,
-    md_solvent,
+    md_solute,
     md_submission_completed_event,
     md_ticket,
     md_uniprot,
