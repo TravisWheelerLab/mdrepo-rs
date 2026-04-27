@@ -44,11 +44,11 @@
   ],
   "solvents": [
     {
-      "name": "Sodium",
+      "name": "Na+",
       "concentration_mol_liter": 0.15
     },
     {
-      "name": "Chloride",
+      "name": "Cl-",
       "concentration_mol_liter": 0.15
     }
   ],

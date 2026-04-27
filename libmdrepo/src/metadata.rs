@@ -1,5 +1,5 @@
 use crate::{common::read_file, constants};
-use anyhow::{Result, anyhow, bail};
+use anyhow::{anyhow, bail, Result};
 use chrono::Datelike;
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow::Borrowed, collections::HashMap, ffi::OsStr, path::Path};
@@ -80,10 +80,6 @@ pub struct Meta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub protonation_method: Option<String>,
 
-    #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub replicate_id: Option<String>,
-
     #[validate(regex(path = *constants::PDB_REGEX))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pdb_id: Option<String>,
@@ -105,7 +101,7 @@ pub struct Meta {
 
     #[validate(nested)]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub solvents: Option<Vec<Solvent>>,
+    pub solutes: Option<Vec<Solute>>,
 
     #[validate(custom(function = "validate_dois"))]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -342,7 +338,6 @@ impl Meta {
                 "ligand params: CGenFF and SwissParam".to_string(),
             ),
             protonation_method: Some("PropKa".to_string()),
-            replicate_id: Some("MyReplicateGroupABC".to_string()),
             pdb_id: Some("5emo".to_string()),
             uniprot_ids: Some(vec!["A0A0H2UWN8".to_string(), "S8G8I1".to_string()]),
             water: Some(Water {
@@ -355,10 +350,10 @@ impl Meta {
                     "CC(C)C1=CC(=C(C(=C1)C(C)C)C2=CSC(=N2)N(CCN(C)C)CC3=CN=CC=C3)C(C)C"
                         .to_string(),
             }]),
-            solvents: Some(vec![Solvent {
+            solutes: Some(vec![Solute {
                 name: "Sodium".to_string(),
                 concentration_mol_liter: 0.15,
-            }]),
+            }),
             papers: None,
             dois: Some(vec!["10.1017/j.str.2019.08.032".to_string()]),
             contributors: Some(vec![Contributor {
@@ -391,12 +386,11 @@ impl Meta {
             forcefield: None,
             forcefield_comments: None,
             protonation_method: None,
-            replicate_id: None,
             pdb_id: None,
             uniprot_ids: None,
             water: None,
             ligands: None,
-            solvents: None,
+            solutes: None,
             papers: None,
             dois: None,
             contributors: None,
@@ -484,8 +478,8 @@ pub struct Ligand {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Validate)]
-pub struct Solvent {
-    #[validate(custom(function = "validate_solvent_name"))]
+pub struct Solute {
+    #[validate(custom(function = "validate_solute_name"))]
     pub name: String,
 
     #[validate(
@@ -536,9 +530,9 @@ fn validate_water_model(model: &str) -> Result<(), ValidationError> {
     Ok(())
 }
 
-fn validate_solvent_name(name: &str) -> Result<(), ValidationError> {
+fn validate_solute_name(name: &str) -> Result<(), ValidationError> {
     if !constants::VALID_SOLVENT_NAME.contains(&name) {
-        return Err(ValidationError::new("solvent_name").with_message(
+        return Err(ValidationError::new("solute_name").with_message(
             format!(
                 r#"invalid, choose from {}"#,
                 constants::VALID_SOLVENT_NAME.join(", ")
@@ -790,27 +784,27 @@ mod proptest_tests {
             prop_assert!(water.validate().is_err());
         }
 
-        // --- Range: Solvent concentration ---
+        // --- Range: Solute concentration ---
 
         #[test]
-        fn valid_solvent_concentration_passes(conc in 0.001f64..0.999f64) {
-            let solvent = Solvent {
-                name: "Sodium".to_string(),
+        fn valid_solute_concentration_passes(conc in 0.001f64..0.999f64) {
+            let solute = Solute {
+                name: "Na".to_string(),
                 concentration_mol_liter: conc,
             };
-            prop_assert!(solvent.validate().is_ok());
+            prop_assert!(solute.validate().is_ok());
         }
 
         #[test]
-        fn out_of_range_solvent_concentration_fails(conc in prop_oneof![
+        fn out_of_range_solute_concentration_fails(conc in prop_oneof![
             -10.0f64..=0.0f64,
             1.0f64..10.0f64,
         ]) {
-            let solvent = Solvent {
-                name: "Sodium".to_string(),
+            let solute = Solute {
+                name: "Na+".to_string(),
                 concentration_mol_liter: conc,
             };
-            prop_assert!(solvent.validate().is_err());
+            prop_assert!(solute.validate().is_err());
         }
 
         // --- Range: Paper year ---
@@ -1029,12 +1023,12 @@ mod tests {
             }
         }
 
-        assert!(meta.solvents.is_some());
-        if let Some(solvents) = &meta.solvents {
-            assert_eq!(solvents.len(), 2);
-            if let Some(solvent) = solvents.first() {
-                assert_eq!(solvent.name, "Sodium".to_string());
-                assert_eq!(solvent.concentration_mol_liter, 0.15);
+        assert!(meta.solutes.is_some());
+        if let Some(solutes) = &meta.solutes {
+            assert_eq!(solutes.len(), 2);
+            if let Some(solute) = solutes.first() {
+                assert_eq!(solute.name, "Na+".to_string());
+                assert_eq!(solute.concentration_mol_liter, 0.15);
             }
         }
 
@@ -1092,7 +1086,8 @@ mod tests {
             }
         }
 
-        assert!(&meta.validate().is_ok());
+        let errors = meta.check(None);
+        assert!(&errors.is_empty());
 
         Ok(())
     }
@@ -1133,10 +1128,10 @@ mod tests {
             r#"ligands[1].smiles: value "smiles_string" invalid"#,
             r#"pdb_id: value "5am" invalid"#,
             r#"short_description: value " " invalid"#,
-            r#"solvents[1].concentration_mol_liter: value 0.0 must be > 0.0 and < 1.0"#,
-            r#"solvents[1].name: value " " invalid, choose from Sodium, Chloride, Potassium, Phosphoric acid"#,
-            r#"solvents[2].concentration_mol_liter: value 1.15 must be > 0.0 and < 1.0"#,
-            r#"solvents[2].name: value "Cl" invalid, choose from Sodium, Chloride, Potassium, Phosphoric acid"#,
+            r#"solutes[1].concentration_mol_liter: value 0.0 must be > 0.0 and < 1.0"#,
+            r#"solutes[1].name: value " " invalid, choose from Cl-, Cl, K, K+, Na, Na+, Phosphoric acid, Urea"#,
+            r#"solutes[2].concentration_mol_liter: value 1.15 must be > 0.0 and < 1.0"#,
+            r#"solutes[2].name: value "Chloride" invalid, choose from Cl-, Cl, K, K+, Na, Na+, Phosphoric acid, Urea"#,
             r#"structure_file_name: filename is missing extension"#,
             r#"structure_file_name: value " " invalid"#,
             r#"temperature_kelvin: value 0 must be >= 275 and <= 700"#,

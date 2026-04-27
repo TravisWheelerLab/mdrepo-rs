@@ -57,7 +57,7 @@ name = " "
 concentration_mol_liter = 0
 
 [[solvents]]
-name = "Cl"
+name = "Chloride"
 concentration_mol_liter = 1.15
 
 [[contributors]]
