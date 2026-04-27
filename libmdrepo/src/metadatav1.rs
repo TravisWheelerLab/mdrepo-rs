@@ -258,7 +258,11 @@ impl MetaV1 {
                     title: v.title.clone(),
                     authors: v.authors.clone(),
                     journal: v.journal.clone(),
-                    volume: v.volume.to_integer().ok_or_else(|| anyhow!("paper volume is not an integer"))? as u32,
+                    volume: v
+                        .volume
+                        .to_integer()
+                        .ok_or_else(|| anyhow!("paper volume is not an integer"))?
+                        as u32,
                     number: v.number.as_ref().and_then(|v| v.to_string()),
                     year: v.year,
                     pages: v.pages.clone(),
@@ -305,7 +309,12 @@ impl MetaV1 {
                 .to_string(),
             description: self.initial.description.clone(),
             software_name: self.software.name.clone(),
-            software_version: self.software.version.as_deref().unwrap_or("NA").to_string(),
+            software_version: self
+                .software
+                .version
+                .as_deref()
+                .unwrap_or("NA")
+                .to_string(),
             toml_version: Some(2),
             user_accession: None,
             external_links,
@@ -561,7 +570,8 @@ mod metav1_tests {
         let contributors = meta_v2.contributors;
         assert!(contributors.is_some());
 
-        let contributors = contributors.ok_or_else(|| anyhow::anyhow!("no contributors"))?;
+        let contributors =
+            contributors.ok_or_else(|| anyhow::anyhow!("no contributors"))?;
         assert_eq!(contributors.len(), 14);
 
         Ok(())

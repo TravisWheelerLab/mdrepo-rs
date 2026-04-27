@@ -39,7 +39,11 @@ fn run(args: Args) -> Result<()> {
     };
     let mut conn = mdr_db::connect(&url)?;
     let sim = ops::get_simulation(&mut conn, args.simulation_id)?;
-    let software = ops::get_software(&mut conn, sim.software_id.ok_or_else(|| anyhow!("simulation has no software_id"))?)?;
+    let software = ops::get_software(
+        &mut conn,
+        sim.software_id
+            .ok_or_else(|| anyhow!("simulation has no software_id"))?,
+    )?;
     let pdb = sim
         .pdb_id
         .map(|pdb_pk| ops::get_pdb(&mut conn, pdb_pk))
@@ -158,14 +162,14 @@ fn run(args: Args) -> Result<()> {
         )
     };
 
-    let (_, solvents_res) =
-        ops::list_solvents(&mut conn, None, Some(args.simulation_id), None, None)?;
+    let (_, solutes_res) =
+        ops::list_solutes(&mut conn, None, Some(args.simulation_id), None, None)?;
 
-    let solvents = if solvents_res.is_empty() {
+    let solutes = if solutes_res.is_empty() {
         None
     } else {
         Some(
-            solvents_res
+            solutes_res
                 .iter()
                 .map(|val| metadata::Solvent {
                     name: val.name.clone(),
@@ -208,7 +212,10 @@ fn run(args: Args) -> Result<()> {
                 .iter()
                 .map(|val| -> Result<metadata::Contributor> {
                     Ok(metadata::Contributor {
-                        name: val.name.clone().ok_or_else(|| anyhow!("contributor has no name"))?,
+                        name: val
+                            .name
+                            .clone()
+                            .ok_or_else(|| anyhow!("contributor has no name"))?,
                         email: val.email.clone(),
                         institution: val.institution.clone(),
                         orcid: val.orcid.clone(),
@@ -244,12 +251,23 @@ fn run(args: Args) -> Result<()> {
     let meta = metadata::Meta {
         lead_contributor_orcid: lead_contributor_orcid
             .unwrap_or(DEFAULT_ORCID.to_string()),
-        trajectory_file_name: trajectory_file_name.ok_or_else(|| anyhow!("simulation has no trajectory file"))?,
-        structure_file_name: structure_file_name.ok_or_else(|| anyhow!("simulation has no structure file"))?,
-        topology_file_name: topology_file_name.ok_or_else(|| anyhow!("simulation has no topology file"))?,
-        temperature_kelvin: sim.temperature.ok_or_else(|| anyhow!("simulation has no temperature"))? as u32,
-        integration_timestep_fs: sim.integration_timestep_fs.ok_or_else(|| anyhow!("simulation has no integration timestep"))? as u32,
-        short_description: sim.short_description.ok_or_else(|| anyhow!("simulation has no short description"))?,
+        trajectory_file_name: trajectory_file_name
+            .ok_or_else(|| anyhow!("simulation has no trajectory file"))?,
+        structure_file_name: structure_file_name
+            .ok_or_else(|| anyhow!("simulation has no structure file"))?,
+        topology_file_name: topology_file_name
+            .ok_or_else(|| anyhow!("simulation has no topology file"))?,
+        temperature_kelvin: sim
+            .temperature
+            .ok_or_else(|| anyhow!("simulation has no temperature"))?
+            as u32,
+        integration_timestep_fs: sim
+            .integration_timestep_fs
+            .ok_or_else(|| anyhow!("simulation has no integration timestep"))?
+            as u32,
+        short_description: sim
+            .short_description
+            .ok_or_else(|| anyhow!("simulation has no short description"))?,
         software_name: software.name,
         software_version: software.version.unwrap_or("".to_string()),
         mdrepo_id: Some(format!("MDR{:08}", args.simulation_id)),
@@ -260,7 +278,6 @@ fn run(args: Args) -> Result<()> {
         forcefield: sim.forcefield,
         forcefield_comments: sim.forcefield_comments,
         protonation_method: sim.protonation_method,
-        replicate_id: None, // TODO fix?
         pdb_id: pdb.map(|val| val.pdb_id),
         uniprot_ids: if uniprot_ids.is_empty() {
             None
@@ -274,7 +291,7 @@ fn run(args: Args) -> Result<()> {
             Some(additional_files)
         },
         ligands,
-        solvents,
+        solutes,
         dois: None,
         papers: if papers.is_empty() {
             None

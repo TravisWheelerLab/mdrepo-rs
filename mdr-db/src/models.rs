@@ -10,7 +10,16 @@ use crate::schema::*;
 
 // ── md_contribution ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Associations, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug,
+    Queryable,
+    Selectable,
+    Identifiable,
+    Associations,
+    Serialize,
+    Deserialize,
+    ToSchema,
+)]
 #[diesel(table_name = md_contribution)]
 #[diesel(belongs_to(Simulation))]
 pub struct Contribution {
@@ -47,7 +56,16 @@ pub struct ContributionUpdate {
 
 // ── md_external_link ──────────────────────────────────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Associations, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug,
+    Queryable,
+    Selectable,
+    Identifiable,
+    Associations,
+    Serialize,
+    Deserialize,
+    ToSchema,
+)]
 #[diesel(table_name = md_external_link)]
 #[diesel(belongs_to(Simulation))]
 pub struct ExternalLink {
@@ -75,7 +93,9 @@ pub struct ExternalLinkUpdate {
 
 // ── md_feature_switch ─────────────────────────────────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug, Queryable, Selectable, Identifiable, Serialize, Deserialize, ToSchema,
+)]
 #[diesel(table_name = md_feature_switch)]
 pub struct FeatureSwitch {
     pub id: i64,
@@ -102,7 +122,16 @@ pub struct FeatureSwitchUpdate {
 
 // ── md_frontend_download_instance ────────────────────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Associations, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug,
+    Queryable,
+    Selectable,
+    Identifiable,
+    Associations,
+    Serialize,
+    Deserialize,
+    ToSchema,
+)]
 #[diesel(table_name = md_frontend_download_instance)]
 #[diesel(belongs_to(Simulation))]
 #[diesel(belongs_to(User))]
@@ -133,7 +162,16 @@ pub struct DownloadInstanceUpdate {
 
 // ── md_frontend_download_instance_processed_files ────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Associations, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug,
+    Queryable,
+    Selectable,
+    Identifiable,
+    Associations,
+    Serialize,
+    Deserialize,
+    ToSchema,
+)]
 #[diesel(table_name = md_frontend_download_instance_processed_files)]
 #[diesel(belongs_to(DownloadInstance, foreign_key = frontenddownloadinstance_id))]
 #[diesel(belongs_to(ProcessedFile, foreign_key = simulationprocessedfile_id))]
@@ -159,7 +197,16 @@ pub struct DownloadProcessedFileUpdate {
 
 // ── md_frontend_download_instance_uploaded_files ─────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Associations, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug,
+    Queryable,
+    Selectable,
+    Identifiable,
+    Associations,
+    Serialize,
+    Deserialize,
+    ToSchema,
+)]
 #[diesel(table_name = md_frontend_download_instance_uploaded_files)]
 #[diesel(belongs_to(DownloadInstance, foreign_key = frontenddownloadinstance_id))]
 #[diesel(belongs_to(UploadedFile, foreign_key = simulationuploadedfile_id))]
@@ -185,7 +232,16 @@ pub struct DownloadUploadedFileUpdate {
 
 // ── md_ligand ─────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Associations, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug,
+    Queryable,
+    Selectable,
+    Identifiable,
+    Associations,
+    Serialize,
+    Deserialize,
+    ToSchema,
+)]
 #[diesel(table_name = md_ligand)]
 #[diesel(belongs_to(Simulation))]
 pub struct Ligand {
@@ -213,7 +269,9 @@ pub struct LigandUpdate {
 
 // ── md_pdb ────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug, Queryable, Selectable, Identifiable, Serialize, Deserialize, ToSchema,
+)]
 #[diesel(table_name = md_pdb)]
 pub struct Pdb {
     pub id: i64,
@@ -240,7 +298,16 @@ pub struct PdbUpdate {
 
 // ── md_processed_file ─────────────────────────────────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Associations, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug,
+    Queryable,
+    Selectable,
+    Identifiable,
+    Associations,
+    Serialize,
+    Deserialize,
+    ToSchema,
+)]
 #[diesel(table_name = md_processed_file)]
 #[diesel(belongs_to(Simulation))]
 pub struct ProcessedFile {
@@ -280,7 +347,9 @@ pub struct ProcessedFileUpdate {
 
 // ── md_pub ────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug, Queryable, Selectable, Identifiable, Serialize, Deserialize, ToSchema,
+)]
 #[diesel(table_name = md_pub)]
 pub struct Pub {
     pub id: i64,
@@ -322,7 +391,16 @@ pub struct PubUpdate {
 
 // ── md_simulation ─────────────────────────────────────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Associations, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug,
+    Queryable,
+    Selectable,
+    Identifiable,
+    Associations,
+    Serialize,
+    Deserialize,
+    ToSchema,
+)]
 #[diesel(table_name = md_simulation)]
 #[diesel(belongs_to(Software))]
 #[diesel(belongs_to(Ticket, foreign_key = md_repo_ticket_id))]
@@ -407,7 +485,16 @@ pub struct SimulationUpdate {
 
 // ── md_simulation_pub ─────────────────────────────────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Associations, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug,
+    Queryable,
+    Selectable,
+    Identifiable,
+    Associations,
+    Serialize,
+    Deserialize,
+    ToSchema,
+)]
 #[diesel(table_name = md_simulation_pub)]
 #[diesel(belongs_to(Simulation))]
 #[diesel(belongs_to(Pub))]
@@ -433,7 +520,9 @@ pub struct SimulationPubUpdate {
 
 // ── md_simulation_replicate_group ─────────────────────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug, Queryable, Selectable, Identifiable, Serialize, Deserialize, ToSchema,
+)]
 #[diesel(table_name = md_simulation_replicate_group)]
 pub struct ReplicateGroup {
     pub id: i64,
@@ -454,7 +543,16 @@ pub struct ReplicateGroupUpdate {
 
 // ── md_simulation_uniprot ─────────────────────────────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Associations, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug,
+    Queryable,
+    Selectable,
+    Identifiable,
+    Associations,
+    Serialize,
+    Deserialize,
+    ToSchema,
+)]
 #[diesel(table_name = md_simulation_uniprot)]
 #[diesel(belongs_to(Simulation))]
 #[diesel(belongs_to(Uniprot))]
@@ -480,7 +578,9 @@ pub struct SimulationUniprotUpdate {
 
 // ── md_software ───────────────────────────────────────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug, Queryable, Selectable, Identifiable, Serialize, Deserialize, ToSchema,
+)]
 #[diesel(table_name = md_software)]
 pub struct Software {
     pub id: i64,
@@ -504,7 +604,16 @@ pub struct SoftwareUpdate {
 
 // ── md_solvent ────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Associations, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug,
+    Queryable,
+    Selectable,
+    Identifiable,
+    Associations,
+    Serialize,
+    Deserialize,
+    ToSchema,
+)]
 #[diesel(table_name = md_solvent)]
 #[diesel(belongs_to(Simulation))]
 pub struct Solvent {
@@ -532,7 +641,9 @@ pub struct SolventUpdate {
 
 // ── md_submission_completed_event ─────────────────────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug, Queryable, Selectable, Identifiable, Serialize, Deserialize, ToSchema,
+)]
 #[diesel(table_name = md_submission_completed_event)]
 pub struct SubmissionEvent {
     pub id: i64,
@@ -555,7 +666,16 @@ pub struct SubmissionEventUpdate {
 
 // ── md_ticket ─────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Associations, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug,
+    Queryable,
+    Selectable,
+    Identifiable,
+    Associations,
+    Serialize,
+    Deserialize,
+    ToSchema,
+)]
 #[diesel(table_name = md_ticket)]
 #[diesel(belongs_to(User, foreign_key = created_by_id))]
 pub struct Ticket {
@@ -616,7 +736,9 @@ pub struct TicketUpdate {
 
 // ── md_uniprot ────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug, Queryable, Selectable, Identifiable, Serialize, Deserialize, ToSchema,
+)]
 #[diesel(table_name = md_uniprot)]
 pub struct Uniprot {
     pub id: i64,
@@ -646,7 +768,16 @@ pub struct UniprotUpdate {
 
 // ── md_upload_instance ────────────────────────────────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Associations, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug,
+    Queryable,
+    Selectable,
+    Identifiable,
+    Associations,
+    Serialize,
+    Deserialize,
+    ToSchema,
+)]
 #[diesel(table_name = md_upload_instance)]
 #[diesel(belongs_to(Simulation))]
 #[diesel(belongs_to(User))]
@@ -690,7 +821,16 @@ pub struct UploadInstanceUpdate {
 
 // ── md_upload_instance_message ────────────────────────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Associations, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug,
+    Queryable,
+    Selectable,
+    Identifiable,
+    Associations,
+    Serialize,
+    Deserialize,
+    ToSchema,
+)]
 #[diesel(table_name = md_upload_instance_message)]
 #[diesel(belongs_to(UploadInstance, foreign_key = simulation_upload_id))]
 pub struct UploadMessage {
@@ -722,7 +862,16 @@ pub struct UploadMessageUpdate {
 
 // ── md_uploaded_file ──────────────────────────────────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Associations, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug,
+    Queryable,
+    Selectable,
+    Identifiable,
+    Associations,
+    Serialize,
+    Deserialize,
+    ToSchema,
+)]
 #[diesel(table_name = md_uploaded_file)]
 #[diesel(belongs_to(Simulation))]
 pub struct UploadedFile {
@@ -765,7 +914,9 @@ pub struct UploadedFileUpdate {
 
 // ── md_user ───────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug, Queryable, Selectable, Identifiable, Serialize, Deserialize, ToSchema,
+)]
 #[diesel(table_name = md_user)]
 pub struct User {
     pub id: i64,
@@ -819,7 +970,16 @@ pub struct UserUpdate {
 
 // ── socialaccount_socialaccount ────────────────────────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Associations, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug,
+    Queryable,
+    Selectable,
+    Identifiable,
+    Associations,
+    Serialize,
+    Deserialize,
+    ToSchema,
+)]
 #[diesel(table_name = socialaccount_socialaccount)]
 #[diesel(belongs_to(User))]
 pub struct SocialAccount {
@@ -856,7 +1016,9 @@ pub struct SocialAccountUpdate {
 
 // ── socialaccount_socialapp ────────────────────────────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug, Queryable, Selectable, Identifiable, Serialize, Deserialize, ToSchema,
+)]
 #[diesel(table_name = socialaccount_socialapp)]
 pub struct SocialApp {
     pub id: i32,
@@ -889,7 +1051,16 @@ pub struct SocialAppUpdate {
 
 // ── socialaccount_socialapp_sites ──────────────────────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Associations, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug,
+    Queryable,
+    Selectable,
+    Identifiable,
+    Associations,
+    Serialize,
+    Deserialize,
+    ToSchema,
+)]
 #[diesel(table_name = socialaccount_socialapp_sites)]
 #[diesel(belongs_to(SocialApp, foreign_key = socialapp_id))]
 pub struct SocialAppSite {
@@ -914,7 +1085,16 @@ pub struct SocialAppSiteUpdate {
 
 // ── socialaccount_socialtoken ──────────────────────────────────────────────────
 
-#[derive(Debug, Queryable, Selectable, Identifiable, Associations, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug,
+    Queryable,
+    Selectable,
+    Identifiable,
+    Associations,
+    Serialize,
+    Deserialize,
+    ToSchema,
+)]
 #[diesel(table_name = socialaccount_socialtoken)]
 #[diesel(belongs_to(SocialAccount, foreign_key = account_id))]
 #[diesel(belongs_to(SocialApp, foreign_key = app_id))]

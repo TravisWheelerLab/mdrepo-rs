@@ -3,7 +3,7 @@ use crate::types::{
     ImportResult, InferredLigand, MdFile, PdbEntry, PdbResponse, ProcessArgs,
     ProcessedFiles, PushResult, RmsdRmsf, UniprotDb, UniprotEntry, UniprotResponse,
 };
-use anyhow::{Result, anyhow, bail};
+use anyhow::{anyhow, bail, Result};
 use dotenvy::dotenv;
 use libmdrepo::{
     common::{file_exists, get_md5, read_file},
@@ -791,14 +791,13 @@ pub fn make_import_json(
         rmsf_values: rmsd_rmsf.rmsf,
         temperature_kelvin: meta.temperature_kelvin,
         fasta_sequence,
-        replicate_id: meta.replicate_id,
         water: meta.water,
         structure_hash,
         contributors: meta.contributors.unwrap_or_default(),
         original_files,
         processed_files: processed_export,
         ligands,
-        solvents: meta.solvents.unwrap_or_default(),
+        solutes: meta.solutes.unwrap_or_default(),
         papers,
     };
 
