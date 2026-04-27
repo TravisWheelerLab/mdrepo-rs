@@ -25,7 +25,7 @@ use which::which;
 
 // ── BLAST parameters ──────────────────────────────────────────────────────────
 const BLAST_EVALUE: &str = "1e-5";
-const BLAST_NUM_THREADS: &str = "4";
+const BLAST_NUM_THREADS: &str = "16";
 const BLAST_MAX_TARGET_SEQS_SWISSPROT: &str = "20";
 const BLAST_MAX_TARGET_SEQS_TREMBL: &str = "100";
 const BLAST_MIN_PIDENT: f64 = 100.0;
