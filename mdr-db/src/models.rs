@@ -434,7 +434,7 @@ pub struct Simulation {
     pub pdb_id: Option<i64>,
     pub is_public: bool,
     pub fasta_sequence: Option<String>,
-    pub user_accession: Option<String>,
+    pub alias: Option<String>,
 }
 
 #[derive(Debug, Insertable, Deserialize)]
@@ -457,7 +457,7 @@ pub struct NewSimulation {
     pub is_public: bool,
     pub protonation_method: Option<String>,
     pub fasta_sequence: Option<String>,
-    pub user_accession: Option<String>,
+    pub alias: Option<String>,
     pub pdb_id: Option<i64>,
 }
 
@@ -479,7 +479,7 @@ pub struct SimulationUpdate {
     pub is_public: Option<bool>,
     pub protonation_method: Option<Option<String>>,
     pub fasta_sequence: Option<Option<String>>,
-    pub user_accession: Option<Option<String>>,
+    pub alias: Option<Option<String>>,
     pub pdb_id: Option<Option<i64>>,
 }
 

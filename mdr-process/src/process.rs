@@ -772,7 +772,7 @@ pub fn make_import_json(
         simulation_id: reprocess_simulation_id,
         lead_contributor_orcid: meta.lead_contributor_orcid,
         unique_file_hash_string,
-        user_accession: meta.user_accession,
+        alias: meta.alias,
         description: meta.description,
         short_description: meta.short_description,
         run_commands: meta.run_commands,

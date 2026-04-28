@@ -141,7 +141,7 @@ diesel::table! {
         pdb_id -> Nullable<Int8>,
         is_public -> Bool,
         fasta_sequence -> Nullable<Text>,
-        user_accession -> Nullable<Text>,
+        alias -> Nullable<Text>,
     }
 }
 

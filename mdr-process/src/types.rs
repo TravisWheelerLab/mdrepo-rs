@@ -397,7 +397,7 @@ pub struct ExportSimulation {
     pub simulation_id: Option<u32>,
     pub lead_contributor_orcid: String,
     pub unique_file_hash_string: String,
-    pub user_accession: Option<String>,
+    pub alias: Option<String>,
     pub short_description: String,
     pub description: Option<String>,
     pub software_name: String,

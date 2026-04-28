@@ -2,7 +2,7 @@ use crate::{
     common::read_file,
     metadata::{self, Meta},
 };
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use toml::value::Value as TomlValue;
@@ -316,7 +316,7 @@ impl MetaV1 {
                 .unwrap_or("NA")
                 .to_string(),
             toml_version: Some(2),
-            user_accession: None,
+            alias: None,
             external_links,
             run_commands: self.initial.commands.clone(),
             additional_files,
@@ -562,11 +562,9 @@ mod metav1_tests {
         let meta_v1 = res?;
         let meta_v2 = meta_v1.to_v2()?;
 
-        assert!(
-            meta_v2
-                .short_description
-                .starts_with("8 ns simulation of the 5aom PDB entry (P04637)")
-        );
+        assert!(meta_v2
+            .short_description
+            .starts_with("8 ns simulation of the 5aom PDB entry (P04637)"));
 
         let contributors = meta_v2.contributors;
         assert!(contributors.is_some());
