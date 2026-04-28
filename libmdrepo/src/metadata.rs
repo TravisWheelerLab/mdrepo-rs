@@ -332,7 +332,11 @@ impl Meta {
                 label: Some("My Link".to_string()),
             }]),
             run_commands: Some("gmx_mpi mdrun".to_string()),
-            additional_files: None,
+            additional_files: Some(vec![AdditionalFile {
+                file_name: "README.txt".to_string(),
+                file_type: "User-defined file".to_string(),
+                description: Some("Documentation of methods".to_string()),
+            }]),
             forcefield: Some("CHARMM36m".to_string()),
             forcefield_comments: Some(
                 "ligand params: CGenFF and SwissParam".to_string(),
@@ -350,10 +354,16 @@ impl Meta {
                     "CC(C)C1=CC(=C(C(=C1)C(C)C)C2=CSC(=N2)N(CCN(C)C)CC3=CN=CC=C3)C(C)C"
                         .to_string(),
             }]),
-            solutes: Some(vec![Solute {
-                name: "Na+".to_string(),
-                concentration_mol_liter: 0.15,
-            }]),
+            solutes: Some(vec![
+                Solute {
+                    name: "Na+".to_string(),
+                    concentration_mol_liter: 0.15,
+                },
+                Solute {
+                    name: "Cl-".to_string(),
+                    concentration_mol_liter: 0.15,
+                },
+            ]),
             papers: None,
             dois: Some(vec!["10.1017/j.str.2019.08.032".to_string()]),
             contributors: Some(vec![Contributor {
@@ -484,8 +494,8 @@ pub struct Solute {
 
     #[validate(
        range(
-           exclusive_min = constants::SOLVENT_CONCENTRATION_EXCLUSIVE_MIN,
-           exclusive_max = constants::SOLVENT_CONCENTRATION_EXCLUSIVE_MAX
+           exclusive_min = constants::SOLUTE_CONCENTRATION_EXCLUSIVE_MIN,
+           exclusive_max = constants::SOLUTE_CONCENTRATION_EXCLUSIVE_MAX
        )
     )]
     pub concentration_mol_liter: f64,
@@ -531,11 +541,11 @@ fn validate_water_model(model: &str) -> Result<(), ValidationError> {
 }
 
 fn validate_solute_name(name: &str) -> Result<(), ValidationError> {
-    if !constants::VALID_SOLVENT_NAME.contains(&name) {
+    if !constants::VALID_SOLUTE_NAME.contains(&name) {
         return Err(ValidationError::new("solute_name").with_message(
             format!(
                 r#"invalid, choose from {}"#,
-                constants::VALID_SOLVENT_NAME.join(", ")
+                constants::VALID_SOLUTE_NAME.join(", ")
             )
             .into(),
         ));
