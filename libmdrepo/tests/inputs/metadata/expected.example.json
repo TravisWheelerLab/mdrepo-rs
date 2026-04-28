@@ -24,6 +24,13 @@
     "model": "TIP3P",
     "density_kg_m3": 986.0
   },
+  "additional_files": [
+    {
+      "file_name": "README.txt",
+      "file_type": "User-defined file",
+      "description": "Documentation of methods"
+    }
+  ],
   "ligands": [
     {
       "name": "Foropafant",
@@ -33,6 +40,10 @@
   "solutes": [
     {
       "name": "Na+",
+      "concentration_mol_liter": 0.15
+    },
+    {
+      "name": "Cl-",
       "concentration_mol_liter": 0.15
     }
   ],

@@ -25,12 +25,21 @@ dois = ["10.1017/j.str.2019.08.032"]
 model = "TIP3P"
 density_kg_m3 = 986.0
 
+[[additional_files]]
+file_name = "README.txt"
+file_type = "User-defined file"
+description = "Documentation of methods"
+
 [[ligands]]
 name = "Foropafant"
 smiles = "CC(C)C1=CC(=C(C(=C1)C(C)C)C2=CSC(=N2)N(CCN(C)C)CC3=CN=CC=C3)C(C)C"
 
 [[solutes]]
 name = "Na+"
+concentration_mol_liter = 0.15
+
+[[solutes]]
+name = "Cl-"
 concentration_mol_liter = 0.15
 
 [[external_links]]
