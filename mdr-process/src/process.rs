@@ -610,11 +610,7 @@ pub fn make_import_json(
     let duration =
         get_duration(&processed_files.full_xtc, meta.integration_timestep_fs)?;
 
-    let inferred_ligands = get_inferred_ligands(
-        &processed_files.min_pdb,
-        &processed_files.min_gro,
-        script_dir,
-    )?;
+    let inferred_ligands = get_inferred_ligands(&processed_files.min_pdb, script_dir)?;
 
     let unique_file_hash_string = get_unique_file_hash(&meta, input_dir);
 
@@ -931,7 +927,6 @@ pub fn check_ligand(
 // --------------------------------------------------
 pub fn get_inferred_ligands(
     min_pdb: &Path,
-    min_gro: &Path,
     script_dir: &Path,
 ) -> Result<Vec<InferredLigand>> {
     let processed_dir = min_pdb
@@ -949,10 +944,7 @@ pub fn get_inferred_ligands(
             "run",
             mol_tools.to_string_lossy().as_ref(),
             "both",
-            "--pdb",
             min_pdb.to_string_lossy().as_ref(),
-            "--gro",
-            min_gro.to_string_lossy().as_ref(),
             "--outfile",
             out_file.to_string_lossy().as_ref(),
         ]);
