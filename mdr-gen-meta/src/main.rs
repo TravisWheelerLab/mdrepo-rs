@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use clap::Parser;
 use dotenvy::dotenv;
 use libmdrepo::{constants, metadata};
@@ -216,9 +216,9 @@ fn run(args: Args) -> Result<()> {
                             .name
                             .clone()
                             .ok_or_else(|| anyhow!("contributor has no name"))?,
-                        email: val.email.clone(),
-                        institution: val.institution.clone(),
-                        orcid: val.orcid.clone(),
+                        email: empty_to_none(val.email.clone()),
+                        institution: empty_to_none(val.institution.clone()),
+                        orcid: empty_to_none(val.orcid.clone()),
                     })
                 })
                 .collect::<Result<Vec<_>>>()?,
@@ -353,4 +353,8 @@ fn guess_format(filename: &str) -> FileFormat {
             _ => FileFormat::Toml,
         }
     }
+}
+
+fn empty_to_none(val: Option<String>) -> Option<String> {
+    val.map_or(None, |v| if v.is_empty() { None } else { Some(v.clone()) })
 }
