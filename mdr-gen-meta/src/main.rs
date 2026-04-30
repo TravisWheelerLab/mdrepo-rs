@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow, bail};
+use anyhow::{anyhow, bail, Result};
 use clap::Parser;
 use dotenvy::dotenv;
 use libmdrepo::{constants, metadata};
@@ -309,9 +309,10 @@ fn run(args: Args) -> Result<()> {
     } else {
         None
     };
+
     let errors = meta.check(opts);
     if !errors.is_empty() {
-        bail!("Errors!\n{}", errors.join("\n"));
+        eprintln!("Errors:\n{}", errors.join("\n"));
     }
 
     let mut out_file = open_outfile(&args.outfile)?;
