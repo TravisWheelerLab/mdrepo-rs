@@ -651,7 +651,7 @@ pub fn make_import_json(
         for ligand in inferred_ligands {
             let name = ligand
                 .name
-                .common_name
+                .best_name
                 .unwrap_or(ligand.name.iupac_name.unwrap_or("NA".to_string()));
 
             ligands.push({
