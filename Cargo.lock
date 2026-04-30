@@ -1499,6 +1499,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mdr-export"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "diesel",
+ "dotenvy",
+ "libmdrepo",
+ "mdr-db",
+]
+
+[[package]]
 name = "mdr-gen-meta"
 version = "0.1.0"
 dependencies = [
