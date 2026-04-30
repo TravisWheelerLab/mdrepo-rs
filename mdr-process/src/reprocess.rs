@@ -71,7 +71,7 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
         dry_run: args.dry_run,
     })?;
 
-    if !args.preserve {
+    if !args.dry_run && !args.preserve {
         debug!(r#"Removing "{}""#, data_dir.display());
         fs::remove_dir_all(data_dir)?;
     }
