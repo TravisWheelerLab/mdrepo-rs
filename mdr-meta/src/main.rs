@@ -1,4 +1,4 @@
-use anyhow::{Result, bail;
+use anyhow::{Result, bail};
 use clap::Parser;
 use libmdrepo::metadata::{Meta, MetaCheckOptions};
 use mdr_meta::{
