@@ -7,12 +7,12 @@ dois: value ["1038/s43588-024-00627-2"] invalid
 external_links[1].label: value " " invalid
 external_links[1].url: value "zenodo.org/records/7711953" invalid
 forcefield: value " " invalid
-integration_timestep_fs: value 2000 must be >= 1 and <= 5
+integration_timestep_fs: value 2000 must be >= 1 and <= 20
 lead_contributor_orcid: value "0000-0001-9961-144" invalid
 ligands[1].smiles: value "smiles_string" invalid
 pdb_id: value "5am" invalid
 short_description: value " " invalid
-software_name: "AMBERX" invalid, choose from ACEMD, AMBER, CHARMM, GROMACS, NAMD, SPONGE
+software_name: "AMBERX" invalid, choose from ACEMD, AMBER, CHARMM, CUSTOM, GROMACS, NAMD, SPONGE
 solutes[1].concentration_mol_liter: value 0.0 must be > 0.0 and < 1.0
 solutes[1].name: value " " invalid, choose from Cl-, Cl, K, K+, Na, Na+, Phosphoric acid, Urea
 solutes[2].concentration_mol_liter: value 1.15 must be > 0.0 and < 1.0

@@ -751,7 +751,7 @@ mod proptest_tests {
         // --- Range: integration_timestep_fs ---
 
         #[test]
-        fn valid_timestep_no_error(timestep in 1u32..=5u32) {
+        fn valid_timestep_no_error(timestep in 1u32..=20u32) {
             let mut meta = base_meta();
             meta.integration_timestep_fs = timestep;
             let errors = meta.check(None);
@@ -762,7 +762,7 @@ mod proptest_tests {
         #[test]
         fn out_of_range_timestep_produces_error(timestep in prop_oneof![
             0u32..1u32,
-            6u32..=u32::MAX,
+            21u32..=u32::MAX,
         ]) {
             let mut meta = base_meta();
             meta.integration_timestep_fs = timestep;
@@ -879,7 +879,7 @@ mod proptest_tests {
         #[test]
         fn meta_toml_round_trip(
             temp in 275u32..=700u32,
-            timestep in 1u32..=5u32,
+            timestep in 1u32..=20u32,
         ) {
             let mut meta = base_meta();
             meta.temperature_kelvin = temp;
@@ -893,7 +893,7 @@ mod proptest_tests {
         #[test]
         fn meta_json_round_trip(
             temp in 275u32..=700u32,
-            timestep in 1u32..=5u32,
+            timestep in 1u32..=20u32,
         ) {
             let mut meta = base_meta();
             meta.temperature_kelvin = temp;
@@ -1133,7 +1133,7 @@ mod tests {
             r#"external_links[1].label: value " " invalid"#,
             r#"external_links[1].url: value "zenodo.org/records/7711953" invalid"#,
             r#"forcefield: value " " invalid"#,
-            r#"integration_timestep_fs: value 2000 must be >= 1 and <= 5"#,
+            r#"integration_timestep_fs: value 2000 must be >= 1 and <= 20"#,
             r#"lead_contributor_orcid: value "0000-0001-9961-144" invalid"#,
             r#"ligands[1].smiles: value "smiles_string" invalid"#,
             r#"pdb_id: value "5am" invalid"#,
@@ -1160,7 +1160,7 @@ mod tests {
                 "TTM2-F, TTM3-F, TTM4-F, iAMOEBA, mW, q-SPC/Fw, q-TIP4P/F"
             ),
             r#"Filename " " is duplicated 4 times"#,
-            r#"software_name: "AMBERX" invalid, choose from ACEMD, AMBER, CHARMM, GROMACS, NAMD, SPONGE"#,
+            r#"software_name: "AMBERX" invalid, choose from ACEMD, AMBER, CHARMM, CUSTOM, GROMACS, NAMD, SPONGE"#,
         ];
         assert_eq!(errors.len(), expected.len());
         for message in expected {

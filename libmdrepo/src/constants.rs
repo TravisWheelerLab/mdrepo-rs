@@ -26,7 +26,7 @@ pub const METADATA_TOML_VERSION: u32 = 2;
 pub const TEMP_K_MIN: u32 = 275;
 pub const TEMP_K_MAX: u32 = 700;
 pub const TIMESTEP_FS_MIN: u32 = 1;
-pub const TIMESTEP_FS_MAX: u32 = 5;
+pub const TIMESTEP_FS_MAX: u32 = 20;
 pub const VALID_WATER_MODEL: &[&str] = &[
     "AMOEBA",
     "BF",
@@ -225,6 +225,8 @@ const CHARMM_VERSIONS: &[&str] = &[
 
 const SPONGE_VERSIONS: &[&str] = &["1.1", "1.2", "1.3", "1.4"];
 
+const CUSTOM_VERSIONS: &[&str] = &["NA"];
+
 pub const VALID_SOLUTE_NAME: &[&str] = &[
     "Cl-",
     "Cl",
@@ -242,6 +244,7 @@ pub static VALID_SOFTWARE: Lazy<HashMap<&'static str, &'static [&'static str]>> 
             ("ACEMD", ACEMD_VERSIONS),
             ("AMBER", AMBER_VERSIONS),
             ("CHARMM", CHARMM_VERSIONS),
+            ("CUSTOM", CUSTOM_VERSIONS),
             ("GROMACS", GROMACS_VERSIONS),
             ("NAMD", NAMD_VERSIONS),
             ("SPONGE", SPONGE_VERSIONS),
