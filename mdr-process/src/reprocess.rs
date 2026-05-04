@@ -4,7 +4,10 @@ use crate::{
 };
 use anyhow::{anyhow, bail, Result};
 use dotenvy::dotenv;
-use libmdrepo::{common::file_exists, metadata::Meta};
+use libmdrepo::{
+    common::{file_exists, get_simulation_id},
+    metadata::Meta,
+};
 use log::debug;
 use std::{
     env, fs,
@@ -18,7 +21,7 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
     let work_dir = args.work_dir.clone().unwrap_or(PathBuf::from(
         env::var("MDREPO_WORK_DIR").map_err(|e| anyhow!("MDREPO_WORK_DIR: {e}"))?,
     ));
-    let simulation_id = args.simulation_id;
+    let simulation_id = get_simulation_id(&args.simulation_id)?;
     let mdrepo_id = format!("MDR{simulation_id:08}");
     debug!("Reprocessing simulation ID {mdrepo_id}");
 
