@@ -59,11 +59,10 @@ pub fn get_md5(path: &Path) -> Result<String> {
 
 // --------------------------------------------------
 pub fn get_simulation_id(val: &str) -> Result<u64> {
-    let re = regex!("^MDR0*([1-9][0-9]+)$");
-    match re.captures(val.trim()) {
-        Some(caps) => Ok(caps.get(1).expect("cap").as_str().parse::<u64>()?),
-        _ => bail!(r#"Invalid simulation ID "{}""#, val),
-    }
+    regex!(r"^(?:MDR)?0*([1-9][0-9]*)$")
+        .captures(val.trim())
+        .and_then(|caps| caps[1].parse::<u64>().ok())
+        .ok_or_else(|| anyhow!(r#"Invalid simulation ID "{}""#, val))
 }
 
 // --------------------------------------------------
@@ -80,8 +79,21 @@ mod tests {
         let res = get_simulation_id("MDR");
         assert!(res.is_err());
 
+        let res = get_simulation_id("0");
+        assert!(res.is_err());
+
         let res = get_simulation_id("MDR000000000");
         assert!(res.is_err());
+
+        let res = get_simulation_id("564");
+        assert!(res.is_ok());
+        let val = res.unwrap();
+        assert_eq!(val, 564);
+
+        let res = get_simulation_id("000564");
+        assert!(res.is_ok());
+        let val = res.unwrap();
+        assert_eq!(val, 564);
 
         let res = get_simulation_id("MDR00000564");
         assert!(res.is_ok());
