@@ -706,6 +706,11 @@ pub fn delete_pub(conn: &mut PgConnection, rid: i64) -> QueryResult<usize> {
 
 // ── md_simulation ─────────────────────────────────────────────────────────────
 
+pub fn get_all_simulation_ids(conn: &mut PgConnection) -> QueryResult<Vec<i64>> {
+    use crate::schema::md_simulation::dsl::*;
+    md_simulation.select(id).order(id.asc()).load(conn)
+}
+
 fn simulation_query(
     search: Option<&str>,
     public_only: bool,
