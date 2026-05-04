@@ -56,3 +56,84 @@ pub fn get_md5(path: &Path) -> Result<String> {
 
     read_file(&md5_file)
 }
+
+// --------------------------------------------------
+pub fn get_simulation_id(val: &str) -> Result<u64> {
+    let re = regex!("^MDR0*([1-9][0-9]+)$");
+    match re.captures(val.trim()) {
+        Some(caps) => Ok(caps.get(1).expect("cap").as_str().parse::<u64>()?),
+        _ => bail!(r#"Invalid simulation ID "{}""#, val),
+    }
+}
+
+// --------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{fs, path::Path};
+
+    #[test]
+    fn test_get_simulation_id() {
+        let res = get_simulation_id("");
+        assert!(res.is_err());
+
+        let res = get_simulation_id("MDR");
+        assert!(res.is_err());
+
+        let res = get_simulation_id("MDR000000000");
+        assert!(res.is_err());
+
+        let res = get_simulation_id("MDR00000564");
+        assert!(res.is_ok());
+        let val = res.unwrap();
+        assert_eq!(val, 564);
+
+        let res = get_simulation_id("MDR56400001");
+        assert!(res.is_ok());
+        let val = res.unwrap();
+        assert_eq!(val, 56400001);
+
+        let res = get_simulation_id("\tMDR56400001 ");
+        assert!(res.is_ok());
+        let val = res.unwrap();
+        assert_eq!(val, 56400001);
+    }
+
+    #[test]
+    fn test_file_exists() {
+        assert!(!file_exists(&Path::new("blargh")));
+        assert!(file_exists(&Path::new(
+            "tests/inputs/metadata/MDR00015378.v1.toml"
+        )));
+    }
+
+    #[test]
+    fn test_read_file() {
+        let res = read_file(&Path::new("blargh"));
+        assert!(res.is_err());
+
+        let res = read_file(&Path::new("tests/inputs/metadata/empty.txt"));
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), "".to_string());
+    }
+
+    #[test]
+    fn test_get_md5() {
+        let res = get_md5(&Path::new("blargh"));
+        assert!(res.is_err());
+
+        let filename = "tests/inputs/metadata/MDR00015378.v1.toml";
+        let cached = format!("{filename}.md5");
+        if Path::new(&cached).exists() {
+            let _ = fs::remove_file(&cached);
+        }
+
+        let res = get_md5(&Path::new(filename));
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), "cd862822bcf0881ed9f0d94ad01dda3f".to_string());
+
+        if Path::new(&cached).exists() {
+            let _ = fs::remove_file(&cached);
+        }
+    }
+}
