@@ -20,6 +20,7 @@ use std::{
     mem,
     path::{self, Path, PathBuf},
     process::Command,
+    time::Instant,
 };
 use which::which;
 
@@ -40,6 +41,7 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
     debug!("{args:?}");
     dotenv().ok();
 
+    let start_time = Instant::now();
     let input_dir = path::absolute(&args.input_dir)?;
     let processed_dir = args
         .out_dir
@@ -112,6 +114,7 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
         debug!("{push_res:?}");
     }
 
+    debug!("Finished processing in {:?}", start_time.elapsed());
     Ok(())
 }
 
@@ -122,7 +125,7 @@ fn run_import(
     import_json: &Path,
     input_dir: &Path,
     server: &str,
-    reprocess_simulation_id: Option<u32>,
+    reprocess_simulation_id: Option<u64>,
     processed_dir: &Path,
 ) -> Result<ImportResult> {
     let import_script = script_dir.join("import_preprocessed.py");
@@ -170,7 +173,7 @@ fn run_push(
     import_result: ImportResult,
     input_dir: &Path,
     server: &str,
-    reprocess_simulation_id: Option<u32>,
+    reprocess_simulation_id: Option<u64>,
     processed_dir: &Path,
 ) -> Result<Vec<PushResult>> {
     let push_script = script_dir.join("push_sim_files.py");
@@ -596,7 +599,7 @@ pub fn make_import_json(
     script_dir: &Path,
     blast_dir: &Path,
     processed_files: &ProcessedFiles,
-    reprocess_simulation_id: Option<u32>,
+    reprocess_simulation_id: Option<u64>,
 ) -> Result<PathBuf> {
     let meta = Meta::from_file(meta_path)?;
     let structure_path = input_dir.join(&meta.structure_file_name);
@@ -629,10 +632,10 @@ pub fn make_import_json(
                 let mut found_match = false;
                 for inferred in &inferred_ligands {
                     let check = check_ligand(given_ligand, inferred, script_dir)?;
-                    if !(check.exact_match
+                    if check.exact_match
                         || check.same_connectivity
                         || check.same_connectivity_and_stereo
-                        || check.same_inchi)
+                        || check.same_inchi
                     {
                         found_match = true;
                         break;
@@ -938,7 +941,7 @@ pub fn get_inferred_ligands(
     } else {
         debug!("Creating inferred ligands file");
         let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
-        let mol_tools = script_dir.join("mol_tools.py");
+        let mol_tools = script_dir.join("mol_id.py");
         let mut cmd = Command::new(&uv);
         cmd.current_dir(script_dir).args([
             "run",
@@ -1009,7 +1012,7 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Dur
                 if let Ok(tmp) = start.parse::<u64>() {
                     time_start = Some(tmp);
                 } else {
-                    debug!("Failed to parse time_start from \"{start}\" ({line})")
+                    debug!(r#"Failed to parse time_start from "{start}" ({line})"#)
                 }
 
                 if let Ok(tmp) = stop.parse::<u64>() {
@@ -1017,7 +1020,7 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Dur
                 } else if let Ok(tmp) = stop.parse::<f64>() {
                     time_stop = format!("{}", tmp.round()).parse::<u64>().ok();
                 } else {
-                    debug!("Failed to parse time_start from \"{stop}\" ({line})")
+                    debug!(r#"Failed to parse time_start from "{stop}" ({line})"#)
                 }
             } else if let Some(caps) = MOLLY_NFRAMES_REGEX.captures(line) {
                 let val = caps
@@ -1027,7 +1030,7 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Dur
                 if let Ok(tmp) = val.parse::<u64>() {
                     num_frames = Some(tmp);
                 } else {
-                    debug!("Failed to parse num_frames from \"{val}\" ({line})")
+                    debug!(r#"Failed to parse num_frames from "{val}" ({line})"#)
                 }
             }
         }
@@ -1069,13 +1072,12 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Dur
             }
         }
 
-        let totaltime_ns = (duration_ps / PS_PER_NS).round();
-        let sampling_frequency_ns = format!("{:.2}", totaltime_ns / num_frames)
-            .parse::<f32>()
-            .map_err(|e| anyhow!("Failed to compute sampling frequency: {e}"))?;
+        let sampling_frequency_ns =
+            round_dp((duration_ps / PS_PER_NS) / (num_frames - 1.), 3);
+        let totaltime_ns = round_dp(duration_ps / PS_PER_NS, 2);
         let duration = Duration {
             totaltime_ns: totaltime_ns as u32,
-            sampling_frequency_ns,
+            sampling_frequency_ns: sampling_frequency_ns as f32,
         };
 
         // Scoped to force close of fh
@@ -1094,6 +1096,12 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Dur
     let duration: Duration = serde_json::from_str(&contents)?;
 
     Ok(duration)
+}
+
+// --------------------------------------------------
+fn round_dp(x: f64, dp: u32) -> f64 {
+    let factor = 10f64.powi(dp as i32);
+    (x * factor).round() / factor
 }
 
 // --------------------------------------------------
@@ -1208,11 +1216,20 @@ pub fn get_unique_file_hash(meta: &Meta, input_dir: &Path) -> String {
     md5s.join(",")
 }
 
+// --------------------------------------------------
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_round_dp() {
+        assert_eq!(round_dp(1.23456, 2), 1.23);
+        assert_eq!(round_dp(1.23456, 3), 1.235);
+        assert_eq!(round_dp(1.5, 0), 2.0);
+        assert_eq!(round_dp(-1.23456, 2), -1.23);
+    }
 
     #[test]
     fn topology_hash_is_deterministic() {
