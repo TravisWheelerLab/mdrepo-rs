@@ -84,7 +84,7 @@ pub struct ProcessArgs {
 
     /// Simulation ID
     #[arg(long, value_name = "SIMULATION_ID")]
-    pub reprocess_simulation_id: Option<u32>,
+    pub reprocess_simulation_id: Option<u64>,
 
     /// Allow missing PDB/Uniprot IDs in metadata
     #[arg(short, long)]
@@ -139,7 +139,7 @@ pub struct TicketArgs {
 pub struct ReprocessArgs {
     /// Simulation ID
     #[arg(value_name = "SIM_ID")]
-    pub simulation_id: u32,
+    pub simulation_id: String,
 
     /// Server
     #[arg(short, long, value_name = "SERVER", default_value = "staging")]
@@ -394,7 +394,7 @@ pub struct Export {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ExportSimulation {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub simulation_id: Option<u32>,
+    pub simulation_id: Option<u64>,
     pub lead_contributor_orcid: String,
     pub unique_file_hash_string: String,
     pub alias: Option<String>,
