@@ -3,7 +3,7 @@ use crate::types::{
     ImportResult, InferredLigand, MdFile, PdbEntry, PdbResponse, ProcessArgs,
     ProcessedFiles, PushResult, RmsdRmsf, UniprotDb, UniprotEntry, UniprotResponse,
 };
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use dotenvy::dotenv;
 use libmdrepo::{
     common::{file_exists, get_md5, read_file},
@@ -296,6 +296,7 @@ pub fn make_processed_files(
             bail!(r#"Missing "{}""#, cpp_traj.display());
         }
 
+        let trajectory_file_name = &meta.trajectory_file_names[0];
         let mut cmd = Command::new(micromamba);
         cmd.args([
             "run",
@@ -303,10 +304,7 @@ pub fn make_processed_files(
             "simproc",
             cpp_traj.to_string_lossy().as_ref(),
             "--traj",
-            in_dir
-                .join(&meta.trajectory_file_name)
-                .to_string_lossy()
-                .as_ref(),
+            in_dir.join(trajectory_file_name).to_string_lossy().as_ref(),
             "--coord",
             in_dir
                 .join(&meta.structure_file_name)
@@ -693,7 +691,6 @@ pub fn make_import_json(
         });
 
         for (file_type, filename) in &[
-            ("Trajectory", &meta.trajectory_file_name),
             ("Structure", &meta.structure_file_name),
             ("Topology", &meta.topology_file_name),
         ] {
@@ -701,6 +698,18 @@ pub fn make_import_json(
             original_files.push(MdFile {
                 name: filename.to_string(),
                 file_type: file_type.to_string(),
+                size: local_path.metadata()?.len(),
+                md5_sum: get_md5(&local_path)?,
+                description: None,
+                is_primary: Some(true),
+            })
+        }
+
+        for filename in &meta.trajectory_file_names {
+            let local_path = input_dir.join(filename);
+            original_files.push(MdFile {
+                name: filename.to_string(),
+                file_type: "Trajectory".to_string(),
                 size: local_path.metadata()?.len(),
                 md5_sum: get_md5(&local_path)?,
                 description: None,
@@ -1195,10 +1204,13 @@ pub fn get_pdb_entry(pdb_id: &str) -> Result<PdbEntry> {
 // --------------------------------------------------
 pub fn get_unique_file_hash(meta: &Meta, input_dir: &Path) -> String {
     let mut input_files = vec![
-        meta.trajectory_file_name.to_string(),
         meta.structure_file_name.to_string(),
         meta.topology_file_name.to_string(),
     ];
+
+    for filename in &meta.trajectory_file_names {
+        input_files.push(filename.to_string());
+    }
 
     if let Some(addl_files) = &meta.additional_files {
         for file in addl_files {

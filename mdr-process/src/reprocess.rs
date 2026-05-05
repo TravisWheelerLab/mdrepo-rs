@@ -2,7 +2,7 @@ use crate::{
     process,
     types::{ProcessArgs, ReprocessArgs},
 };
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use dotenvy::dotenv;
 use libmdrepo::{
     common::{file_exists, get_simulation_id},
@@ -45,11 +45,11 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
     irods_fetch(&irods_dir.join(meta_filename), &meta_local_path)?;
 
     let meta = Meta::from_file(&meta_local_path)?;
-    for filename in &[
-        &meta.trajectory_file_name,
-        &meta.structure_file_name,
-        &meta.topology_file_name,
-    ] {
+    for filename in &[&meta.structure_file_name, &meta.topology_file_name] {
+        irods_fetch(&irods_dir.join(filename), &data_dir.join(filename))?;
+    }
+
+    for filename in &meta.trajectory_file_names {
         irods_fetch(&irods_dir.join(filename), &data_dir.join(filename))?;
     }
 

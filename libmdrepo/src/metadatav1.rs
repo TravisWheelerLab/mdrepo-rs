@@ -2,7 +2,7 @@ use crate::{
     common::read_file,
     metadata::{self, Meta},
 };
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use toml::value::Value as TomlValue;
@@ -296,7 +296,7 @@ impl MetaV1 {
         Ok(Meta {
             mdrepo_id: None,
             lead_contributor_orcid: self.initial.lead_contributor_orcid.clone(),
-            trajectory_file_name: reqd.trajectory_file_name.clone(),
+            trajectory_file_names: vec![reqd.trajectory_file_name.clone()],
             structure_file_name: reqd.structure_file_name.clone(),
             topology_file_name: reqd.topology_file_name.clone(),
             temperature_kelvin,
@@ -562,9 +562,11 @@ mod metav1_tests {
         let meta_v1 = res?;
         let meta_v2 = meta_v1.to_v2()?;
 
-        assert!(meta_v2
-            .short_description
-            .starts_with("8 ns simulation of the 5aom PDB entry (P04637)"));
+        assert!(
+            meta_v2
+                .short_description
+                .starts_with("8 ns simulation of the 5aom PDB entry (P04637)")
+        );
 
         let contributors = meta_v2.contributors;
         assert!(contributors.is_some());

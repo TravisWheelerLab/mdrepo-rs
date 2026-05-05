@@ -1,5 +1,5 @@
 use crate::types::{FileInfo, FileType, GenArgs};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use libmdrepo::{
     constants::{STRUCTURE_FILE_EXTS, TOPOLOGY_FILE_EXTS, TRAJECTORY_FILE_EXTS},
     metadata::{AdditionalFile, Contributor, Meta},
@@ -89,7 +89,7 @@ pub fn generate(args: &GenArgs) -> Result<Meta> {
     //    meta.lead_contributor_orcid = tmpl.lead_contributor_orcid.to_string();
     //}
 
-    meta.trajectory_file_name = trajectory;
+    meta.trajectory_file_names = vec![trajectory];
 
     meta.structure_file_name = structure;
 
@@ -115,12 +115,12 @@ pub fn generate(args: &GenArgs) -> Result<Meta> {
 
 // --------------------------------------------------
 fn select_candidate(
-    wanted_name: &Option<String>,
+    provided_name: &Option<String>,
     file_type: FileType,
     files: &[FileInfo],
     directory: &Path,
 ) -> Result<String> {
-    match wanted_name {
+    match provided_name {
         Some(name) => {
             let path = directory.join(name);
             if path.is_file() {

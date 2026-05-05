@@ -1,6 +1,6 @@
 lead_contributor_orcid = ""
 
-trajectory_file_name = ""
+trajectory_file_names = []
 
 structure_file_name = ""
 

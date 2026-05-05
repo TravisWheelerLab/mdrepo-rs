@@ -1,5 +1,5 @@
 lead_contributor_orcid = "0000-0000-0000-0000"
-trajectory_file_name = "traj.xtc"
+trajectory_file_names = ["traj.xtc"]
 structure_file_name = "struct.pdb"
 topology_file_name = "topology.gro"
 temperature_kelvin = 300

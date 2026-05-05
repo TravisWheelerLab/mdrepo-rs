@@ -165,7 +165,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let toml = r#"
             lead_contributor_orcid = "0000-0000-0000-0000"
-            trajectory_file_name = "sim.xtc"
+            trajectory_file_names = ["sim.xtc"]
             structure_file_name = "sim.pdb"
             topology_file_name = "sim.top"
             temperature_kelvin = 300

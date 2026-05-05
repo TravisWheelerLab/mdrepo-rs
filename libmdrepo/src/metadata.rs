@@ -1,5 +1,5 @@
 use crate::{common::read_file, constants};
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use chrono::Datelike;
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow::Borrowed, collections::HashMap, ffi::OsStr, path::Path};
@@ -16,13 +16,12 @@ pub struct Meta {
     #[validate(regex(path = *constants::ORCID_REGEX))]
     pub lead_contributor_orcid: String,
 
-    #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
-    pub trajectory_file_name: String,
+    pub trajectory_file_names: Vec<String>,
 
-    #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
+    //#[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
     pub structure_file_name: String,
 
-    #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
+    //#[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
     pub topology_file_name: String,
 
     #[validate(range(min = constants::TEMP_K_MIN, max = constants::TEMP_K_MAX))]
@@ -123,10 +122,11 @@ pub struct Meta {
 impl Meta {
     pub fn all_filenames(&self) -> Vec<String> {
         let mut filenames = vec![
-            self.trajectory_file_name.clone(),
             self.structure_file_name.clone(),
             self.topology_file_name.clone(),
         ];
+
+        filenames.extend_from_slice(&self.trajectory_file_names.clone());
 
         if let Some(files) = &self.additional_files {
             for file in files {
@@ -137,6 +137,7 @@ impl Meta {
         filenames
     }
 
+    // --------------------------------------------------
     pub fn check(&self, options: Option<MetaCheckOptions>) -> Vec<String> {
         let mut messages = vec![];
         if let Err(e) = self.validate() {
@@ -173,11 +174,6 @@ impl Meta {
         // Check file extensions of required files
         let ext_checks = [
             (
-                "trajectory_file_name",
-                &self.trajectory_file_name,
-                constants::TRAJECTORY_FILE_EXTS,
-            ),
-            (
                 "structure_file_name",
                 &self.structure_file_name,
                 constants::STRUCTURE_FILE_EXTS,
@@ -189,41 +185,42 @@ impl Meta {
             ),
         ];
 
-        for (field, filename, valid_exts) in ext_checks {
-            if let Some(ext) = Path::new(filename).extension() {
-                let ext = ext.to_string_lossy().to_string();
-                if !valid_exts.contains(&ext.as_str()) {
-                    messages.push(format!(
-                        r#"{field}: Invalid extension "{ext}"; choose from {}"#,
-                        valid_exts.join(", ")
-                    ))
-                }
-            } else {
-                messages.push(format!(r#"{field}: filename is missing extension"#))
+        // Ensure that each filename is present only once
+        let mut file_count: HashMap<String, usize> = HashMap::new();
+        for (fieldname, filename, valid_exts) in ext_checks {
+            file_count
+                .entry(filename.to_string())
+                .and_modify(|count| *count += 1)
+                .or_insert(1);
+            if let Some(msg) =
+                Self::check_file_extensions(fieldname, filename, valid_exts)
+            {
+                messages.push(msg);
             }
         }
 
-        // All the messages up to this point start with "field_name: "
-        // , so sort to put all the field errors together.
-        messages.sort();
-
-        // Ensure that each filename is present only once
-        let mut file_count: HashMap<&str, usize> = HashMap::new();
-        for filename in &[
-            &self.trajectory_file_name,
-            &self.topology_file_name,
-            &self.structure_file_name,
-        ] {
+        for filename in &self.trajectory_file_names {
+            if let Some(msg) = Self::check_file_extensions(
+                "trajectory_file_names",
+                filename,
+                constants::TRAJECTORY_FILE_EXTS,
+            ) {
+                messages.push(msg);
+            }
             file_count
-                .entry(filename)
+                .entry(filename.to_string())
                 .and_modify(|count| *count += 1)
                 .or_insert(1);
         }
 
+        // All the messages up to this point start with "field_name: ",
+        // so sort to put all the field errors together.
+        messages.sort();
+
         if let Some(addl_files) = &self.additional_files {
             for file in addl_files {
                 file_count
-                    .entry(&file.file_name)
+                    .entry(file.file_name.to_string())
                     .and_modify(|count| *count += 1)
                     .or_insert(1);
             }
@@ -278,6 +275,28 @@ impl Meta {
         messages
     }
 
+    fn check_file_extensions(
+        fieldname: &str,
+        filename: &str,
+        valid_extensions: &[&str],
+    ) -> Option<String> {
+        if let Some(ext) = Path::new(filename).extension() {
+            let ext = ext.to_string_lossy().to_string();
+            if valid_extensions.contains(&ext.as_str()) {
+                None
+            } else {
+                Some(format!(
+                    r#"{fieldname}: Invalid extension "{ext}"; choose from {}"#,
+                    valid_extensions.join(", ")
+                ))
+            }
+        } else {
+            Some(format!(
+                r#"{fieldname}: filename "{filename}" is missing extension"#
+            ))
+        }
+    }
+
     pub fn from_file(path: &Path) -> Result<Self> {
         match path.extension() {
             Some(ext) => {
@@ -316,7 +335,7 @@ impl Meta {
         Meta {
             mdrepo_id: None,
             lead_contributor_orcid: "0000-0000-0000-0000".to_string(),
-            trajectory_file_name: "traj.xtc".to_string(),
+            trajectory_file_names: vec!["traj.xtc".to_string()],
             structure_file_name: "struct.pdb".to_string(),
             topology_file_name: "topology.gro".to_string(),
             temperature_kelvin: 300,
@@ -379,7 +398,7 @@ impl Meta {
         Meta {
             mdrepo_id: None,
             lead_contributor_orcid: "0000-0000-0000-0000".to_string(),
-            trajectory_file_name: "traj.xtc".to_string(),
+            trajectory_file_names: vec!["traj.xtc".to_string()],
             structure_file_name: "struct.pdb".to_string(),
             topology_file_name: "topology.gro".to_string(),
             temperature_kelvin: 300,
@@ -911,7 +930,7 @@ mod proptest_tests {
             let mut meta = base_meta();
             let filename = format!("{name}.xtc");
             // Same filename in both trajectory and structure fields → duplicate
-            meta.trajectory_file_name = filename.clone();
+            meta.trajectory_file_names = vec![filename.clone()];
             meta.structure_file_name = filename.clone();
             let errors = meta.check(None);
             let has_dup_error = errors.iter().any(|e| e.contains("is duplicated"));
@@ -998,7 +1017,7 @@ mod tests {
     fn meta_ok(filename: &str) -> Result<()> {
         let meta = Meta::from_file(&PathBuf::from(filename))?;
         assert_eq!(meta.lead_contributor_orcid, "0000-0001-9961-144X");
-        assert_eq!(meta.trajectory_file_name, "5aom.xtc");
+        assert_eq!(meta.trajectory_file_names, vec!["5aom.xtc"]);
         assert_eq!(meta.structure_file_name, "5aom_cleaned.pdb");
         assert_eq!(meta.topology_file_name, "5aom_gromacs_cleaned.top");
         assert_eq!(meta.temperature_kelvin, 300);
@@ -1142,14 +1161,11 @@ mod tests {
             r#"solutes[1].name: value " " invalid, choose from Cl-, Cl, K, K+, Na, Na+, Phosphoric acid, Urea"#,
             r#"solutes[2].concentration_mol_liter: value 1.15 must be > 0.0 and < 1.0"#,
             r#"solutes[2].name: value "Chloride" invalid, choose from Cl-, Cl, K, K+, Na, Na+, Phosphoric acid, Urea"#,
-            r#"structure_file_name: filename is missing extension"#,
-            r#"structure_file_name: value " " invalid"#,
+            r#"structure_file_name: filename " " is missing extension"#,
             r#"temperature_kelvin: value 0 must be >= 275 and <= 700"#,
             r#"toml_version: value 4 must be = 2"#,
-            r#"topology_file_name: filename is missing extension"#,
-            r#"topology_file_name: value " " invalid"#,
-            r#"trajectory_file_name: filename is missing extension"#,
-            r#"trajectory_file_name: value " " invalid"#,
+            r#"topology_file_name: filename " " is missing extension"#,
+            r#"trajectory_file_names: filename " " is missing extension"#,
             r#"water.density_kg_m3: value 1000000.0 must be >= 900.0 and <= 1100.0"#,
             concat!(
                 r#"water.model: value "XYZ" invalid, choose from AMOEBA, BF, BK3, BMW, "#,

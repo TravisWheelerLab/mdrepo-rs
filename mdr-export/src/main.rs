@@ -262,8 +262,10 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
     let meta = metadata::Meta {
         lead_contributor_orcid: lead_contributor_orcid
             .unwrap_or(DEFAULT_ORCID.to_string()),
-        trajectory_file_name: trajectory_file_name
-            .ok_or_else(|| anyhow!("simulation has no trajectory file"))?,
+        trajectory_file_names: vec![
+            trajectory_file_name
+                .ok_or_else(|| anyhow!("simulation has no trajectory file"))?,
+        ],
         structure_file_name: structure_file_name
             .ok_or_else(|| anyhow!("simulation has no structure file"))?,
         topology_file_name: topology_file_name
