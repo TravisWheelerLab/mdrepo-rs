@@ -1,5 +1,5 @@
 use crate::{common::read_file, constants};
-use anyhow::{Result, anyhow, bail};
+use anyhow::{anyhow, bail, Result};
 use chrono::Datelike;
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow::Borrowed, collections::HashMap, ffi::OsStr, path::Path};
@@ -16,6 +16,7 @@ pub struct Meta {
     #[validate(regex(path = *constants::ORCID_REGEX))]
     pub lead_contributor_orcid: String,
 
+    #[validate(length(min = 1))]
     pub trajectory_file_names: Vec<String>,
 
     pub structure_file_name: String,
@@ -186,25 +187,27 @@ impl Meta {
         // Ensure that each filename is present only once
         let mut file_count: HashMap<String, usize> = HashMap::new();
         for (fieldname, filename, valid_exts) in ext_checks {
-            file_count
-                .entry(filename.to_string())
-                .and_modify(|count| *count += 1)
-                .or_insert(1);
             if let Some(msg) =
                 Self::check_file_extensions(fieldname, filename, valid_exts)
             {
                 messages.push(msg);
             }
+
+            file_count
+                .entry(filename.to_string())
+                .and_modify(|count| *count += 1)
+                .or_insert(1);
         }
 
-        for filename in &self.trajectory_file_names {
+        for (i, filename) in self.trajectory_file_names.iter().enumerate() {
             if let Some(msg) = Self::check_file_extensions(
-                "trajectory_file_names",
+                &format!("trajectory_file_names[{}]", i + 1),
                 filename,
                 constants::TRAJECTORY_FILE_EXTS,
             ) {
                 messages.push(msg);
             }
+
             file_count
                 .entry(filename.to_string())
                 .and_modify(|count| *count += 1)
@@ -1163,7 +1166,7 @@ mod tests {
             r#"temperature_kelvin: value 0 must be >= 275 and <= 700"#,
             r#"toml_version: value 4 must be = 2"#,
             r#"topology_file_name: filename " " is missing extension"#,
-            r#"trajectory_file_names: filename " " is missing extension"#,
+            r#"trajectory_file_names[1]: filename " " is missing extension"#,
             r#"water.density_kg_m3: value 1000000.0 must be >= 900.0 and <= 1100.0"#,
             concat!(
                 r#"water.model: value "XYZ" invalid, choose from AMOEBA, BF, BK3, BMW, "#,
