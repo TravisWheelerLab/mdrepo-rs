@@ -1511,17 +1511,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mdr-gen-meta"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "dotenvy",
- "libmdrepo",
- "mdr-db",
-]
-
-[[package]]
 name = "mdr-meta"
 version = "0.3.10"
 dependencies = [
