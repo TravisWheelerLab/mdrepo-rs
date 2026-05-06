@@ -18,10 +18,8 @@ pub struct Meta {
 
     pub trajectory_file_names: Vec<String>,
 
-    //#[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
     pub structure_file_name: String,
 
-    //#[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
     pub topology_file_name: String,
 
     #[validate(range(min = constants::TEMP_K_MIN, max = constants::TEMP_K_MAX))]
