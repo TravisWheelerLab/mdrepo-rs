@@ -253,6 +253,8 @@ pub struct ProcessedFiles {
     pub min_xtc: PathBuf,
     pub sampled_xtc: PathBuf,
     pub thumbnail_png: PathBuf,
+    pub full_xtc_size: u64,
+    pub directory_name: String,
 }
 
 // --------------------------------------------------
