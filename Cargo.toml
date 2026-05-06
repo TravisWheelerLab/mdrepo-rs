@@ -1,5 +1,5 @@
 [workspace]
 members = [
-    "libmdrepo","mdr-meta", "mdr-toml-convert", "mdr-process", "mdr-gen-meta", "mdr-db", "mdr-export"
+    "libmdrepo","mdr-meta", "mdr-toml-convert", "mdr-process", "mdr-db", "mdr-export"
 ]
 resolver = "2"
