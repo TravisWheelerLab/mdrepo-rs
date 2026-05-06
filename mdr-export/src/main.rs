@@ -1,10 +1,10 @@
-use anyhow::{Result, anyhow, bail};
+use anyhow::{anyhow, bail, Result};
 use clap::Parser;
 use diesel::pg::PgConnection;
 use dotenvy::dotenv;
 use libmdrepo::{constants, metadata};
 use mdr_db::ops;
-use mdr_export::types::{Args, Server};
+use mdr_export::types::{Args, FileFormat, Server};
 use std::{
     env,
     fs::{self, File},
@@ -48,13 +48,21 @@ fn run(args: Args) -> Result<()> {
 
     for (i, sim_id) in simulation_ids.into_iter().enumerate() {
         let mdrepo_id = format!("MDR{sim_id:08}");
-        let out_file = out_dir.join(format!("{}.json", mdrepo_id));
+        let out_file = out_dir.join(format!("{}.{}", mdrepo_id, args.format));
         if !out_file.exists() {
             println!("{:6}: {mdrepo_id}", i + 1);
             match get_sim(&mut conn, sim_id) {
                 Ok(meta) => {
                     let mut out_fh = File::create(&out_file)?;
-                    write!(out_fh, "{}", meta.to_json()?)?;
+                    write!(
+                        out_fh,
+                        "{}",
+                        if args.format == FileFormat::Json {
+                            meta.to_json()?
+                        } else {
+                            meta.to_toml()?
+                        }
+                    )?;
                 }
                 Err(e) => {
                     eprintln!("{e}");
@@ -117,7 +125,7 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
     let (_, up_files) = ops::list_uploaded_files(conn, None, Some(sim_id), None, None)?;
 
     let mut additional_files: Vec<metadata::AdditionalFile> = vec![];
-    let mut trajectory_file_name: Option<String> = None;
+    let mut trajectory_file_names: Vec<String> = vec![];
     let mut structure_file_name: Option<String> = None;
     let mut topology_file_name: Option<String> = None;
 
@@ -125,11 +133,7 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
         if file.is_primary {
             match file.file_type.as_str() {
                 "Trajectory" => {
-                    if trajectory_file_name.is_none() {
-                        trajectory_file_name = Some(file.filename.clone())
-                    } else {
-                        bail!("Found multiple primary trajectory files");
-                    }
+                    trajectory_file_names.push(file.filename.clone());
                 }
                 "Structure" => {
                     if structure_file_name.is_none() {
@@ -160,13 +164,16 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
     }
 
     for (field, val) in [
-        ("trajectory_file_name", &trajectory_file_name),
         ("structure_file_name", &structure_file_name),
         ("topology_file_name", &topology_file_name),
     ] {
         if val.is_none() {
             bail!(r#""{field}" has no value"#)
         }
+    }
+
+    if trajectory_file_names.is_empty() {
+        bail!(r#""trajectory_file_names" is empty"#)
     }
 
     let (_, ligands_res) = ops::list_ligands(conn, None, Some(sim_id), None, None)?;
@@ -262,10 +269,7 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
     let meta = metadata::Meta {
         lead_contributor_orcid: lead_contributor_orcid
             .unwrap_or(DEFAULT_ORCID.to_string()),
-        trajectory_file_names: vec![
-            trajectory_file_name
-                .ok_or_else(|| anyhow!("simulation has no trajectory file"))?,
-        ],
+        trajectory_file_names,
         structure_file_name: structure_file_name
             .ok_or_else(|| anyhow!("simulation has no structure file"))?,
         topology_file_name: topology_file_name
@@ -314,5 +318,6 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
         external_links,
         contributors,
     };
+
     Ok(meta)
 }

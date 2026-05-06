@@ -1,4 +1,4 @@
-use clap::{Parser, ValueEnum, builder::PossibleValue};
+use clap::{builder::PossibleValue, Parser, ValueEnum};
 use std::fmt;
 
 #[derive(Debug, Parser)]
@@ -14,9 +14,46 @@ pub struct Args {
     /// Output directory
     #[arg(short, long, value_name = "DIR", default_value = "export")]
     pub out_dir: String,
+
+    /// Output format
+    #[arg(short, long, value_name = "FORMAT", default_value = "json")]
+    pub format: FileFormat,
 }
 
 // --------------------------------------------------
+#[derive(Debug, PartialEq, Clone)]
+pub enum FileFormat {
+    Json,
+    Toml,
+}
+
+impl fmt::Display for FileFormat {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            if self == &FileFormat::Json {
+                "json"
+            } else {
+                "toml"
+            }
+        )
+    }
+}
+
+impl ValueEnum for FileFormat {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[FileFormat::Json, FileFormat::Toml]
+    }
+
+    fn to_possible_value<'a>(&self) -> Option<PossibleValue> {
+        Some(match self {
+            FileFormat::Json => PossibleValue::new("json"),
+            FileFormat::Toml => PossibleValue::new("toml"),
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Server {
     Production,
