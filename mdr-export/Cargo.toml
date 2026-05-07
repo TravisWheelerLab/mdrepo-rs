@@ -9,4 +9,4 @@ libmdrepo = { path = "../libmdrepo" }
 diesel = { version = "2.2", features = ["postgres"] }
 anyhow = "1.0.102"
 clap = { version = "4.6.0", features = ["derive"] }
-dotenvy = "0.15.7"
+dotenvy = "0.15"
