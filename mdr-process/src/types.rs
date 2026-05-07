@@ -254,7 +254,15 @@ pub struct ProcessedFiles {
     pub sampled_xtc: PathBuf,
     pub thumbnail_png: PathBuf,
     pub full_xtc_size: u64,
+    pub trajectory_file_name: String,
     pub directory_name: String,
+}
+
+// --------------------------------------------------
+#[derive(Debug)]
+pub struct ProcessedTarball {
+    pub path: PathBuf,
+    pub file_type: String,
 }
 
 // --------------------------------------------------
@@ -575,4 +583,12 @@ pub struct BlastResult {
 pub enum UniprotDb {
     Swissprot,
     Trembl,
+}
+
+// --------------------------------------------------
+#[derive(Debug, strum_macros::EnumIter, strum_macros::Display)]
+pub enum ProcessedTrajectoryType {
+    Full,
+    Minimal,
+    Sampled,
 }
