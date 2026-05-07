@@ -1,5 +1,5 @@
 use crate::types::{FileInfo, FileType, GenArgs};
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use libmdrepo::{
     constants::{STRUCTURE_FILE_EXTS, TOPOLOGY_FILE_EXTS, TRAJECTORY_FILE_EXTS},
     metadata::{AdditionalFile, Contributor, Meta},
@@ -61,15 +61,23 @@ pub fn generate(args: &GenArgs) -> Result<Meta> {
     //    .map(|path| Meta::from_file(&path))
     //    .transpose()?;
 
-    let trajectory =
-        select_candidate(&args.trajectory, FileType::Trajectory, &files, &dir)?;
+    let trajectories = match &args.trajectory {
+        Some(filename) => vec![filename.clone()],
+        _ => files
+            .iter()
+            .filter(|f| f.file_type == FileType::Trajectory)
+            .map(|f| f.file_name.clone())
+            .collect(),
+    };
 
     let structure =
         select_candidate(&args.structure, FileType::Structure, &files, &dir)?;
 
     let topology = select_candidate(&args.topology, FileType::Topology, &files, &dir)?;
 
-    let taken = HashSet::from([&trajectory, &structure, &topology]);
+    let mut taken: HashSet<&String> = trajectories.iter().collect();
+    let _ = taken.insert(&structure);
+    let _ = taken.insert(&topology);
 
     let mut additional_files: Vec<_> = files
         .iter()
@@ -89,7 +97,7 @@ pub fn generate(args: &GenArgs) -> Result<Meta> {
     //    meta.lead_contributor_orcid = tmpl.lead_contributor_orcid.to_string();
     //}
 
-    meta.trajectory_file_names = vec![trajectory];
+    meta.trajectory_file_names = trajectories;
 
     meta.structure_file_name = structure;
 
