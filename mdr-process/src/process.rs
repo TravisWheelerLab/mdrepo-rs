@@ -1,7 +1,8 @@
 use crate::types::{
     BlastResult, CheckedLigand, DoiPaper, Duration, Export, ExportSimulation,
     ImportResult, InferredLigand, MdFile, PdbEntry, PdbResponse, ProcessArgs,
-    ProcessedFiles, PushResult, RmsdRmsf, UniprotDb, UniprotEntry, UniprotResponse,
+    ProcessedFiles, ProcessedTarball, ProcessedTrajectoryType, PushResult, RmsdRmsf,
+    UniprotDb, UniprotEntry, UniprotResponse,
 };
 use anyhow::{anyhow, bail, Result};
 use dotenvy::dotenv;
@@ -22,6 +23,7 @@ use std::{
     process::Command,
     time::Instant,
 };
+use strum::IntoEnumIterator;
 use which::which;
 
 // ── BLAST parameters ──────────────────────────────────────────────────────────
@@ -83,19 +85,20 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
     let processed_files =
         make_processed_files(&meta_path, &input_dir, &processed_dir, &script_dir)?;
 
-    let (largest, rest) = processed_files
-        .split_last()
-        .ok_or_else(|| anyhow!("Unable to split processed files"))?;
+    let largest = processed_files
+        .last()
+        .ok_or_else(|| anyhow!("Unable to get last of processed files"))?;
 
-    let tarball = make_tarball(&processed_dir, rest)?;
+    let tarballs = make_tarballs(&processed_dir, &processed_files)?;
 
     let import_json = make_import_json(
+        &processed_dir,
         &meta_path,
         &input_dir,
         &script_dir,
         &blast_dir,
         &largest,
-        tarball,
+        tarballs,
         args.reprocess_simulation_id,
     )?;
 
@@ -110,6 +113,7 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
             args.reprocess_simulation_id,
             &processed_dir,
         )?;
+
         let push_res = run_push(
             &uv,
             &script_dir,
@@ -284,12 +288,11 @@ pub fn make_processed_files(
     let meta = Meta::from_file(meta_path)?;
     let mut processed = vec![];
 
-    // Initial sort by name
     let mut trajectory_file_names = meta.trajectory_file_names.clone();
     trajectory_file_names.sort();
 
-    for trajectory_file_name in trajectory_file_names {
-        let trajectory_dir = processed_dir.join(&trajectory_file_name);
+    for (num, trajectory_file_name) in trajectory_file_names.into_iter().enumerate() {
+        let trajectory_dir = processed_dir.join(format!("rep_{}", num + 1));
         if !trajectory_dir.is_dir() {
             fs::create_dir_all(&trajectory_dir)?;
         }
@@ -323,7 +326,10 @@ pub fn make_processed_files(
                 "simproc",
                 cpp_traj.to_string_lossy().as_ref(),
                 "--traj",
-                in_dir.join(trajectory_file_name).to_string_lossy().as_ref(),
+                in_dir
+                    .join(&trajectory_file_name)
+                    .to_string_lossy()
+                    .as_ref(),
                 "--coord",
                 in_dir
                     .join(&meta.structure_file_name)
@@ -353,37 +359,42 @@ pub fn make_processed_files(
             if !missing.is_empty() {
                 bail!("Failed to create: {}", missing.join(", "));
             }
-
-            let full_gro = trajectory_dir.join("full.gro");
-            let full_pdb = trajectory_dir.join("full.pdb");
-            let full_xtc = trajectory_dir.join("full.xtc");
-            let min_gro = trajectory_dir.join("minimal.gro");
-            let min_pdb = trajectory_dir.join("minimal.pdb");
-            let min_xtc = trajectory_dir.join("minimal.xtc");
-            let sampled_xtc = trajectory_dir.join("sampled.xtc");
-            let thumbnail_png = trajectory_dir.join("thumbnail.png");
-            let full_xtc_size = fs::metadata(&full_xtc)?.len();
-
-            sample_trajectory(&min_xtc, &min_pdb, &sampled_xtc, script_dir)?;
-            make_thumbnail(&thumbnail_png, &sampled_xtc, &min_pdb, script_dir)?;
-
-            processed.push(ProcessedFiles {
-                full_gro,
-                full_pdb,
-                full_xtc,
-                min_gro,
-                min_pdb,
-                min_xtc,
-                sampled_xtc,
-                thumbnail_png,
-                full_xtc_size,
-                directory_name: trajectory_dir.to_string_lossy().to_string(),
-            });
         }
+
+        let full_gro = trajectory_dir.join("full.gro");
+        let full_pdb = trajectory_dir.join("full.pdb");
+        let full_xtc = trajectory_dir.join("full.xtc");
+        let min_gro = trajectory_dir.join("minimal.gro");
+        let min_pdb = trajectory_dir.join("minimal.pdb");
+        let min_xtc = trajectory_dir.join("minimal.xtc");
+        let sampled_xtc = trajectory_dir.join("sampled.xtc");
+        let thumbnail_png = trajectory_dir.join("thumbnail.png");
+        let full_xtc_size = fs::metadata(&full_xtc)?.len();
+
+        sample_trajectory(&min_xtc, &min_pdb, &sampled_xtc, script_dir)?;
+        make_thumbnail(&thumbnail_png, &sampled_xtc, &min_pdb, script_dir)?;
+
+        processed.push(ProcessedFiles {
+            full_gro,
+            full_pdb,
+            full_xtc,
+            min_gro,
+            min_pdb,
+            min_xtc,
+            sampled_xtc,
+            thumbnail_png,
+            full_xtc_size,
+            trajectory_file_name,
+            directory_name: trajectory_dir.to_string_lossy().to_string(),
+        });
     }
 
-    // Second sort by size
-    processed.sort_by_key(|val| val.full_xtc_size);
+    // Sort by size/trajectory name
+    processed.sort_by(|a, b| {
+        a.full_xtc_size
+            .cmp(&b.full_xtc_size)
+            .then_with(|| a.trajectory_file_name.cmp(&b.trajectory_file_name))
+    });
 
     Ok(processed)
 }
@@ -619,42 +630,72 @@ pub fn sample_trajectory(
 }
 
 // --------------------------------------------------
-pub fn make_tarball(
+pub fn make_tarballs(
     processed_dir: &Path,
-    processed: &[ProcessedFiles],
-) -> Result<Option<PathBuf>> {
-    if processed.is_empty() {
-        Ok(None)
-    } else {
-        let tarball = "trajectories.tgz";
-        let mut cmd = Command::new("tar");
-        let mut args = vec!["xvf", tarball];
-        let dirnames: Vec<_> = processed
-            .into_iter()
-            .map(|val| val.directory_name.as_str())
-            .collect();
-        args.extend_from_slice(&dirnames);
-        cmd.current_dir(processed_dir).args(&args);
+    processed_files: &[ProcessedFiles],
+) -> Result<Vec<ProcessedTarball>> {
+    let mut tarballs = vec![];
+    if processed_files.len() > 1 {
+        for trajectory_type in ProcessedTrajectoryType::iter() {
+            let trajectory_type_lc = trajectory_type.to_string().to_lowercase();
+            let tarball_name = format!("{trajectory_type_lc}.tar");
+            let tarball_path = processed_dir.join(&tarball_name);
+            if tarball_path.is_file() {
+                fs::remove_file(&tarball_path)?;
+            }
 
-        debug!("Running {cmd:?}");
+            let tar_dir = processed_dir.join(&trajectory_type_lc);
+            if tar_dir.is_dir() {
+                fs::remove_dir_all(&tar_dir)?;
+            }
+            fs::create_dir_all(&tar_dir)?;
 
-        let output = cmd.output()?;
-        if !output.status.success() {
-            bail!(str::from_utf8(&output.stderr)?.to_string());
+            for processed in processed_files {
+                let trajectory = match trajectory_type {
+                    ProcessedTrajectoryType::Full => processed.full_xtc.clone(),
+                    ProcessedTrajectoryType::Minimal => processed.min_xtc.clone(),
+                    ProcessedTrajectoryType::Sampled => processed.sampled_xtc.clone(),
+                };
+                std::os::unix::fs::symlink(
+                    trajectory,
+                    tar_dir.join(&processed.trajectory_file_name),
+                )?;
+            }
+
+            let mut cmd = Command::new("tar");
+            cmd.current_dir(processed_dir).args(&[
+                "--dereference", // follow symlinks
+                "-cf",           // create file
+                &tarball_name,
+                &trajectory_type_lc,
+            ]);
+
+            debug!("Running {cmd:?}");
+
+            let output = cmd.output()?;
+            if !output.status.success() {
+                bail!(str::from_utf8(&output.stderr)?.to_string());
+            }
+
+            tarballs.push(ProcessedTarball {
+                path: tarball_path,
+                file_type: format!("{trajectory_type} Trajectories"),
+            });
         }
-
-        Ok(Some(processed_dir.join(tarball)))
     }
+
+    Ok(tarballs)
 }
 
 // --------------------------------------------------
 pub fn make_import_json(
+    processed_dir: &Path,
     meta_path: &Path,
     input_dir: &Path,
     script_dir: &Path,
     blast_dir: &Path,
     processed_files: &ProcessedFiles,
-    processed_tarball: Option<PathBuf>,
+    processed_tarballs: Vec<ProcessedTarball>,
     reprocess_simulation_id: Option<u64>,
 ) -> Result<PathBuf> {
     let meta = Meta::from_file(meta_path)?;
@@ -771,7 +812,7 @@ pub fn make_import_json(
                 size: local_path.metadata()?.len(),
                 md5_sum: get_md5(&local_path)?,
                 description: None,
-                is_primary: Some(true),
+                is_primary: Some(*filename == processed_files.trajectory_file_name),
             })
         }
 
@@ -809,12 +850,21 @@ pub fn make_import_json(
         ("Sampled minimal trajectory", &processed_files.sampled_xtc),
         ("Preview image", &processed_files.thumbnail_png),
     ] {
+        let filename = path
+            .file_name()
+            .ok_or_else(|| anyhow!("No filename for '{}'", path.display()))?
+            .to_string_lossy()
+            .to_string();
+
+        // Need to symlink from subdir to processed_dir
+        let symlink = &processed_dir.join(&filename);
+        if symlink.exists() {
+            fs::remove_file(&symlink)?;
+        }
+        std::os::unix::fs::symlink(&path, &symlink)?;
+
         processed_export.push(MdFile {
-            name: path
-                .file_name()
-                .ok_or_else(|| anyhow!("No filename for '{}'", path.display()))?
-                .to_string_lossy()
-                .to_string(),
+            name: filename,
             file_type: file_type.to_string(),
             size: path.metadata()?.len(),
             md5_sum: get_md5(path)?,
@@ -823,16 +873,17 @@ pub fn make_import_json(
         })
     }
 
-    if let Some(path) = processed_tarball {
+    for tarball in processed_tarballs {
         processed_export.push(MdFile {
-            name: path
+            name: tarball
+                .path
                 .file_name()
-                .ok_or_else(|| anyhow!("No filename for '{}'", path.display()))?
+                .ok_or_else(|| anyhow!("No filename for '{}'", tarball.path.display()))?
                 .to_string_lossy()
                 .to_string(),
-            file_type: "Trajectory Replicates".to_string(),
-            size: path.metadata()?.len(),
-            md5_sum: get_md5(&path)?,
+            file_type: tarball.file_type,
+            size: tarball.path.metadata()?.len(),
+            md5_sum: get_md5(&tarball.path)?,
             description: None,
             is_primary: None,
         })
