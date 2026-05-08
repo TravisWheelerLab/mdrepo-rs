@@ -479,11 +479,23 @@ pub struct PushResult {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct DoiPaper {
     pub title: String,
+
     pub author: Vec<DoiAuthor>,
-    pub journal: String,
-    pub volume: u32,
-    pub page: String,
-    pub published: DoiPublishedDateParts,
+
+    pub publisher: Option<String>,
+
+    #[serde(rename = "URL")]
+    pub url: Option<String>,
+
+    pub journal: Option<String>,
+
+    pub volume: Option<u32>,
+
+    pub page: Option<String>,
+
+    pub published: Option<DoiPublishedDateParts>,
+
+    pub issued: Option<DoiIssuedDateParts>,
 }
 
 // --------------------------------------------------
@@ -491,6 +503,13 @@ pub struct DoiPaper {
 pub struct DoiAuthor {
     pub family: String,
     pub given: String,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DoiIssuedDateParts {
+    #[serde(alias = "date-parts")]
+    pub date_parts: Vec<Vec<u32>>,
 }
 
 // --------------------------------------------------
