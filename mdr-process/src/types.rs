@@ -628,3 +628,19 @@ pub struct ImportJsonArgs<'a> {
     pub trajectory_tarballs: &'a [ProcessedTarball],
     pub reprocess_simulation_id: Option<u64>,
 }
+
+// --------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::DoiPaper;
+    use anyhow::Result;
+    use std::fs;
+
+    #[test]
+    fn test_doi_paper() -> Result<()> {
+        let text = fs::read_to_string("tests/inputs/doi.json")?;
+        let paper: DoiPaper = serde_json::from_str(&text)?;
+        assert_eq!(paper.publisher, Some("arXiv".to_string()));
+        Ok(())
+    }
+}
