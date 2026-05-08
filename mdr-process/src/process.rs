@@ -1296,28 +1296,53 @@ pub fn get_doi(doi: &str) -> Result<metadata::Paper> {
 
     let doi_paper: DoiPaper = resp
         .json()
-        .map_err(|e| anyhow!("Failed to parse DOI response: {e}"))?;
+        .map_err(|e| anyhow!("Failed to parse DOI response ({url}): {e}"))?;
 
-    let authors: Vec<String> = doi_paper
+    let authors = doi_paper
         .author
         .into_iter()
         .map(|author| format!("{} {}", author.given, author.family))
-        .collect();
+        .collect::<Vec<String>>()
+        .join(", ");
 
-    Ok(metadata::Paper {
-        title: doi_paper.title,
-        authors: authors.join(", "),
-        journal: doi_paper.journal,
-        volume: doi_paper.volume,
-        number: None,
-        year: *doi_paper
-            .published
-            .date_parts
-            .first()
-            .ok_or_else(|| anyhow!("DOI publication data has no year"))?,
-        pages: Some(doi_paper.page),
-        doi: Some(doi.to_string()),
-    })
+    let year = if let Some(published) = doi_paper.published {
+        *published.date_parts.first().unwrap()
+    } else if let Some(issued) = doi_paper.issued {
+        if let Some(val) = issued.date_parts.first() {
+            *val.first().unwrap()
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+    let volume = doi_paper.volume.unwrap_or(0);
+
+    let paper = if let Some(publisher) = doi_paper.publisher {
+        metadata::Paper {
+            title: doi_paper.title,
+            authors,
+            journal: publisher,
+            volume,
+            number: None,
+            year,
+            pages: doi_paper.page,
+            doi: Some(doi.to_string()),
+        }
+    } else {
+        metadata::Paper {
+            title: doi_paper.title,
+            authors,
+            journal: doi_paper.journal.unwrap_or("NA".to_string()),
+            volume,
+            number: None,
+            year,
+            pages: doi_paper.page,
+            doi: Some(doi.to_string()),
+        }
+    };
+
+    Ok(paper)
 }
 
 // --------------------------------------------------
