@@ -1,7 +1,10 @@
 use clap::{builder::PossibleValue, Parser, ValueEnum};
 use libmdrepo::metadata;
 use serde::{Deserialize, Serialize};
-use std::{fmt, path::PathBuf};
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+};
 
 // --------------------------------------------------
 #[derive(Parser, Debug)]
@@ -244,7 +247,7 @@ pub struct SubmissionCompleteFile {
 
 // --------------------------------------------------
 #[derive(Debug)]
-pub struct ProcessedFiles {
+pub struct ProcessedTrajectory {
     pub full_gro: PathBuf,
     pub full_pdb: PathBuf,
     pub full_xtc: PathBuf,
@@ -255,6 +258,7 @@ pub struct ProcessedFiles {
     pub thumbnail_png: PathBuf,
     pub full_xtc_size: u64,
     pub trajectory_file_name: String,
+    pub trajectory_file_stem: String,
     pub directory_name: String,
 }
 
@@ -591,4 +595,17 @@ pub enum ProcessedTrajectoryType {
     Full,
     Minimal,
     Sampled,
+}
+
+// --------------------------------------------------
+#[derive(Debug)]
+pub struct ImportJsonArgs<'a> {
+    pub processed_dir: &'a Path,
+    pub meta_path: &'a Path,
+    pub input_dir: &'a Path,
+    pub script_dir: &'a Path,
+    pub blast_dir: &'a Path,
+    pub example_trajectory: &'a ProcessedTrajectory,
+    pub trajectory_tarballs: &'a Vec<ProcessedTarball>,
+    pub reprocess_simulation_id: Option<u64>,
 }
