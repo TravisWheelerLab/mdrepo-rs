@@ -103,7 +103,7 @@ fn irods_fetch(irods_path: &Path, local_path: &Path) -> Result<()> {
         let output = cmd.output()?;
 
         if !output.status.success() {
-            bail!(str::from_utf8(&output.stderr)?.to_string());
+            bail!("{}", String::from_utf8_lossy(&output.stderr));
         }
     }
     Ok(())

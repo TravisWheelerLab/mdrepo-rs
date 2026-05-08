@@ -23,8 +23,6 @@ fn run(args: Cli) -> Result<()> {
         .filter_level(match args.log {
             Some(LogLevel::Debug) => log::LevelFilter::Debug,
             _ => log::LevelFilter::Info,
-            //Some(LogLevel::Info) => log::LevelFilter::Info,
-            //_ => log::LevelFilter::Off,
         })
         .target(match args.log_file {
             // Optional log file, default to STDOUT
@@ -38,17 +36,13 @@ fn run(args: Cli) -> Result<()> {
     match &args.command {
         Command::Process(args) => {
             validate::validate(&args.input_dir)?;
-            match process::process(args) {
-                Err(e) => info!("Error: {e}"),
-                _ => info!("Success"),
-            }
+            process::process(args)?;
+            info!("Success");
             Ok(())
         }
         Command::Reprocess(args) => {
-            match reprocess::reprocess(args) {
-                Err(e) => info!("Error: {e}"),
-                _ => info!("Success"),
-            }
+            reprocess::reprocess(args)?;
+            info!("Success");
             Ok(())
         }
         Command::MetaCheck(args) => {
@@ -63,11 +57,9 @@ fn run(args: Cli) -> Result<()> {
                     };
                     meta.check(opts)
                 }
-                Err(e) => vec![format!(
-                    "Unable to parse {}: {}",
-                    args.filename.display(),
-                    e.to_string()
-                )],
+                Err(e) => {
+                    vec![format!("Unable to parse {}: {e}", args.filename.display())]
+                }
             };
 
             if !messages.is_empty() {

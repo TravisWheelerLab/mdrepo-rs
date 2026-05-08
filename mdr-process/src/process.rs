@@ -168,7 +168,7 @@ fn run_import(
 
     let output = cmd.output()?;
     if !output.status.success() {
-        bail!(str::from_utf8(&output.stderr)?.to_string());
+        bail!("{}", String::from_utf8_lossy(&output.stderr));
     }
 
     if !file_exists(&out_file) {
@@ -213,12 +213,6 @@ fn run_push(
 
     if reprocess_simulation_id.is_some() {
         args.push("--remove-processed-dir".to_string());
-        //args.extend_from_slice(&[
-        //    "--remove-processed-dir".to_string(),
-        //    "--file-types".to_string(),
-        //    "processed".to_string(),
-        //    "media".to_string(),
-        //]);
     }
 
     let mut cmd = Command::new(uv);
@@ -227,11 +221,11 @@ fn run_push(
 
     let output = cmd.output()?;
     if !output.status.success() {
-        bail!(str::from_utf8(&output.stderr)?.to_string());
+        bail!("{}", String::from_utf8_lossy(&output.stderr));
     }
 
     if !file_exists(&out_file) {
-        let stdout = str::from_utf8(&output.stderr)?;
+        let stdout = str::from_utf8(&output.stdout)?;
         bail!(r#"Failed to create "{}" ({stdout})"#, out_file.display());
     }
 
@@ -269,7 +263,7 @@ pub fn make_thumbnail(
         debug!("{}", str::from_utf8(&output.stdout)?);
 
         if !output.status.success() {
-            bail!(str::from_utf8(&output.stderr)?.to_string());
+            bail!("{}", String::from_utf8_lossy(&output.stderr));
         }
 
         if !file_exists(thumbnail) {
@@ -348,7 +342,7 @@ pub fn process_trajectories(
 
             let output = cmd.output()?;
             if !output.status.success() {
-                bail!(str::from_utf8(&output.stderr)?.to_string());
+                bail!("{}", String::from_utf8_lossy(&output.stderr));
             }
 
             let missing: Vec<_> = full_min_files
@@ -443,7 +437,7 @@ pub fn get_rmsd_rmsf(
         debug!("{}", str::from_utf8(&output.stdout)?);
 
         if !output.status.success() {
-            bail!(str::from_utf8(&output.stderr)?.to_string());
+            bail!("{}", String::from_utf8_lossy(&output.stderr));
         }
 
         if !file_exists(&out_file) {
@@ -474,10 +468,6 @@ pub fn blast_uniprot(
         "blast.{}.out",
         uniprot_db.to_string().to_lowercase()
     ));
-
-    if file_exists(&blast_results) {
-        fs::remove_file(&blast_results)?;
-    }
 
     if file_exists(&blast_results) {
         debug!("Uniprot BLAST results exists");
@@ -521,7 +511,7 @@ pub fn blast_uniprot(
         debug!("{}", str::from_utf8(&output.stdout)?);
 
         if !output.status.success() {
-            bail!(str::from_utf8(&output.stderr)?.to_string());
+            bail!("{}", String::from_utf8_lossy(&output.stderr));
         }
     }
 
@@ -542,8 +532,7 @@ pub fn blast_uniprot(
             let hit: BlastResult =
                 result.map_err(|e| anyhow!("{}: {e}", blast_results.display()))?;
             if hit.pident >= BLAST_MIN_PIDENT {
-                let subject = hit.saccver.to_string();
-                match trembl_regex.captures(&subject) {
+                match trembl_regex.captures(&hit.saccver) {
                     Some(caps) => {
                         let trembl_id = caps
                             .get(1)
@@ -551,7 +540,7 @@ pub fn blast_uniprot(
                             .as_str();
                         results.push(trembl_id.to_string());
                     }
-                    _ => results.push(subject),
+                    _ => results.push(hit.saccver),
                 }
             }
         }
@@ -587,7 +576,7 @@ pub fn get_sequence(full_pdb: &Path, script_dir: &Path) -> Result<PathBuf> {
         debug!("{}", str::from_utf8(&output.stdout)?);
 
         if !output.status.success() {
-            bail!(str::from_utf8(&output.stderr)?.to_string());
+            bail!("{}", String::from_utf8_lossy(&output.stderr));
         }
 
         if !file_exists(&sequence_file) {
@@ -628,7 +617,7 @@ pub fn sample_trajectory(
         debug!("{}", str::from_utf8(&output.stdout)?);
 
         if !output.status.success() {
-            bail!(str::from_utf8(&output.stderr)?.to_string());
+            bail!("{}", String::from_utf8_lossy(&output.stderr));
         }
 
         if !file_exists(out_file) {
@@ -684,7 +673,7 @@ pub fn make_trajectory_tarballs(
 
             let output = cmd.output()?;
             if !output.status.success() {
-                bail!(str::from_utf8(&output.stderr)?.to_string());
+                bail!("{}", String::from_utf8_lossy(&output.stderr));
             }
 
             tarballs.push(ProcessedTarball {
@@ -857,7 +846,7 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<PathBuf> {
                 debug!("Running {cmd:?}");
                 let output = cmd.output()?;
                 if !output.status.success() {
-                    bail!(str::from_utf8(&output.stderr)?.to_string());
+                    bail!("{}", String::from_utf8_lossy(&output.stderr));
                 }
             }
 
@@ -875,12 +864,7 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<PathBuf> {
             for file in files {
                 let path = args.input_dir.join(&file.file_name);
                 let md5_sum = get_md5(&path)?;
-                if original_files
-                    .iter()
-                    .filter(|f| f.md5_sum == md5_sum)
-                    .collect::<Vec<_>>()
-                    .is_empty()
-                {
+                if !original_files.iter().any(|f| f.md5_sum == md5_sum) {
                     original_files.push(MdFile {
                         name: file.file_name.to_string(),
                         file_type: file.file_type.to_string(),
@@ -1007,7 +991,7 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<PathBuf> {
         warnings,
     };
 
-    let import_json = &args.input_dir.join("processed").join("import.json");
+    let import_json = &args.processed_dir.join("import.json");
     debug!(r#"Writing JSON to "{}""#, &import_json.display());
     let file = File::create(import_json)?;
     writeln!(&file, "{}", &serde_json::to_string_pretty(&export)?)?;
@@ -1073,7 +1057,7 @@ pub fn get_uniprot_entries(
 
             if !not_trembl.is_empty() {
                 warnings.push(format!(
-                    "Given Uniprot IDs not found in Swisspot or Trembl: {}",
+                    "Given Uniprot IDs not found in Swissprot or Trembl: {}",
                     not_trembl.join(", "),
                 ));
             }
@@ -1110,7 +1094,7 @@ pub fn check_ligand(
 
     let output = cmd.output()?;
     if !output.status.success() {
-        bail!(str::from_utf8(&output.stderr)?.to_string());
+        bail!("{}", String::from_utf8_lossy(&output.stderr));
     }
 
     let stdout = str::from_utf8(&output.stdout)?;
@@ -1182,14 +1166,14 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Dur
         let output = cmd.output()?;
 
         if !output.status.success() {
-            bail!(str::from_utf8(&output.stderr)?.to_string());
+            bail!("{}", String::from_utf8_lossy(&output.stderr));
         }
 
         let stdout = str::from_utf8(&output.stdout)?.to_string();
         let mut time_start: Option<u64> = None;
         let mut time_stop: Option<u64> = None;
         let mut num_frames: Option<u64> = None;
-        for line in stdout.split("\n") {
+        for line in stdout.lines() {
             if let Some(caps) = MOLLY_TIME_REGEX.captures(line) {
                 let start = caps
                     .get(1)
@@ -1316,14 +1300,14 @@ pub fn get_doi(doi: &str) -> Result<metadata::Paper> {
 
     let authors: Vec<String> = doi_paper
         .author
-        .iter()
+        .into_iter()
         .map(|author| format!("{} {}", author.given, author.family))
         .collect();
 
     Ok(metadata::Paper {
-        title: doi_paper.title.clone(),
+        title: doi_paper.title,
         authors: authors.join(", "),
-        journal: doi_paper.journal.clone(),
+        journal: doi_paper.journal,
         volume: doi_paper.volume,
         number: None,
         year: *doi_paper
@@ -1331,7 +1315,7 @@ pub fn get_doi(doi: &str) -> Result<metadata::Paper> {
             .date_parts
             .first()
             .ok_or_else(|| anyhow!("DOI publication data has no year"))?,
-        pages: Some(doi_paper.page.clone()),
+        pages: Some(doi_paper.page),
         doi: Some(doi.to_string()),
     })
 }
@@ -1377,9 +1361,9 @@ pub fn get_pdb_entry(pdb_id: &str) -> Result<PdbEntry> {
         .map_err(|e| anyhow!("Failed to parse PDB response: {e}"))?;
 
     Ok(PdbEntry {
-        pdb_id: pdb_id.to_string(),
-        title: pdb_resp.struct_.title.to_string(),
-        classification: pdb_resp.struct_keywords.pdbx_keywords.to_string(),
+        pdb_id,
+        title: pdb_resp.struct_.title,
+        classification: pdb_resp.struct_keywords.pdbx_keywords,
     })
 }
 
