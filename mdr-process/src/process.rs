@@ -463,7 +463,7 @@ pub fn blast_uniprot(
         anyhow!("No parent directory for '{}'", fasta_sequence.display())
     })?;
     let blast_results = processed_dir.join(format!(
-        "blast.{}.out",
+        "blast.{}.tsv",
         uniprot_db.to_string().to_lowercase()
     ));
 
@@ -477,11 +477,15 @@ pub fn blast_uniprot(
         let mut cmd = Command::new(&blastp);
         let (blast_db, max_target_seqs) = match uniprot_db {
             UniprotDb::Swissprot => (
-                blast_dir.join("swissprot").join("uniprot_sprot"),
+                blast_dir.join("swissprot").join("swissprot"),
+                BLAST_MAX_TARGET_SEQS_SWISSPROT,
+            ),
+            UniprotDb::Isoform => (
+                blast_dir.join("isoform").join("isoform"),
                 BLAST_MAX_TARGET_SEQS_SWISSPROT,
             ),
             UniprotDb::Trembl => (
-                blast_dir.join("trembl").join("uniprot_trembl.fasta"),
+                blast_dir.join("trembl").join("trembl"),
                 BLAST_MAX_TARGET_SEQS_TREMBL,
             ),
         };
@@ -525,22 +529,34 @@ pub fn blast_uniprot(
             .has_headers(false)
             .from_reader(file);
 
-        // TODO: Fix Swissprot not being found!
+        let swissprot_regex = Regex::new(r"^sp[|]([^|]+)[|]")?;
         let trembl_regex = Regex::new(r"^tr[|]([^|]+)[|]")?;
+        let isoform_regex = Regex::new(r"^([^-]+)-\d+$")?;
         for result in reader.deserialize() {
             let hit: BlastResult =
                 result.map_err(|e| anyhow!("{}: {e}", blast_results.display()))?;
             if hit.pident >= BLAST_MIN_PIDENT {
-                match trembl_regex.captures(&hit.saccver) {
-                    Some(caps) => {
-                        let trembl_id = caps
-                            .get(1)
+                let hit_name =
+                    if let Some(caps) = swissprot_regex.captures(&hit.saccver) {
+                        caps.get(1)
                             .ok_or_else(|| anyhow!("regex capture group 1 not found"))?
-                            .as_str();
-                        results.push(trembl_id.to_string());
-                    }
-                    _ => results.push(hit.saccver),
-                }
+                            .as_str()
+                            .to_string()
+                    } else if let Some(caps) = trembl_regex.captures(&hit.saccver) {
+                        caps.get(1)
+                            .ok_or_else(|| anyhow!("regex capture group 1 not found"))?
+                            .as_str()
+                            .to_string()
+                    } else if let Some(caps) = isoform_regex.captures(&hit.saccver) {
+                        caps.get(1)
+                            .ok_or_else(|| anyhow!("regex capture group 1 not found"))?
+                            .as_str()
+                            .to_string()
+                    } else {
+                        hit.saccver
+                    };
+
+                results.push(hit_name)
             }
         }
     }
@@ -952,6 +968,11 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<PathBuf> {
         }
     }
 
+    let (water_type, water_density) = match meta.water {
+        Some(water) => (Some(water.model), Some(water.density_kg_m3)),
+        _ => (None, None),
+    };
+
     let fasta_sequence = fs::read_to_string(fasta_sequence_file)?;
     let simulation = ExportSimulation {
         simulation_id: args.reprocess_simulation_id,
@@ -976,7 +997,8 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<PathBuf> {
         rmsf_values: rmsd_rmsf.rmsf,
         temperature_kelvin: meta.temperature_kelvin,
         fasta_sequence,
-        water: meta.water,
+        water_type,
+        water_density,
         structure_hash,
         contributors: meta.contributors.unwrap_or_default(),
         original_files,
@@ -1051,25 +1073,41 @@ pub fn get_uniprot_entries(
         let swissprot_ids =
             blast_uniprot(&fasta_sequence_file, blast_dir, UniprotDb::Swissprot)?;
 
-        let not_swissprot: Vec<_> = uniprot_ids
+        let not_in_swissprot: Vec<_> = uniprot_ids
             .iter()
             .filter(|id| !swissprot_ids.contains(&id))
             .collect();
 
-        if !not_swissprot.is_empty() {
+        if !not_in_swissprot.is_empty() {
+            let isoform_ids =
+                blast_uniprot(&fasta_sequence_file, blast_dir, UniprotDb::Isoform)?;
+
+            let found_in_isoform: Vec<_> = uniprot_ids
+                .iter()
+                .filter(|id| !isoform_ids.contains(&id))
+                .map(|val| val.to_string())
+                .collect();
+
+            if !found_in_isoform.is_empty() {
+                warnings.push(format!(
+                    "Uniprot IDs found in Isoform: {}",
+                    found_in_isoform.join(", "),
+                ));
+            }
+
             let trembl_ids =
                 blast_uniprot(&fasta_sequence_file, blast_dir, UniprotDb::Trembl)?;
 
-            let not_trembl: Vec<_> = not_swissprot
+            let not_in_trembl: Vec<_> = not_in_swissprot
                 .iter()
                 .filter(|id| !trembl_ids.contains(&id))
                 .map(|val| val.to_string())
                 .collect();
 
-            if !not_trembl.is_empty() {
+            if !not_in_trembl.is_empty() {
                 warnings.push(format!(
-                    "Given Uniprot IDs not found in Swissprot or Trembl: {}",
-                    not_trembl.join(", "),
+                    "Uniprot IDs not found in Swissprot or Trembl: {}",
+                    not_in_trembl.join(", "),
                 ));
             }
         }
