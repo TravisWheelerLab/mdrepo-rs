@@ -407,11 +407,9 @@ pub fn process_trajectories(
 pub fn get_rmsd_rmsf(
     min_pdb: &Path,
     min_xtc: &Path,
+    processed_dir: &Path,
     script_dir: &Path,
 ) -> Result<RmsdRmsf> {
-    let processed_dir = min_pdb
-        .parent()
-        .ok_or_else(|| anyhow!("No parent directory for '{}'", min_pdb.display()))?;
     let out_file = processed_dir.join("rmsd_rmsf.json");
 
     if file_exists(&out_file) {
@@ -470,9 +468,9 @@ pub fn blast_uniprot(
     ));
 
     if file_exists(&blast_results) {
-        debug!("Uniprot BLAST results exists");
+        debug!("{uniprot_db} BLAST results exists");
     } else {
-        debug!("Creating Uniprot BLAST results");
+        debug!("Creating {uniprot_db} BLAST results");
         let blastp =
             which("blastp").map_err(|e| anyhow!("Failed to find blastp ({e})"))?;
 
@@ -527,6 +525,7 @@ pub fn blast_uniprot(
             .has_headers(false)
             .from_reader(file);
 
+        // TODO: Fix Swissprot not being found!
         let trembl_regex = Regex::new(r"^tr[|]([^|]+)[|]")?;
         for result in reader.deserialize() {
             let hit: BlastResult =
@@ -550,10 +549,11 @@ pub fn blast_uniprot(
 }
 
 // --------------------------------------------------
-pub fn get_sequence(full_pdb: &Path, script_dir: &Path) -> Result<PathBuf> {
-    let processed_dir = full_pdb
-        .parent()
-        .ok_or_else(|| anyhow!("No parent directory for '{}'", full_pdb.display()))?;
+pub fn get_sequence(
+    full_pdb: &Path,
+    processed_dir: &Path,
+    script_dir: &Path,
+) -> Result<PathBuf> {
     let sequence_file = processed_dir.join("sequence.fa");
 
     if file_exists(&sequence_file) {
@@ -691,20 +691,31 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<PathBuf> {
     let meta = Meta::from_file(args.meta_path)?;
     let structure_path = args.input_dir.join(&meta.structure_file_name);
     let structure_hash = get_file_hash(&structure_path)?;
-    let fasta_sequence_file =
-        get_sequence(&args.example_trajectory.full_pdb, args.script_dir)?;
+
+    let fasta_sequence_file = get_sequence(
+        &args.example_trajectory.full_pdb,
+        args.processed_dir,
+        args.script_dir,
+    )?;
+
     let rmsd_rmsf = get_rmsd_rmsf(
         &args.example_trajectory.min_pdb,
         &args.example_trajectory.min_xtc,
+        args.processed_dir,
         args.script_dir,
     )?;
+
     let duration = get_duration(
         &args.example_trajectory.full_xtc,
         meta.integration_timestep_fs,
+        args.processed_dir,
     )?;
 
-    let inferred_ligands =
-        get_inferred_ligands(&args.example_trajectory.min_pdb, args.script_dir)?;
+    let inferred_ligands = get_inferred_ligands(
+        &args.example_trajectory.min_pdb,
+        args.processed_dir,
+        args.script_dir,
+    )?;
 
     let unique_file_hash_string = get_unique_file_hash(&meta, args.input_dir);
 
@@ -1105,11 +1116,9 @@ pub fn check_ligand(
 // --------------------------------------------------
 pub fn get_inferred_ligands(
     min_pdb: &Path,
+    processed_dir: &Path,
     script_dir: &Path,
 ) -> Result<Vec<InferredLigand>> {
-    let processed_dir = min_pdb
-        .parent()
-        .ok_or_else(|| anyhow!("No parent directory for '{}'", min_pdb.display()))?;
     let out_file = processed_dir.join("inferred_ligands.json");
     if file_exists(&out_file) {
         debug!("Inferred ligands file exists");
@@ -1150,10 +1159,11 @@ pub fn get_inferred_ligands(
 }
 
 // --------------------------------------------------
-pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Duration> {
-    let processed_dir = full_xtc
-        .parent()
-        .ok_or_else(|| anyhow!("No parent directory for '{}'", full_xtc.display()))?;
+pub fn get_duration(
+    full_xtc: &Path,
+    integration_timestep_fs: u32,
+    processed_dir: &Path,
+) -> Result<Duration> {
     let out_file = processed_dir.join("duration.json");
 
     if file_exists(&out_file) {
