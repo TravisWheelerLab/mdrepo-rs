@@ -311,6 +311,7 @@ pub struct UniprotProteinDesc {
     #[serde(alias = "submissionNames")]
     pub submission_names: Option<UniprotProteinFullName>,
 }
+
 // --------------------------------------------------
 #[derive(Debug, Deserialize, Serialize)]
 pub struct UniprotProteinFullName {
@@ -430,7 +431,8 @@ pub struct ExportSimulation {
     pub integration_timestep_fs: u32,
     pub temperature_kelvin: u32,
     pub fasta_sequence: String,
-    pub water: Option<metadata::Water>,
+    pub water_type: Option<String>,
+    pub water_density: Option<f64>,
     pub structure_hash: String,
     pub contributors: Vec<metadata::Contributor>,
     pub original_files: Vec<MdFile>,
@@ -605,6 +607,7 @@ pub struct BlastResult {
 #[derive(Debug, strum_macros::Display)]
 pub enum UniprotDb {
     Swissprot,
+    Isoform,
     Trembl,
 }
 
