@@ -154,7 +154,14 @@ pub const TRAJECTORY_FILE_EXTS: &[&str] = &[
 // - .vasp / POSCAR — VASP structure format
 // - .config / .cfg — DL_POLY config file
 // - .lmp — LAMMPS structure (alternate extension)
-pub const STRUCTURE_FILE_EXTS: &[&str] = &["pdb", "gro"];
+// CHARMM
+// - .crd / .cor — CHARMM's native coordinate format. Comes in standard and
+// extended (EXT) flavors; extended is needed for systems >99,999 atoms and is
+// now the common case.
+// - .pdb — also frequently written/read, though CHARMM's PDB handling has some
+// quirks (segid in cols 73–76).
+// Restart files (.rst) contain coordinates plus velocities and box info.
+pub const STRUCTURE_FILE_EXTS: &[&str] = &["pdb", "gro", "crd", "cor"];
 
 // Here are common topology file extensions used in molecular dynamics simulations:
 // GROMACS
@@ -188,8 +195,18 @@ pub const STRUCTURE_FILE_EXTS: &[&str] = &["pdb", "gro"];
 // - .frcmod — AMBER force field modification file
 // - .str — CHARMM stream file (partial charges, parameters)
 // - .ff — generic force field file
-pub const TOPOLOGY_FILE_EXTS: &[&str] =
-    &["top", "gro", "psf", "prmtop", "parm7", "prm", "rtf", "tpr"];
+//
+// CHARMM differs most from the AMBER-style "one big prmtop" model.
+// You typically need three things together:
+// - .psf — Protein Structure File. Per-system topology: atom list, bonds,
+// angles, dihedrals, impropers, CMAP cross-terms, optional Drude/lone-pair
+// sections. Standard and XPLOR/EXT variants exist; NAMD prefers XPLOR PSF.
+// - .rtf (or .top) — Residue Topology File. Force-field-level residue definitions.
+// - .prm (or .par) — Parameter File. Bonded and nonbonded parameters.
+// - .str — Stream files that can bundle RTF + PRM together (CGenFF distributes this way).
+pub const TOPOLOGY_FILE_EXTS: &[&str] = &[
+    "gro", "par", "parm7", "prm", "prmtop", "psf", "rtf", "str", "top", "tpr",
+];
 
 const ACEMD_VERSIONS: &[&str] = &[
     "4.0.20", "4.0.18", "4.0.17", "4.0.16", "4.0.15", "4.0.11", "4.0.9", "4.0.1",
