@@ -1,0 +1,70 @@
+{
+  "type": "article",
+  "id": "https://doi.org/10.48550/arxiv.2504.18367",
+  "categories": [
+    "Computational Physics (physics.comp-ph)",
+    "Machine Learning (cs.LG)",
+    "Chemical Physics (physics.chem-ph)",
+    "Biomolecules (q-bio.BM)",
+    "FOS: Physical sciences",
+    "FOS: Physical sciences",
+    "FOS: Computer and information sciences",
+    "FOS: Computer and information sciences",
+    "FOS: Biological sciences",
+    "FOS: Biological sciences"
+  ],
+  "author": [
+    {
+      "family": "Li",
+      "given": "Maodong"
+    },
+    {
+      "family": "Zhang",
+      "given": "Jiying"
+    },
+    {
+      "family": "Wang",
+      "given": "Zhe"
+    },
+    {
+      "family": "Feng",
+      "given": "Bin"
+    },
+    {
+      "family": "Zeng",
+      "given": "Wenqi"
+    },
+    {
+      "family": "Chen",
+      "given": "Dechin"
+    },
+    {
+      "family": "Pan",
+      "given": "Zhijun"
+    },
+    {
+      "family": "Li",
+      "given": "Yu"
+    },
+    {
+      "family": "Liu",
+      "given": "Zijing"
+    },
+    {
+      "family": "Yang",
+      "given": "Yi Isaac"
+    }
+  ],
+  "issued": {
+    "date-parts": [
+      [2025]
+    ]
+  },
+  "abstract": "The kinetics and dynamics of drug-protein binding and dissociation are crucial to understanding drug absorption and metabolism. Despite advances in artificial intelligence (AI) tools for drug-protein interaction studies, existing training datasets remain limited to static structures or quasi-static conformations. This paper proposes a novel computational approach for rapidly generating drug-protein dissociation trajectories and presents the inaugural dynamically time-resolved 4-D (t, x, y, z) trajectory database DD-13M. This dataset captures over 26,000 complete dissociation processes for 565 ligand-protein complexes, providing nearly 13 million frames of all-atom simulation trajectories. A deep equivariant generative model, UnbindingFlow, was trained using the DD-13M dataset. This model has the capacity to produce dissociation trajectories for novel targets whilst accurately predicting their rate constants (koff). DD-13M introduces a new type of training dataset for AI models, establishing a de novo paradigm for studying the dynamics of drug-protein interactions.",
+  "DOI": "10.48550/ARXIV.2504.18367",
+  "publisher": "arXiv",
+  "title": "A Novel 4-D Dataset Paradigm for Studying Complete Ligand-Protein Dissociation Dynamics",
+  "URL": "https://arxiv.org/abs/2504.18367",
+  "copyright": "arXiv.org perpetual, non-exclusive license",
+  "version": "2"
+}

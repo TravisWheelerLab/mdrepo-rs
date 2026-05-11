@@ -1,7 +1,10 @@
 use clap::{builder::PossibleValue, Parser, ValueEnum};
 use libmdrepo::metadata;
 use serde::{Deserialize, Serialize};
-use std::{fmt, path::PathBuf};
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+};
 
 // --------------------------------------------------
 #[derive(Parser, Debug)]
@@ -244,7 +247,7 @@ pub struct SubmissionCompleteFile {
 
 // --------------------------------------------------
 #[derive(Debug)]
-pub struct ProcessedFiles {
+pub struct ProcessedTrajectory {
     pub full_gro: PathBuf,
     pub full_pdb: PathBuf,
     pub full_xtc: PathBuf,
@@ -254,7 +257,16 @@ pub struct ProcessedFiles {
     pub sampled_xtc: PathBuf,
     pub thumbnail_png: PathBuf,
     pub full_xtc_size: u64,
+    pub trajectory_file_name: String,
+    pub trajectory_file_stem: String,
     pub directory_name: String,
+}
+
+// --------------------------------------------------
+#[derive(Debug)]
+pub struct ProcessedTarball {
+    pub path: PathBuf,
+    pub file_type: String,
 }
 
 // --------------------------------------------------
@@ -467,11 +479,23 @@ pub struct PushResult {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct DoiPaper {
     pub title: String,
+
     pub author: Vec<DoiAuthor>,
-    pub journal: String,
-    pub volume: u32,
-    pub page: String,
-    pub published: DoiPublishedDateParts,
+
+    pub publisher: Option<String>,
+
+    #[serde(rename = "URL")]
+    pub url: Option<String>,
+
+    pub journal: Option<String>,
+
+    pub volume: Option<u32>,
+
+    pub page: Option<String>,
+
+    pub published: Option<DoiPublishedDateParts>,
+
+    pub issued: Option<DoiIssuedDateParts>,
 }
 
 // --------------------------------------------------
@@ -479,6 +503,13 @@ pub struct DoiPaper {
 pub struct DoiAuthor {
     pub family: String,
     pub given: String,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DoiIssuedDateParts {
+    #[serde(alias = "date-parts")]
+    pub date_parts: Vec<Vec<u32>>,
 }
 
 // --------------------------------------------------
@@ -575,4 +606,41 @@ pub struct BlastResult {
 pub enum UniprotDb {
     Swissprot,
     Trembl,
+}
+
+// --------------------------------------------------
+#[derive(Debug, strum_macros::EnumIter, strum_macros::Display)]
+pub enum ProcessedTrajectoryType {
+    Full,
+    Minimal,
+    Sampled,
+}
+
+// --------------------------------------------------
+#[derive(Debug)]
+pub struct ImportJsonArgs<'a> {
+    pub processed_dir: &'a Path,
+    pub meta_path: &'a Path,
+    pub input_dir: &'a Path,
+    pub script_dir: &'a Path,
+    pub blast_dir: &'a Path,
+    pub example_trajectory: &'a ProcessedTrajectory,
+    pub trajectory_tarballs: &'a [ProcessedTarball],
+    pub reprocess_simulation_id: Option<u64>,
+}
+
+// --------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::DoiPaper;
+    use anyhow::Result;
+    use std::fs;
+
+    #[test]
+    fn test_doi_paper() -> Result<()> {
+        let text = fs::read_to_string("tests/inputs/doi.json")?;
+        let paper: DoiPaper = serde_json::from_str(&text)?;
+        assert_eq!(paper.publisher, Some("arXiv".to_string()));
+        Ok(())
+    }
 }

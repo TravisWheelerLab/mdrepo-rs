@@ -1,7 +1,8 @@
 use crate::types::{
     BlastResult, CheckedLigand, DoiPaper, Duration, Export, ExportSimulation,
-    ImportResult, InferredLigand, MdFile, PdbEntry, PdbResponse, ProcessArgs,
-    ProcessedFiles, PushResult, RmsdRmsf, UniprotDb, UniprotEntry, UniprotResponse,
+    ImportJsonArgs, ImportResult, InferredLigand, MdFile, PdbEntry, PdbResponse,
+    ProcessArgs, ProcessedTarball, ProcessedTrajectory, ProcessedTrajectoryType,
+    PushResult, RmsdRmsf, UniprotDb, UniprotEntry, UniprotResponse,
 };
 use anyhow::{anyhow, bail, Result};
 use dotenvy::dotenv;
@@ -22,6 +23,7 @@ use std::{
     process::Command,
     time::Instant,
 };
+use strum::IntoEnumIterator;
 use which::which;
 
 // ── BLAST parameters ──────────────────────────────────────────────────────────
@@ -70,7 +72,6 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
     } else {
         None
     });
-
     if !errors.is_empty() {
         bail!(
             "Found {} error{} in mdrepo-metadata.toml:\n{}",
@@ -80,24 +81,27 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
         )
     }
 
-    let processed_files =
-        make_processed_files(&meta_path, &input_dir, &processed_dir, &script_dir)?;
+    let processed_trajectories =
+        process_trajectories(&meta_path, &input_dir, &processed_dir, &script_dir)?;
 
-    let (largest, rest) = processed_files
-        .split_last()
-        .ok_or_else(|| anyhow!("Unable to split processed files"))?;
+    // The processed trajectories are returned sorted by full xtc size and filename
+    let example_trajectory = processed_trajectories
+        .last()
+        .ok_or_else(|| anyhow!("Unable to get last of processed trajectories"))?;
 
-    let tarball = make_tarball(&processed_dir, rest)?;
+    let trajectory_tarballs =
+        make_trajectory_tarballs(&processed_dir, &processed_trajectories)?;
 
-    let import_json = make_import_json(
-        &meta_path,
-        &input_dir,
-        &script_dir,
-        &blast_dir,
-        &largest,
-        tarball,
-        args.reprocess_simulation_id,
-    )?;
+    let import_json = make_import_json(ImportJsonArgs {
+        processed_dir: &processed_dir,
+        meta_path: &meta_path,
+        input_dir: &input_dir,
+        script_dir: &script_dir,
+        blast_dir: &blast_dir,
+        example_trajectory: &example_trajectory,
+        trajectory_tarballs: &trajectory_tarballs,
+        reprocess_simulation_id: args.reprocess_simulation_id,
+    })?;
 
     if !args.dry_run {
         let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
@@ -110,6 +114,7 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
             args.reprocess_simulation_id,
             &processed_dir,
         )?;
+
         let push_res = run_push(
             &uv,
             &script_dir,
@@ -163,7 +168,7 @@ fn run_import(
 
     let output = cmd.output()?;
     if !output.status.success() {
-        bail!(str::from_utf8(&output.stderr)?.to_string());
+        bail!("{}", String::from_utf8_lossy(&output.stderr));
     }
 
     if !file_exists(&out_file) {
@@ -208,12 +213,6 @@ fn run_push(
 
     if reprocess_simulation_id.is_some() {
         args.push("--remove-processed-dir".to_string());
-        //args.extend_from_slice(&[
-        //    "--remove-processed-dir".to_string(),
-        //    "--file-types".to_string(),
-        //    "processed".to_string(),
-        //    "media".to_string(),
-        //]);
     }
 
     let mut cmd = Command::new(uv);
@@ -222,11 +221,11 @@ fn run_push(
 
     let output = cmd.output()?;
     if !output.status.success() {
-        bail!(str::from_utf8(&output.stderr)?.to_string());
+        bail!("{}", String::from_utf8_lossy(&output.stderr));
     }
 
     if !file_exists(&out_file) {
-        let stdout = str::from_utf8(&output.stderr)?;
+        let stdout = str::from_utf8(&output.stdout)?;
         bail!(r#"Failed to create "{}" ({stdout})"#, out_file.display());
     }
 
@@ -264,7 +263,7 @@ pub fn make_thumbnail(
         debug!("{}", str::from_utf8(&output.stdout)?);
 
         if !output.status.success() {
-            bail!(str::from_utf8(&output.stderr)?.to_string());
+            bail!("{}", String::from_utf8_lossy(&output.stderr));
         }
 
         if !file_exists(thumbnail) {
@@ -275,21 +274,20 @@ pub fn make_thumbnail(
 }
 
 // --------------------------------------------------
-pub fn make_processed_files(
+pub fn process_trajectories(
     meta_path: &Path,
-    in_dir: &Path,
+    input_dir: &Path,
     processed_dir: &Path,
     script_dir: &Path,
-) -> Result<Vec<ProcessedFiles>> {
+) -> Result<Vec<ProcessedTrajectory>> {
     let meta = Meta::from_file(meta_path)?;
     let mut processed = vec![];
 
-    // Initial sort by name
     let mut trajectory_file_names = meta.trajectory_file_names.clone();
     trajectory_file_names.sort();
 
-    for trajectory_file_name in trajectory_file_names {
-        let trajectory_dir = processed_dir.join(&trajectory_file_name);
+    for (num, trajectory_file_name) in trajectory_file_names.into_iter().enumerate() {
+        let trajectory_dir = processed_dir.join(format!("rep_{}", num + 1));
         if !trajectory_dir.is_dir() {
             fs::create_dir_all(&trajectory_dir)?;
         }
@@ -323,14 +321,17 @@ pub fn make_processed_files(
                 "simproc",
                 cpp_traj.to_string_lossy().as_ref(),
                 "--traj",
-                in_dir.join(trajectory_file_name).to_string_lossy().as_ref(),
+                input_dir
+                    .join(&trajectory_file_name)
+                    .to_string_lossy()
+                    .as_ref(),
                 "--coord",
-                in_dir
+                input_dir
                     .join(&meta.structure_file_name)
                     .to_string_lossy()
                     .as_ref(),
                 "--top",
-                in_dir
+                input_dir
                     .join(&meta.topology_file_name)
                     .to_string_lossy()
                     .as_ref(),
@@ -341,7 +342,7 @@ pub fn make_processed_files(
 
             let output = cmd.output()?;
             if !output.status.success() {
-                bail!(str::from_utf8(&output.stderr)?.to_string());
+                bail!("{}", String::from_utf8_lossy(&output.stderr));
             }
 
             let missing: Vec<_> = full_min_files
@@ -353,37 +354,51 @@ pub fn make_processed_files(
             if !missing.is_empty() {
                 bail!("Failed to create: {}", missing.join(", "));
             }
-
-            let full_gro = trajectory_dir.join("full.gro");
-            let full_pdb = trajectory_dir.join("full.pdb");
-            let full_xtc = trajectory_dir.join("full.xtc");
-            let min_gro = trajectory_dir.join("minimal.gro");
-            let min_pdb = trajectory_dir.join("minimal.pdb");
-            let min_xtc = trajectory_dir.join("minimal.xtc");
-            let sampled_xtc = trajectory_dir.join("sampled.xtc");
-            let thumbnail_png = trajectory_dir.join("thumbnail.png");
-            let full_xtc_size = fs::metadata(&full_xtc)?.len();
-
-            sample_trajectory(&min_xtc, &min_pdb, &sampled_xtc, script_dir)?;
-            make_thumbnail(&thumbnail_png, &sampled_xtc, &min_pdb, script_dir)?;
-
-            processed.push(ProcessedFiles {
-                full_gro,
-                full_pdb,
-                full_xtc,
-                min_gro,
-                min_pdb,
-                min_xtc,
-                sampled_xtc,
-                thumbnail_png,
-                full_xtc_size,
-                directory_name: trajectory_dir.to_string_lossy().to_string(),
-            });
         }
+
+        let full_gro = trajectory_dir.join("full.gro");
+        let full_pdb = trajectory_dir.join("full.pdb");
+        let full_xtc = trajectory_dir.join("full.xtc");
+        let min_gro = trajectory_dir.join("minimal.gro");
+        let min_pdb = trajectory_dir.join("minimal.pdb");
+        let min_xtc = trajectory_dir.join("minimal.xtc");
+        let sampled_xtc = trajectory_dir.join("sampled.xtc");
+        let thumbnail_png = trajectory_dir.join("thumbnail.png");
+        let full_xtc_size = fs::metadata(&full_xtc)?.len();
+
+        sample_trajectory(&min_xtc, &min_pdb, &sampled_xtc, script_dir)?;
+        make_thumbnail(&thumbnail_png, &sampled_xtc, &min_pdb, script_dir)?;
+
+        let trajectory_file_stem = Path::new(&trajectory_file_name)
+            .file_stem()
+            .ok_or_else(|| {
+                anyhow!(r#"Failed to extract file_stem from "{trajectory_file_name}""#)
+            })?
+            .to_string_lossy()
+            .to_string();
+
+        processed.push(ProcessedTrajectory {
+            full_gro,
+            full_pdb,
+            full_xtc,
+            min_gro,
+            min_pdb,
+            min_xtc,
+            sampled_xtc,
+            thumbnail_png,
+            full_xtc_size,
+            trajectory_file_name,
+            trajectory_file_stem,
+            directory_name: trajectory_dir.to_string_lossy().to_string(),
+        });
     }
 
-    // Second sort by size
-    processed.sort_by_key(|val| val.full_xtc_size);
+    // Sort by size/trajectory name
+    processed.sort_by(|a, b| {
+        a.full_xtc_size
+            .cmp(&b.full_xtc_size)
+            .then_with(|| a.trajectory_file_stem.cmp(&b.trajectory_file_stem))
+    });
 
     Ok(processed)
 }
@@ -422,7 +437,7 @@ pub fn get_rmsd_rmsf(
         debug!("{}", str::from_utf8(&output.stdout)?);
 
         if !output.status.success() {
-            bail!(str::from_utf8(&output.stderr)?.to_string());
+            bail!("{}", String::from_utf8_lossy(&output.stderr));
         }
 
         if !file_exists(&out_file) {
@@ -453,10 +468,6 @@ pub fn blast_uniprot(
         "blast.{}.out",
         uniprot_db.to_string().to_lowercase()
     ));
-
-    if file_exists(&blast_results) {
-        fs::remove_file(&blast_results)?;
-    }
 
     if file_exists(&blast_results) {
         debug!("Uniprot BLAST results exists");
@@ -500,7 +511,7 @@ pub fn blast_uniprot(
         debug!("{}", str::from_utf8(&output.stdout)?);
 
         if !output.status.success() {
-            bail!(str::from_utf8(&output.stderr)?.to_string());
+            bail!("{}", String::from_utf8_lossy(&output.stderr));
         }
     }
 
@@ -521,8 +532,7 @@ pub fn blast_uniprot(
             let hit: BlastResult =
                 result.map_err(|e| anyhow!("{}: {e}", blast_results.display()))?;
             if hit.pident >= BLAST_MIN_PIDENT {
-                let subject = hit.saccver.to_string();
-                match trembl_regex.captures(&subject) {
+                match trembl_regex.captures(&hit.saccver) {
                     Some(caps) => {
                         let trembl_id = caps
                             .get(1)
@@ -530,7 +540,7 @@ pub fn blast_uniprot(
                             .as_str();
                         results.push(trembl_id.to_string());
                     }
-                    _ => results.push(subject),
+                    _ => results.push(hit.saccver),
                 }
             }
         }
@@ -566,7 +576,7 @@ pub fn get_sequence(full_pdb: &Path, script_dir: &Path) -> Result<PathBuf> {
         debug!("{}", str::from_utf8(&output.stdout)?);
 
         if !output.status.success() {
-            bail!(str::from_utf8(&output.stderr)?.to_string());
+            bail!("{}", String::from_utf8_lossy(&output.stderr));
         }
 
         if !file_exists(&sequence_file) {
@@ -607,7 +617,7 @@ pub fn sample_trajectory(
         debug!("{}", str::from_utf8(&output.stdout)?);
 
         if !output.status.success() {
-            bail!(str::from_utf8(&output.stderr)?.to_string());
+            bail!("{}", String::from_utf8_lossy(&output.stderr));
         }
 
         if !file_exists(out_file) {
@@ -619,62 +629,90 @@ pub fn sample_trajectory(
 }
 
 // --------------------------------------------------
-pub fn make_tarball(
+pub fn make_trajectory_tarballs(
     processed_dir: &Path,
-    processed: &[ProcessedFiles],
-) -> Result<Option<PathBuf>> {
-    if processed.is_empty() {
-        Ok(None)
-    } else {
-        let tarball = "trajectories.tgz";
-        let mut cmd = Command::new("tar");
-        let mut args = vec!["xvf", tarball];
-        let dirnames: Vec<_> = processed
-            .into_iter()
-            .map(|val| val.directory_name.as_str())
-            .collect();
-        args.extend_from_slice(&dirnames);
-        cmd.current_dir(processed_dir).args(&args);
+    processed_trajectories: &[ProcessedTrajectory],
+) -> Result<Vec<ProcessedTarball>> {
+    let mut tarballs = vec![];
+    if processed_trajectories.len() > 1 {
+        for trajectory_type in ProcessedTrajectoryType::iter() {
+            let trajectory_type_lc = trajectory_type.to_string().to_lowercase();
+            let tarball_name = format!("{trajectory_type_lc}.tar");
+            let tarball_path = processed_dir.join(&tarball_name);
+            if tarball_path.is_file() {
+                fs::remove_file(&tarball_path)?;
+            }
 
-        debug!("Running {cmd:?}");
+            let tar_dir = processed_dir.join(&trajectory_type_lc);
+            if tar_dir.is_dir() {
+                fs::remove_dir_all(&tar_dir)?;
+            }
+            fs::create_dir_all(&tar_dir)?;
 
-        let output = cmd.output()?;
-        if !output.status.success() {
-            bail!(str::from_utf8(&output.stderr)?.to_string());
+            for processed in processed_trajectories {
+                let trajectory = match trajectory_type {
+                    ProcessedTrajectoryType::Full => processed.full_xtc.clone(),
+                    ProcessedTrajectoryType::Minimal => processed.min_xtc.clone(),
+                    ProcessedTrajectoryType::Sampled => processed.sampled_xtc.clone(),
+                };
+                std::os::unix::fs::symlink(
+                    trajectory,
+                    tar_dir.join(&format!("{}.xtc", processed.trajectory_file_stem)),
+                )?;
+            }
+
+            let mut cmd = Command::new("tar");
+            cmd.current_dir(processed_dir).args(&[
+                "--dereference", // follow symlinks
+                "-cf",           // create file
+                &tarball_name,
+                &trajectory_type_lc,
+            ]);
+
+            debug!("Running {cmd:?}");
+
+            let output = cmd.output()?;
+            if !output.status.success() {
+                bail!("{}", String::from_utf8_lossy(&output.stderr));
+            }
+
+            tarballs.push(ProcessedTarball {
+                path: tarball_path,
+                file_type: format!("{trajectory_type} Trajectories (All)"),
+            });
         }
-
-        Ok(Some(processed_dir.join(tarball)))
     }
+
+    Ok(tarballs)
 }
 
 // --------------------------------------------------
-pub fn make_import_json(
-    meta_path: &Path,
-    input_dir: &Path,
-    script_dir: &Path,
-    blast_dir: &Path,
-    processed_files: &ProcessedFiles,
-    processed_tarball: Option<PathBuf>,
-    reprocess_simulation_id: Option<u64>,
-) -> Result<PathBuf> {
-    let meta = Meta::from_file(meta_path)?;
-    let structure_path = input_dir.join(&meta.structure_file_name);
+pub fn make_import_json(args: ImportJsonArgs) -> Result<PathBuf> {
+    let meta = Meta::from_file(args.meta_path)?;
+    let structure_path = args.input_dir.join(&meta.structure_file_name);
     let structure_hash = get_file_hash(&structure_path)?;
-    let fasta_sequence_file = get_sequence(&processed_files.full_pdb, script_dir)?;
+    let fasta_sequence_file =
+        get_sequence(&args.example_trajectory.full_pdb, args.script_dir)?;
     let rmsd_rmsf = get_rmsd_rmsf(
-        &processed_files.min_pdb,
-        &processed_files.min_xtc,
-        script_dir,
+        &args.example_trajectory.min_pdb,
+        &args.example_trajectory.min_xtc,
+        args.script_dir,
     )?;
-    let duration =
-        get_duration(&processed_files.full_xtc, meta.integration_timestep_fs)?;
+    let duration = get_duration(
+        &args.example_trajectory.full_xtc,
+        meta.integration_timestep_fs,
+    )?;
 
-    let inferred_ligands = get_inferred_ligands(&processed_files.min_pdb, script_dir)?;
+    let inferred_ligands =
+        get_inferred_ligands(&args.example_trajectory.min_pdb, args.script_dir)?;
 
-    let unique_file_hash_string = get_unique_file_hash(&meta, input_dir);
+    let unique_file_hash_string = get_unique_file_hash(&meta, args.input_dir);
 
-    let (uniprots, mut uniprot_warnings) =
-        get_uniprot_entries(meta.uniprot_ids.clone(), &fasta_sequence_file, blast_dir)?;
+    let (uniprots, mut uniprot_warnings) = get_uniprot_entries(
+        meta.uniprot_ids.clone(),
+        &fasta_sequence_file,
+        args.blast_dir,
+    )?;
 
     let mut ligands = vec![];
     let mut warnings = mem::take(&mut uniprot_warnings);
@@ -687,7 +725,7 @@ pub fn make_import_json(
             for (ligand_num, given_ligand) in given_ligands.iter().enumerate() {
                 let mut found_match = false;
                 for inferred in &inferred_ligands {
-                    let check = check_ligand(given_ligand, inferred, script_dir)?;
+                    let check = check_ligand(given_ligand, inferred, args.script_dir)?;
                     if check.exact_match
                         || check.same_connectivity
                         || check.same_connectivity_and_stereo
@@ -734,16 +772,19 @@ pub fn make_import_json(
 
     // No need to push original files when reprocessing
     let mut original_files: Vec<MdFile> = vec![];
-    if reprocess_simulation_id.is_none() {
+    if args.reprocess_simulation_id.is_none() {
         original_files.push(MdFile {
-            name: meta_path
+            name: args
+                .meta_path
                 .file_name()
-                .ok_or_else(|| anyhow!("No filename for '{}'", meta_path.display()))?
+                .ok_or_else(|| {
+                    anyhow!("No filename for '{}'", args.meta_path.display())
+                })?
                 .to_string_lossy()
                 .to_string(),
             file_type: "Metadata".to_string(),
-            size: meta_path.metadata()?.len(),
-            md5_sum: get_md5(meta_path)?,
+            size: args.meta_path.metadata()?.len(),
+            md5_sum: get_md5(args.meta_path)?,
             description: None,
             is_primary: None,
         });
@@ -752,7 +793,7 @@ pub fn make_import_json(
             ("Structure", &meta.structure_file_name),
             ("Topology", &meta.topology_file_name),
         ] {
-            let local_path = input_dir.join(filename);
+            let local_path = args.input_dir.join(filename);
             original_files.push(MdFile {
                 name: filename.to_string(),
                 file_type: file_type.to_string(),
@@ -764,27 +805,66 @@ pub fn make_import_json(
         }
 
         for filename in &meta.trajectory_file_names {
-            let local_path = input_dir.join(filename);
+            if *filename == args.example_trajectory.trajectory_file_name {
+                let local_path = args.input_dir.join(filename);
+                original_files.push(MdFile {
+                    name: filename.to_string(),
+                    file_type: "Trajectory".to_string(),
+                    size: local_path.metadata()?.len(),
+                    md5_sum: get_md5(&local_path)?,
+                    description: None,
+                    is_primary: Some(true),
+                })
+            }
+        }
+
+        if meta.trajectory_file_names.len() > 1 {
+            let tar_name = "trajectories.tar";
+            let local_path = args.input_dir.join(&tar_name);
+            if local_path.is_file() {
+                fs::remove_file(&local_path)?;
+            }
+
+            let mut cmds = vec![];
+            for (i, filename) in meta.trajectory_file_names.iter().enumerate() {
+                let mut cmd = Command::new("tar");
+                if i == 0 {
+                    // create tarball on first file
+                    cmd.current_dir(args.input_dir)
+                        .args(&["-cf", &tar_name, &filename]);
+                    cmds.push(cmd);
+                } else {
+                    // append successive files to prevent sending
+                    // too many command-line args
+                    cmd.current_dir(args.input_dir)
+                        .args(&["-rf", &tar_name, &filename]);
+                    cmds.push(cmd);
+                }
+            }
+
+            for mut cmd in cmds {
+                debug!("Running {cmd:?}");
+                let output = cmd.output()?;
+                if !output.status.success() {
+                    bail!("{}", String::from_utf8_lossy(&output.stderr));
+                }
+            }
+
             original_files.push(MdFile {
-                name: filename.to_string(),
-                file_type: "Trajectory".to_string(),
+                name: tar_name.to_string(),
+                file_type: "Trajectories (All)".to_string(),
                 size: local_path.metadata()?.len(),
                 md5_sum: get_md5(&local_path)?,
                 description: None,
-                is_primary: Some(true),
+                is_primary: None,
             })
         }
 
         if let Some(files) = &meta.additional_files {
             for file in files {
-                let path = input_dir.join(&file.file_name);
+                let path = args.input_dir.join(&file.file_name);
                 let md5_sum = get_md5(&path)?;
-                if original_files
-                    .iter()
-                    .filter(|f| f.md5_sum == md5_sum)
-                    .collect::<Vec<_>>()
-                    .is_empty()
-                {
+                if !original_files.iter().any(|f| f.md5_sum == md5_sum) {
                     original_files.push(MdFile {
                         name: file.file_name.to_string(),
                         file_type: file.file_type.to_string(),
@@ -800,21 +880,33 @@ pub fn make_import_json(
 
     let mut processed_export: Vec<MdFile> = vec![];
     for (file_type, path) in &[
-        ("Processed topology", &processed_files.full_gro),
-        ("Processed structure", &processed_files.full_pdb),
-        ("Processed trajectory", &processed_files.full_xtc),
-        ("Minimal topology", &processed_files.min_gro),
-        ("Minimal structure", &processed_files.min_pdb),
-        ("Minimal trajectory", &processed_files.min_xtc),
-        ("Sampled minimal trajectory", &processed_files.sampled_xtc),
-        ("Preview image", &processed_files.thumbnail_png),
+        ("Processed topology", &args.example_trajectory.full_gro),
+        ("Processed structure", &args.example_trajectory.full_pdb),
+        ("Processed trajectory", &args.example_trajectory.full_xtc),
+        ("Minimal topology", &args.example_trajectory.min_gro),
+        ("Minimal structure", &args.example_trajectory.min_pdb),
+        ("Minimal trajectory", &args.example_trajectory.min_xtc),
+        (
+            "Sampled minimal trajectory",
+            &args.example_trajectory.sampled_xtc,
+        ),
+        ("Preview image", &args.example_trajectory.thumbnail_png),
     ] {
+        let filename = path
+            .file_name()
+            .ok_or_else(|| anyhow!("No filename for '{}'", path.display()))?
+            .to_string_lossy()
+            .to_string();
+
+        // Need to symlink from subdir to processed_dir
+        let symlink = &args.processed_dir.join(&filename);
+        if symlink.exists() {
+            fs::remove_file(&symlink)?;
+        }
+        std::os::unix::fs::symlink(&path, &symlink)?;
+
         processed_export.push(MdFile {
-            name: path
-                .file_name()
-                .ok_or_else(|| anyhow!("No filename for '{}'", path.display()))?
-                .to_string_lossy()
-                .to_string(),
+            name: filename,
             file_type: file_type.to_string(),
             size: path.metadata()?.len(),
             md5_sum: get_md5(path)?,
@@ -823,16 +915,17 @@ pub fn make_import_json(
         })
     }
 
-    if let Some(path) = processed_tarball {
+    for tarball in args.trajectory_tarballs {
         processed_export.push(MdFile {
-            name: path
+            name: tarball
+                .path
                 .file_name()
-                .ok_or_else(|| anyhow!("No filename for '{}'", path.display()))?
+                .ok_or_else(|| anyhow!("No filename for '{}'", tarball.path.display()))?
                 .to_string_lossy()
                 .to_string(),
-            file_type: "Trajectory Replicates".to_string(),
-            size: path.metadata()?.len(),
-            md5_sum: get_md5(&path)?,
+            file_type: tarball.file_type.clone(),
+            size: tarball.path.metadata()?.len(),
+            md5_sum: get_md5(&tarball.path)?,
             description: None,
             is_primary: None,
         })
@@ -850,7 +943,7 @@ pub fn make_import_json(
 
     let fasta_sequence = fs::read_to_string(fasta_sequence_file)?;
     let simulation = ExportSimulation {
-        simulation_id: reprocess_simulation_id,
+        simulation_id: args.reprocess_simulation_id,
         lead_contributor_orcid: meta.lead_contributor_orcid,
         unique_file_hash_string,
         alias: meta.alias,
@@ -898,7 +991,7 @@ pub fn make_import_json(
         warnings,
     };
 
-    let import_json = &input_dir.join("processed").join("import.json");
+    let import_json = &args.processed_dir.join("import.json");
     debug!(r#"Writing JSON to "{}""#, &import_json.display());
     let file = File::create(import_json)?;
     writeln!(&file, "{}", &serde_json::to_string_pretty(&export)?)?;
@@ -964,7 +1057,7 @@ pub fn get_uniprot_entries(
 
             if !not_trembl.is_empty() {
                 warnings.push(format!(
-                    "Given Uniprot IDs not found in Swisspot or Trembl: {}",
+                    "Given Uniprot IDs not found in Swissprot or Trembl: {}",
                     not_trembl.join(", "),
                 ));
             }
@@ -1001,7 +1094,7 @@ pub fn check_ligand(
 
     let output = cmd.output()?;
     if !output.status.success() {
-        bail!(str::from_utf8(&output.stderr)?.to_string());
+        bail!("{}", String::from_utf8_lossy(&output.stderr));
     }
 
     let stdout = str::from_utf8(&output.stdout)?;
@@ -1073,14 +1166,14 @@ pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Dur
         let output = cmd.output()?;
 
         if !output.status.success() {
-            bail!(str::from_utf8(&output.stderr)?.to_string());
+            bail!("{}", String::from_utf8_lossy(&output.stderr));
         }
 
         let stdout = str::from_utf8(&output.stdout)?.to_string();
         let mut time_start: Option<u64> = None;
         let mut time_stop: Option<u64> = None;
         let mut num_frames: Option<u64> = None;
-        for line in stdout.split("\n") {
+        for line in stdout.lines() {
             if let Some(caps) = MOLLY_TIME_REGEX.captures(line) {
                 let start = caps
                     .get(1)
@@ -1203,28 +1296,53 @@ pub fn get_doi(doi: &str) -> Result<metadata::Paper> {
 
     let doi_paper: DoiPaper = resp
         .json()
-        .map_err(|e| anyhow!("Failed to parse DOI response: {e}"))?;
+        .map_err(|e| anyhow!("Failed to parse DOI response ({url}): {e}"))?;
 
-    let authors: Vec<String> = doi_paper
+    let authors = doi_paper
         .author
-        .iter()
+        .into_iter()
         .map(|author| format!("{} {}", author.given, author.family))
-        .collect();
+        .collect::<Vec<String>>()
+        .join(", ");
 
-    Ok(metadata::Paper {
-        title: doi_paper.title.clone(),
-        authors: authors.join(", "),
-        journal: doi_paper.journal.clone(),
-        volume: doi_paper.volume,
-        number: None,
-        year: *doi_paper
-            .published
-            .date_parts
-            .first()
-            .ok_or_else(|| anyhow!("DOI publication data has no year"))?,
-        pages: Some(doi_paper.page.clone()),
-        doi: Some(doi.to_string()),
-    })
+    let year = if let Some(published) = doi_paper.published {
+        *published.date_parts.first().unwrap()
+    } else if let Some(issued) = doi_paper.issued {
+        if let Some(val) = issued.date_parts.first() {
+            *val.first().unwrap()
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+    let volume = doi_paper.volume.unwrap_or(0);
+
+    let paper = if let Some(publisher) = doi_paper.publisher {
+        metadata::Paper {
+            title: doi_paper.title,
+            authors,
+            journal: publisher,
+            volume,
+            number: None,
+            year,
+            pages: doi_paper.page,
+            doi: Some(doi.to_string()),
+        }
+    } else {
+        metadata::Paper {
+            title: doi_paper.title,
+            authors,
+            journal: doi_paper.journal.unwrap_or("NA".to_string()),
+            volume,
+            number: None,
+            year,
+            pages: doi_paper.page,
+            doi: Some(doi.to_string()),
+        }
+    };
+
+    Ok(paper)
 }
 
 // --------------------------------------------------
@@ -1268,9 +1386,9 @@ pub fn get_pdb_entry(pdb_id: &str) -> Result<PdbEntry> {
         .map_err(|e| anyhow!("Failed to parse PDB response: {e}"))?;
 
     Ok(PdbEntry {
-        pdb_id: pdb_id.to_string(),
-        title: pdb_resp.struct_.title.to_string(),
-        classification: pdb_resp.struct_keywords.pdbx_keywords.to_string(),
+        pdb_id,
+        title: pdb_resp.struct_.title,
+        classification: pdb_resp.struct_keywords.pdbx_keywords,
     })
 }
 

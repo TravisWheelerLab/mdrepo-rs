@@ -70,7 +70,7 @@ pub fn process(args: &TicketArgs) -> Result<()> {
         .output()?;
 
     if !cmd.status.success() {
-        bail!(str::from_utf8(&cmd.stderr)?.to_string());
+        bail!("{}", String::from_utf8_lossy(&cmd.stderr));
     }
 
     // The ticket directory should have been created by the fetch
