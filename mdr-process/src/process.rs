@@ -98,7 +98,7 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
         input_dir: &input_dir,
         script_dir: &script_dir,
         blast_dir: &blast_dir,
-        example_trajectory: &example_trajectory,
+        example_trajectory,
         trajectory_tarballs: &trajectory_tarballs,
         reprocess_simulation_id: args.reprocess_simulation_id,
     })?;
@@ -673,12 +673,12 @@ pub fn make_trajectory_tarballs(
                 };
                 std::os::unix::fs::symlink(
                     trajectory,
-                    tar_dir.join(&format!("{}.xtc", processed.trajectory_file_stem)),
+                    tar_dir.join(format!("{}.xtc", processed.trajectory_file_stem)),
                 )?;
             }
 
             let mut cmd = Command::new("tar");
-            cmd.current_dir(processed_dir).args(&[
+            cmd.current_dir(processed_dir).args([
                 "--dereference", // follow symlinks
                 "-cf",           // create file
                 &tarball_name,
@@ -847,7 +847,7 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<PathBuf> {
 
         if meta.trajectory_file_names.len() > 1 {
             let tar_name = "trajectories.tar";
-            let local_path = args.input_dir.join(&tar_name);
+            let local_path = args.input_dir.join(tar_name);
             if local_path.is_file() {
                 fs::remove_file(&local_path)?;
             }
@@ -858,13 +858,13 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<PathBuf> {
                 if i == 0 {
                     // create tarball on first file
                     cmd.current_dir(args.input_dir)
-                        .args(&["-cf", &tar_name, &filename]);
+                        .args(["-cf", tar_name, filename]);
                     cmds.push(cmd);
                 } else {
                     // append successive files to prevent sending
                     // too many command-line args
                     cmd.current_dir(args.input_dir)
-                        .args(&["-rf", &tar_name, &filename]);
+                        .args(["-rf", tar_name, filename]);
                     cmds.push(cmd);
                 }
             }
@@ -928,9 +928,9 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<PathBuf> {
         // Need to symlink from subdir to processed_dir
         let symlink = &args.processed_dir.join(&filename);
         if symlink.exists() {
-            fs::remove_file(&symlink)?;
+            fs::remove_file(symlink)?;
         }
-        std::os::unix::fs::symlink(&path, &symlink)?;
+        std::os::unix::fs::symlink(path, symlink)?;
 
         processed_export.push(MdFile {
             name: filename,
@@ -1048,12 +1048,12 @@ pub fn get_uniprot_entries(
     if uniprot_ids.is_empty() {
         // There are no given Uniprot IDs, so search
         let swissprot_ids =
-            blast_uniprot(&fasta_sequence_file, &blast_dir, UniprotDb::Swissprot)?;
+            blast_uniprot(fasta_sequence_file, blast_dir, UniprotDb::Swissprot)?;
 
         if swissprot_ids.is_empty() {
             // Second-tier hits from Trembl
             let trembl_ids =
-                blast_uniprot(&fasta_sequence_file, blast_dir, UniprotDb::Trembl)?;
+                blast_uniprot(fasta_sequence_file, blast_dir, UniprotDb::Trembl)?;
 
             if let Some(first) = trembl_ids.first() {
                 uniprot_ids.push(first.clone());
@@ -1071,20 +1071,20 @@ pub fn get_uniprot_entries(
 
         // Check if the given IDs are found in Swissprot/Trembl
         let swissprot_ids =
-            blast_uniprot(&fasta_sequence_file, blast_dir, UniprotDb::Swissprot)?;
+            blast_uniprot(fasta_sequence_file, blast_dir, UniprotDb::Swissprot)?;
 
         let not_in_swissprot: Vec<_> = uniprot_ids
             .iter()
-            .filter(|id| !swissprot_ids.contains(&id))
+            .filter(|id| !swissprot_ids.contains(id))
             .collect();
 
         if !not_in_swissprot.is_empty() {
             let isoform_ids =
-                blast_uniprot(&fasta_sequence_file, blast_dir, UniprotDb::Isoform)?;
+                blast_uniprot(fasta_sequence_file, blast_dir, UniprotDb::Isoform)?;
 
             let found_in_isoform: Vec<_> = uniprot_ids
                 .iter()
-                .filter(|id| !isoform_ids.contains(&id))
+                .filter(|id| !isoform_ids.contains(id))
                 .map(|val| val.to_string())
                 .collect();
 
@@ -1096,11 +1096,11 @@ pub fn get_uniprot_entries(
             }
 
             let trembl_ids =
-                blast_uniprot(&fasta_sequence_file, blast_dir, UniprotDb::Trembl)?;
+                blast_uniprot(fasta_sequence_file, blast_dir, UniprotDb::Trembl)?;
 
             let not_in_trembl: Vec<_> = not_in_swissprot
                 .iter()
-                .filter(|id| !trembl_ids.contains(&id))
+                .filter(|id| !trembl_ids.contains(id))
                 .map(|val| val.to_string())
                 .collect();
 
@@ -1183,7 +1183,7 @@ pub fn get_inferred_ligands(
         // The script throws an exception when no ligands are found
         // But the simulation may just be in APO form, so report and move on
         if !output.status.success() {
-            debug!("{}", str::from_utf8(&output.stderr)?.to_string());
+            debug!("{}", str::from_utf8(&output.stderr)?);
         }
     }
 
