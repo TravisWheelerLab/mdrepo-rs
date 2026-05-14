@@ -42,16 +42,14 @@ pub fn get_md5(path: &Path) -> Result<String> {
         if !cmd.status.success() {
             bail!(str::from_utf8(&cmd.stderr)?.to_string());
         }
-        let stdout = str::from_utf8(&cmd.stdout)?.to_string();
-        let stdout = stdout.trim_end();
+        let stdout = str::from_utf8(&cmd.stdout)?.trim_end();
         let re = regex!(r"^([a-f0-9]{32})\s+");
         let caps = re
             .captures(stdout)
             .ok_or(anyhow!(r#"Unexpected MD5: {stdout}"#))?;
-        if let Some(digest) = caps.get(1) {
-            let out_fh = File::create(&md5_file)?;
-            write!(&out_fh, "{}", digest.as_str())?;
-        }
+        let digest = &caps[1];
+        let out_fh = File::create(&md5_file)?;
+        write!(&out_fh, "{}", digest)?;
     }
 
     read_file(&md5_file)
