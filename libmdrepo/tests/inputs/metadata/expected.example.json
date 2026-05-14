@@ -9,7 +9,7 @@
   "integration_timestep_fs": 2,
   "short_description": "<short_description> (required)",
   "software_name": "GROMACS",
-  "software_version": "2024.5",
+  "software_version": "2024.4",
   "description": "<longer description>",
   "toml_version": 2,
   "alias": "ABC123",

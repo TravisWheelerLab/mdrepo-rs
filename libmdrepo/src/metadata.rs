@@ -250,8 +250,7 @@ impl Meta {
                 _ => vec![],
             };
 
-            if !exts.iter().any(|e| matches!(e.as_str(), "tpr" | "gro"))
-            {
+            if !exts.iter().any(|e| matches!(e.as_str(), "tpr" | "gro")) {
                 messages.push(
                     "topology_file_name: GROMACS topology \".top\" file requires \
                     additional \".tpr\" or \".gro\""
@@ -294,7 +293,9 @@ impl Meta {
     }
 
     pub fn from_file(path: &Path) -> Result<Self> {
-        let Some(ext) = path.extension() else { bail!("No file extension") };
+        let Some(ext) = path.extension() else {
+            bail!("No file extension")
+        };
         let contents = read_file(path)?;
         if contents.is_empty() {
             bail!("File is empty")
@@ -397,7 +398,7 @@ impl Meta {
             short_description: "<short_description> (required)".to_string(),
             description: None,
             software_name: "GROMACS".to_string(),
-            software_version: "2024.5".to_string(),
+            software_version: "2024.4".to_string(),
             toml_version: None,
             alias: None,
             external_links: None,
@@ -1029,7 +1030,10 @@ mod tests {
         assert_eq!(water.model, "TIP3P");
         assert_eq!(water.density_kg_m3, 1000.0);
 
-        let links = meta.external_links.as_ref().expect("external_links should be Some");
+        let links = meta
+            .external_links
+            .as_ref()
+            .expect("external_links should be Some");
         assert_eq!(links.len(), 1);
         let link = links.first().expect("link should exist");
         assert_eq!(link.url, "https://zenodo.org/records/7711953");
@@ -1047,7 +1051,10 @@ mod tests {
         assert_eq!(solute.name, "Na+".to_string());
         assert_eq!(solute.concentration_mol_liter, 0.15);
 
-        let contributors = meta.contributors.as_ref().expect("contributors should be Some");
+        let contributors = meta
+            .contributors
+            .as_ref()
+            .expect("contributors should be Some");
         assert_eq!(contributors.len(), 1);
         let c = contributors.first().expect("contributor should exist");
         assert_eq!(c.name, "Alex Leifson".to_string());
@@ -1055,7 +1062,10 @@ mod tests {
         assert_eq!(c.email, Some("alex@aol.com".to_string()));
         assert_eq!(c.institution, Some("University of Montreal".to_string()));
 
-        let uniprot_ids = meta.uniprot_ids.as_ref().expect("uniprot_ids should be Some");
+        let uniprot_ids = meta
+            .uniprot_ids
+            .as_ref()
+            .expect("uniprot_ids should be Some");
         assert_eq!(uniprot_ids.len(), 2);
         assert_eq!(
             uniprot_ids,
@@ -1064,7 +1074,10 @@ mod tests {
 
         let dois = meta.dois.as_ref().expect("dois should be Some");
         assert_eq!(dois.len(), 1);
-        assert_eq!(dois.first().expect("doi should exist"), "10.1038/s43588-024-00627-2");
+        assert_eq!(
+            dois.first().expect("doi should exist"),
+            "10.1038/s43588-024-00627-2"
+        );
 
         let papers = meta.papers.as_ref().expect("papers should be Some");
         assert_eq!(papers.len(), 1);
@@ -1075,7 +1088,10 @@ mod tests {
                 .to_string()
         );
 
-        let files = meta.additional_files.as_ref().expect("additional_files should be Some");
+        let files = meta
+            .additional_files
+            .as_ref()
+            .expect("additional_files should be Some");
         assert_eq!(files.len(), 1);
         let file = files.first().expect("file should exist");
         assert_eq!(file.file_type, "Structure".to_string());
