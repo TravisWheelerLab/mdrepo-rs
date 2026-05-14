@@ -2,7 +2,7 @@ use crate::{
     common::read_file,
     metadata::{self, Meta},
 };
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use toml::value::Value as TomlValue;
@@ -179,14 +179,12 @@ impl MetaV1 {
     }
 
     pub fn to_v2(&self) -> Result<Meta> {
-        let external_links = match &self.initial.external_link {
-            Some(link) => Some(vec![metadata::ExternalLink {
+        let external_links = self.initial.external_link.as_ref().map(|link| {
+            vec![metadata::ExternalLink {
                 url: link.clone(),
                 label: None,
-            }]),
-            _ => None,
-        };
-
+            }]
+        });
         let reqd = &self.required_files;
         let additional_files = self.additional_files.as_ref().map(|files| {
             files
@@ -562,11 +560,9 @@ mod metav1_tests {
         let meta_v1 = res?;
         let meta_v2 = meta_v1.to_v2()?;
 
-        assert!(
-            meta_v2
-                .short_description
-                .starts_with("8 ns simulation of the 5aom PDB entry (P04637)")
-        );
+        assert!(meta_v2
+            .short_description
+            .starts_with("8 ns simulation of the 5aom PDB entry (P04637)"));
 
         let contributors = meta_v2.contributors;
         assert!(contributors.is_some());
