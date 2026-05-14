@@ -468,9 +468,15 @@ pub fn blast_uniprot(
     ));
 
     if file_exists(&blast_results) {
-        debug!("{uniprot_db} BLAST results exists");
+        debug!(
+            "{uniprot_db} BLAST results exists ({})",
+            blast_results.display()
+        );
     } else {
-        debug!("Creating {uniprot_db} BLAST results");
+        debug!(
+            "Creating {uniprot_db} BLAST results ({})",
+            blast_results.display()
+        );
         let blastp =
             which("blastp").map_err(|e| anyhow!("Failed to find blastp ({e})"))?;
 
@@ -529,9 +535,9 @@ pub fn blast_uniprot(
             .has_headers(false)
             .from_reader(file);
 
+        // Swissprot also covers Isoform
         let swissprot_regex = Regex::new(r"^sp[|]([^|]+)[|]")?;
         let trembl_regex = Regex::new(r"^tr[|]([^|]+)[|]")?;
-        let isoform_regex = Regex::new(r"^([^-]+)-\d+$")?;
         for result in reader.deserialize() {
             let hit: BlastResult =
                 result.map_err(|e| anyhow!("{}: {e}", blast_results.display()))?;
@@ -543,11 +549,6 @@ pub fn blast_uniprot(
                             .as_str()
                             .to_string()
                     } else if let Some(caps) = trembl_regex.captures(&hit.saccver) {
-                        caps.get(1)
-                            .ok_or_else(|| anyhow!("regex capture group 1 not found"))?
-                            .as_str()
-                            .to_string()
-                    } else if let Some(caps) = isoform_regex.captures(&hit.saccver) {
                         caps.get(1)
                             .ok_or_else(|| anyhow!("regex capture group 1 not found"))?
                             .as_str()
@@ -1082,16 +1083,18 @@ pub fn get_uniprot_entries(
             let isoform_ids =
                 blast_uniprot(fasta_sequence_file, blast_dir, UniprotDb::Isoform)?;
 
-            let found_in_isoform: Vec<_> = uniprot_ids
-                .iter()
-                .filter(|id| !isoform_ids.contains(id))
-                .map(|val| val.to_string())
-                .collect();
+            let mut found_in_isoform: Vec<(String, String)> = vec![];
+            for uniprot_id in &uniprot_ids {
+                for isoform_id in &isoform_ids {
+                    if isoform_id.starts_with(uniprot_id) {
+                        found_in_isoform.push((uniprot_id.clone(), isoform_id.clone()));
+                    }
+                }
+            }
 
-            if !found_in_isoform.is_empty() {
+            for (uniprot_id, isoform_id) in found_in_isoform {
                 warnings.push(format!(
-                    "Uniprot IDs found in Isoform: {}",
-                    found_in_isoform.join(", "),
+                    r#"Uniprot ID "{uniprot_id}" found in Isoform as "{isoform_id}""#,
                 ));
             }
 
