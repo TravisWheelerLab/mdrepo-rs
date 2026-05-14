@@ -1,5 +1,5 @@
 use lazy_regex::{lazy_regex, Lazy, Regex};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 pub const MAX_FILE_SIZE_GB: u64 = 40;
 pub const MAX_FILE_SIZE_BYTES: u64 = MAX_FILE_SIZE_GB * 10u64.pow(9);
@@ -255,9 +255,9 @@ pub const VALID_SOLUTE_NAME: &[&str] = &[
     "Urea",
 ];
 
-pub static VALID_SOFTWARE: Lazy<HashMap<&'static str, &'static [&'static str]>> =
+pub static VALID_SOFTWARE: Lazy<BTreeMap<&'static str, &'static [&'static str]>> =
     Lazy::new(|| {
-        HashMap::from([
+        BTreeMap::from([
             ("ACEMD", ACEMD_VERSIONS),
             ("AMBER", AMBER_VERSIONS),
             ("CHARMM", CHARMM_VERSIONS),

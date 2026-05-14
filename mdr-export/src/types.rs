@@ -1,5 +1,5 @@
 use clap::{builder::PossibleValue, Parser, ValueEnum};
-use std::fmt;
+use std::{fmt, path::PathBuf};
 
 #[derive(Debug, Parser)]
 pub struct Args {
@@ -13,10 +13,10 @@ pub struct Args {
 
     /// Output directory
     #[arg(short, long, value_name = "DIR", default_value = "export")]
-    pub out_dir: String,
+    pub out_dir: PathBuf,
 
     /// Output format
-    #[arg(short, long, value_name = "FORMAT", default_value = "json")]
+    #[arg(short, long, value_name = "FORMAT", default_value = "toml")]
     pub format: FileFormat,
 }
 
@@ -32,10 +32,9 @@ impl fmt::Display for FileFormat {
         write!(
             f,
             "{}",
-            if self == &FileFormat::Json {
-                "json"
-            } else {
-                "toml"
+            match self {
+                FileFormat::Json => "json",
+                FileFormat::Toml => "toml",
             }
         )
     }

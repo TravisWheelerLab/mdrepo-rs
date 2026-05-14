@@ -83,6 +83,7 @@ pub struct Meta {
     pub pdb_id: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[validate(custom(function = "validate_uniprot_ids"))]
     pub uniprot_ids: Option<Vec<String>>,
 
     #[validate(nested)]
@@ -125,7 +126,7 @@ impl Meta {
             self.topology_file_name.clone(),
         ];
 
-        filenames.extend_from_slice(&self.trajectory_file_names.clone());
+        filenames.extend_from_slice(&self.trajectory_file_names);
 
         if let Some(files) = &self.additional_files {
             for file in files {
@@ -141,9 +142,7 @@ impl Meta {
         let mut messages = vec![];
         if let Err(e) = self.validate() {
             for (field, val) in e.errors() {
-                for message in handle_validation_error_kind(field, val) {
-                    messages.push(message);
-                }
+                messages.extend(handle_validation_error_kind(field, val));
             }
         }
 
@@ -157,12 +156,10 @@ impl Meta {
                 ))
             }
         } else {
-            let mut valid_software_names: Vec<String> = constants::VALID_SOFTWARE
+            let valid_software_names: Vec<String> = constants::VALID_SOFTWARE
                 .keys()
                 .map(|val| val.to_string())
                 .collect();
-            // Must be sorted for testing
-            valid_software_names.sort();
             messages.push(format!(
                 r#"software_name: "{}" invalid, choose from {}"#,
                 self.software_name,
@@ -253,9 +250,9 @@ impl Meta {
                 _ => vec![],
             };
 
-            if !&["tpr", "gro"]
+            if !["tpr", "gro"]
                 .iter()
-                .any(|ext| exts.contains(&ext.to_string()))
+                .any(|&ext| exts.iter().any(|e| e == ext))
             {
                 messages.push(
                     "topology_file_name: GROMACS topology \".top\" file requires \
@@ -573,6 +570,16 @@ fn validate_solute_name(name: &str) -> Result<(), ValidationError> {
     Ok(())
 }
 
+fn validate_uniprot_ids(ids: &[String]) -> Result<(), ValidationError> {
+    if !ids
+        .iter()
+        .all(|val| constants::NOT_WHITESPACE_REGEX.is_match(val))
+    {
+        return Err(ValidationError::new("uniprot_id"));
+    }
+    Ok(())
+}
+
 fn handle_validation_error_kind(
     field: &str,
     err_kind: &ValidationErrorsKind,
@@ -615,8 +622,8 @@ fn handle_validation_error_kind(
 // --------------------------------------------------
 fn format_validation_error(err: &ValidationError) -> String {
     let given = match err.params.get("value") {
-        Some(val) => serde_json::to_string(val).unwrap_or("".to_string()),
-        _ => "".to_string(),
+        Some(val) => serde_json::to_string(val).unwrap_or_default(),
+        _ => String::new(),
     };
 
     let message = match err.code {
