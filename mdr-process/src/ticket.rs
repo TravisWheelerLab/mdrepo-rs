@@ -5,7 +5,7 @@ use crate::{
 use anyhow::{anyhow, bail, Result};
 use dotenvy::dotenv;
 use log::{debug, info};
-use std::{env, fs, path::PathBuf, process::Command};
+use std::{env, fs, path::PathBuf, process::Command, time::Instant};
 use which::which;
 
 // --------------------------------------------------
@@ -66,7 +66,7 @@ pub fn process(args: &TicketArgs) -> Result<()> {
         "--landing-dir",
         landing_dir.to_string_lossy().as_ref(),
     ]);
-    info!("Running {cmd:?}");
+    debug!("Running {cmd:?}");
 
     let output = cmd.output()?;
     if !output.status.success() {
@@ -95,6 +95,7 @@ pub fn process(args: &TicketArgs) -> Result<()> {
     }
 
     for ticket_dir in ticket_dirs {
+        let start = Instant::now();
         debug!(r#"Processing ticket directory "{}""#, ticket_dir.display());
         match process::process(&ProcessArgs {
             input_dir: ticket_dir.clone(),
@@ -110,11 +111,16 @@ pub fn process(args: &TicketArgs) -> Result<()> {
         }) {
             Ok(errors) => {
                 debug!(
-                    r#"Finished processing ticket directory "{}""#,
-                    ticket_dir.display()
+                    r#"Finished processing ticket directory "{}" in {:?}"#,
+                    ticket_dir.display(),
+                    start.elapsed()
                 );
                 if !errors.is_empty() {
-                    info!("Errors:\n{}", errors.join("\n"))
+                    info!(
+                        "Errors for {}:\n{}",
+                        ticket_dir.display(),
+                        errors.join("\n")
+                    )
                 }
             }
             Err(e) => {
