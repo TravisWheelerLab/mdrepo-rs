@@ -207,8 +207,8 @@ impl fmt::Display for Server {
 #[command(alias = "va")]
 pub struct ValidateArgs {
     /// Input directory
-    #[arg(value_name = "DIR")]
-    pub dirname: PathBuf,
+    #[arg(value_name = "DIR", num_args = 1..)]
+    pub dirnames: Vec<PathBuf>,
 }
 
 // --------------------------------------------------
@@ -410,36 +410,86 @@ pub struct Export {
 pub struct ExportSimulation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub simulation_id: Option<u64>,
+
     pub lead_contributor_orcid: String,
+
     pub unique_file_hash_string: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
+
     pub short_description: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+
     pub software_name: String,
+
     pub software_version: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub run_commands: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pdb: Option<PdbEntry>,
+
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub uniprots: Vec<UniprotEntry>,
+
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub external_links: Vec<metadata::ExternalLink>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub forcefield: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub forcefield_comments: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub protonation_method: Option<String>,
+
     pub rmsd_values: Vec<f64>,
+
     pub rmsf_values: Vec<f64>,
+
     pub duration: u32,
+
     pub sampling_frequency: f32,
+
     pub integration_timestep_fs: u32,
+
     pub temperature_kelvin: u32,
+
     pub fasta_sequence: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub water_type: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub water_density: Option<f64>,
+
     pub structure_hash: String,
+
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub contributors: Vec<metadata::Contributor>,
+
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub original_files: Vec<MdFile>,
+
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub processed_files: Vec<MdFile>,
+
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub ligands: Vec<metadata::Ligand>,
+
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub solutes: Vec<metadata::Solute>,
+
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub papers: Vec<metadata::Paper>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_embargoed: Option<bool>,
 }
 
 // --------------------------------------------------
@@ -622,6 +672,7 @@ pub enum ProcessedTrajectoryType {
 // --------------------------------------------------
 #[derive(Debug)]
 pub struct ImportJsonArgs<'a> {
+    pub import_json: &'a Path,
     pub processed_dir: &'a Path,
     pub meta_path: &'a Path,
     pub input_dir: &'a Path,

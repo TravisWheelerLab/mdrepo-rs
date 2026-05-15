@@ -80,5 +80,6 @@
       "email": "alex@aol.com",
       "institution": "University of Montreal"
     }
-  ]
+  ],
+  "is_embargoed": true
 }

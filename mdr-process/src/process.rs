@@ -1,8 +1,11 @@
-use crate::types::{
-    BlastResult, CheckedLigand, DoiPaper, Duration, Export, ExportSimulation,
-    ImportJsonArgs, ImportResult, InferredLigand, MdFile, PdbEntry, PdbResponse,
-    ProcessArgs, ProcessedTarball, ProcessedTrajectory, ProcessedTrajectoryType,
-    PushResult, RmsdRmsf, UniprotDb, UniprotEntry, UniprotResponse,
+use crate::{
+    types::{
+        BlastResult, CheckedLigand, DoiPaper, Duration, Export, ExportSimulation,
+        ImportJsonArgs, ImportResult, InferredLigand, MdFile, PdbEntry, PdbResponse,
+        ProcessArgs, ProcessedTarball, ProcessedTrajectory, ProcessedTrajectoryType,
+        PushResult, RmsdRmsf, UniprotDb, UniprotEntry, UniprotResponse,
+    },
+    validate,
 };
 use anyhow::{anyhow, bail, Result};
 use dotenvy::dotenv;
@@ -39,12 +42,44 @@ const PS_PER_NS: f64 = 1000.0;
 const XTC_INFLATION_FACTOR: f64 = 1000.0;
 
 // --------------------------------------------------
-pub fn process(args: &ProcessArgs) -> Result<()> {
+pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
     debug!("{args:?}");
     dotenv().ok();
 
     let start_time = Instant::now();
     let input_dir = path::absolute(&args.input_dir)?;
+
+    // Check metadata first
+    let meta_path = input_dir.join("mdrepo-metadata.toml");
+    let meta = Meta::from_file(&meta_path)?;
+    let errors = meta.check(if args.no_id {
+        Some(MetaCheckOptions {
+            allow_no_pdb_uniprot: true,
+        })
+    } else {
+        None
+    });
+
+    if !errors.is_empty() {
+        bail!(
+            "Found {} error{} in {}:\n{}",
+            errors.len(),
+            if errors.len() == 1 { "" } else { "s" },
+            meta_path.display(),
+            errors.join("\n")
+        )
+    }
+
+    // Check input files
+    match validate::validate(&input_dir) {
+        Err(e) => bail!("{e}"),
+        Ok(errors) => {
+            if !errors.is_empty() {
+                bail!("Errors:\n{}", errors.join("\n"))
+            }
+        }
+    }
+
     let processed_dir = args
         .out_dir
         .clone()
@@ -63,25 +98,7 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
         fs::remove_dir_all(&processed_dir)?;
     }
 
-    let meta_path = input_dir.join("mdrepo-metadata.toml");
-    let meta = Meta::from_file(&meta_path)?;
-    let errors = meta.check(if args.no_id {
-        Some(MetaCheckOptions {
-            allow_no_pdb_uniprot: true,
-        })
-    } else {
-        None
-    });
-    if !errors.is_empty() {
-        bail!(
-            "Found {} error{} in mdrepo-metadata.toml:\n{}",
-            errors.len(),
-            if errors.len() == 1 { "" } else { "s" },
-            errors.join("\n")
-        )
-    }
-
-    let processed_trajectories =
+    let (processed_trajectories, mut errors) =
         process_trajectories(&meta_path, &input_dir, &processed_dir, &script_dir)?;
 
     // The processed trajectories are returned sorted by full xtc size and filename
@@ -92,7 +109,9 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
     let trajectory_tarballs =
         make_trajectory_tarballs(&processed_dir, &processed_trajectories)?;
 
-    let import_json = make_import_json(ImportJsonArgs {
+    let import_json = &processed_dir.join("import.json");
+    let import_warnings = make_import_json(ImportJsonArgs {
+        import_json: &import_json,
         processed_dir: &processed_dir,
         meta_path: &meta_path,
         input_dir: &input_dir,
@@ -102,6 +121,7 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
         trajectory_tarballs: &trajectory_tarballs,
         reprocess_simulation_id: args.reprocess_simulation_id,
     })?;
+    errors.extend_from_slice(&import_warnings);
 
     if !args.dry_run {
         let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
@@ -128,7 +148,8 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
     }
 
     debug!("Finished processing in {:?}", start_time.elapsed());
-    Ok(())
+
+    Ok(errors)
 }
 
 // --------------------------------------------------
@@ -279,13 +300,14 @@ pub fn process_trajectories(
     input_dir: &Path,
     processed_dir: &Path,
     script_dir: &Path,
-) -> Result<Vec<ProcessedTrajectory>> {
+) -> Result<(Vec<ProcessedTrajectory>, Vec<String>)> {
     let meta = Meta::from_file(meta_path)?;
     let mut processed = vec![];
 
     let mut trajectory_file_names = meta.trajectory_file_names.clone();
     trajectory_file_names.sort();
 
+    let mut errors = vec![];
     for (num, trajectory_file_name) in trajectory_file_names.into_iter().enumerate() {
         let trajectory_dir = processed_dir.join(format!("rep_{}", num + 1));
         if !trajectory_dir.is_dir() {
@@ -352,7 +374,17 @@ pub fn process_trajectories(
                 .collect();
 
             if !missing.is_empty() {
-                bail!("Failed to create: {}", missing.join(", "));
+                let error_file = &trajectory_dir.join("errors.txt");
+                let error_fh = File::create(&error_file)?;
+                write!(
+                    &error_fh,
+                    "Failed command {cmd:?}\nFailed to create {}\n{}\n{}",
+                    missing.join(", "),
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr),
+                )?;
+                errors.push(error_file.to_string_lossy().to_string());
+                continue;
             }
         }
 
@@ -400,7 +432,7 @@ pub fn process_trajectories(
             .then_with(|| a.trajectory_file_stem.cmp(&b.trajectory_file_stem))
     });
 
-    Ok(processed)
+    Ok((processed, errors))
 }
 
 // --------------------------------------------------
@@ -704,7 +736,7 @@ pub fn make_trajectory_tarballs(
 }
 
 // --------------------------------------------------
-pub fn make_import_json(args: ImportJsonArgs) -> Result<PathBuf> {
+pub fn make_import_json(args: ImportJsonArgs) -> Result<Vec<String>> {
     let meta = Meta::from_file(args.meta_path)?;
     let structure_path = args.input_dir.join(&meta.structure_file_name);
     let structure_hash = get_file_hash(&structure_path)?;
@@ -1007,6 +1039,7 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<PathBuf> {
         ligands,
         solutes: meta.solutes.unwrap_or_default(),
         papers,
+        is_embargoed: meta.is_embargoed,
     };
 
     if !warnings.is_empty() {
@@ -1022,15 +1055,14 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<PathBuf> {
 
     let export = Export {
         simulation,
-        warnings,
+        warnings: warnings.clone(),
     };
 
-    let import_json = &args.processed_dir.join("import.json");
-    debug!(r#"Writing JSON to "{}""#, &import_json.display());
-    let file = File::create(import_json)?;
+    debug!(r#"Writing JSON to "{}""#, args.import_json.display());
+    let file = File::create(args.import_json)?;
     writeln!(&file, "{}", &serde_json::to_string_pretty(&export)?)?;
 
-    Ok(import_json.into())
+    Ok(warnings)
 }
 
 // --------------------------------------------------

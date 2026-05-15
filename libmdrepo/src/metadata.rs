@@ -117,6 +117,9 @@ pub struct Meta {
     #[validate(nested)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contributors: Option<Vec<Contributor>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_embargoed: Option<bool>,
 }
 
 impl Meta {
@@ -377,6 +380,7 @@ impl Meta {
             ]),
             papers: None,
             dois: Some(vec!["10.1017/j.str.2019.08.032".to_string()]),
+            is_embargoed: Some(true),
             contributors: Some(vec![Contributor {
                 name: "Barbara McClintock".to_string(),
                 institution: Some("Cold Spring Harbor Laboratory".to_string()),
@@ -414,6 +418,7 @@ impl Meta {
             solutes: None,
             papers: None,
             dois: None,
+            is_embargoed: None,
             contributors: None,
         }
     }

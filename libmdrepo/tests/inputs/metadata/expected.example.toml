@@ -20,6 +20,7 @@ uniprot_ids = [
     "S8G8I1",
 ]
 dois = ["10.1017/j.str.2019.08.032"]
+is_embargoed = true
 
 [water]
 model = "TIP3P"

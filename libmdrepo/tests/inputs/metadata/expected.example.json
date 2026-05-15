@@ -65,5 +65,6 @@
       "email": "barb@cshl.edu",
       "institution": "Cold Spring Harbor Laboratory"
     }
-  ]
+  ],
+  "is_embargoed": true
 }

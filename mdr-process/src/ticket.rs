@@ -55,22 +55,22 @@ pub fn process(args: &TicketArgs) -> Result<()> {
         ticket_dir.display()
     );
 
-    let cmd = Command::new(&uv)
-        .current_dir(script_dir)
-        .args([
-            "run",
-            fetch.to_string_lossy().as_ref(),
-            "--server",
-            &args.server.to_string(),
-            "--ticket-id",
-            &args.ticket_id.to_string(),
-            "--landing-dir",
-            landing_dir.to_string_lossy().as_ref(),
-        ])
-        .output()?;
+    let mut cmd = Command::new(&uv);
+    cmd.current_dir(script_dir).args([
+        "run",
+        fetch.to_string_lossy().as_ref(),
+        "--server",
+        &args.server.to_string(),
+        "--ticket-id",
+        &args.ticket_id.to_string(),
+        "--landing-dir",
+        landing_dir.to_string_lossy().as_ref(),
+    ]);
+    info!("Running {cmd:?}");
 
-    if !cmd.status.success() {
-        bail!("{}", String::from_utf8_lossy(&cmd.stderr));
+    let output = cmd.output()?;
+    if !output.status.success() {
+        bail!("{}", String::from_utf8_lossy(&output.stderr));
     }
 
     // The ticket directory should have been created by the fetch
@@ -108,11 +108,14 @@ pub fn process(args: &TicketArgs) -> Result<()> {
             force: args.force,
             dry_run: args.dry_run,
         }) {
-            Ok(()) => {
+            Ok(errors) => {
                 debug!(
                     r#"Finished processing ticket directory "{}""#,
                     ticket_dir.display()
                 );
+                if !errors.is_empty() {
+                    info!("Errors:\n{}", errors.join("\n"))
+                }
             }
             Err(e) => {
                 debug!("{e}");

@@ -36,13 +36,19 @@ fn run(args: Cli) -> Result<()> {
     match &args.command {
         Command::Process(args) => {
             validate::validate(&args.input_dir)?;
-            process::process(args)?;
-            info!("Success");
+            let errors = process::process(args)?;
+            if !errors.is_empty() {
+                info!("Errors:\n{}", errors.join("\n"));
+            }
+            info!("Finished");
             Ok(())
         }
         Command::Reprocess(args) => {
-            reprocess::reprocess(args)?;
-            info!("Success");
+            let errors = reprocess::reprocess(args)?;
+            if !errors.is_empty() {
+                info!("Errors:\n{}", errors.join("\n"));
+            }
+            info!("Finished");
             Ok(())
         }
         Command::MetaCheck(args) => {
@@ -77,12 +83,27 @@ fn run(args: Cli) -> Result<()> {
                     };
                     bail!(message);
                 }
-                _ => info!("Success"),
+                Ok(()) => info!("Finished"),
             }
             Ok(())
         }
         Command::Validate(args) => {
-            validate::validate(&args.dirname)?;
+            for dirname in &args.dirnames {
+                print!("{}: ", dirname.display());
+
+                match validate::validate(&dirname) {
+                    Err(e) => bail!("{e}"),
+                    Ok(errors) => {
+                        if errors.is_empty() {
+                            println!("OK");
+                        } else {
+                            for error in errors {
+                                println!("{error}");
+                            }
+                        }
+                    }
+                }
+            }
             Ok(())
         }
     }

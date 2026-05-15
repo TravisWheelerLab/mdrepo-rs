@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Result};
 use lazy_regex::regex;
-use log::info;
+use log::debug;
 use std::{
     fs::{self, File},
     io::Write,
@@ -25,7 +25,7 @@ pub fn read_file(path: &Path) -> Result<String> {
 
 // --------------------------------------------------
 pub fn get_md5(path: &Path) -> Result<String> {
-    info!("Getting MD5 '{}'", path.display());
+    debug!("Getting MD5 '{}'", path.display());
     let input_dir = path
         .parent()
         .ok_or_else(|| anyhow!("No parent directory for '{}'", path.display()))?;

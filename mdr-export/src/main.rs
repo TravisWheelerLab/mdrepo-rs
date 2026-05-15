@@ -94,7 +94,11 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
         ops::list_simulation_uniprots(conn, Some(sim_id), None, None, None)?;
     let mut uniprot_ids: Vec<String> = vec![];
     for s2u in sim2uniprot {
-        uniprot_ids.push(ops::get_uniprot(conn, s2u.uniprot_id)?.uniprot_id.to_string());
+        uniprot_ids.push(
+            ops::get_uniprot(conn, s2u.uniprot_id)?
+                .uniprot_id
+                .to_string(),
+        );
     }
 
     let water = match (&sim.water_type, &sim.water_density) {
@@ -291,6 +295,7 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
         ligands,
         solutes,
         dois: None,
+        is_embargoed: None,
         papers: if papers.is_empty() {
             None
         } else {

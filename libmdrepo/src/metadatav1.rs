@@ -233,7 +233,9 @@ impl MetaV1 {
             None
         };
 
-        let ligands: Vec<_> = self.ligands.iter()
+        let ligands: Vec<_> = self
+            .ligands
+            .iter()
             .flat_map(|vals| vals.iter())
             .map(|v| metadata::Ligand {
                 name: v.name.clone(),
@@ -241,7 +243,9 @@ impl MetaV1 {
             })
             .collect();
 
-        let solutes: Vec<_> = self.solvents.iter()
+        let solutes: Vec<_> = self
+            .solvents
+            .iter()
             .flat_map(|vals| vals.iter())
             .map(|v| metadata::Solute {
                 name: v.name.clone(),
@@ -269,7 +273,9 @@ impl MetaV1 {
             }
         }
 
-        let contributors: Vec<_> = self.contributors.iter()
+        let contributors: Vec<_> = self
+            .contributors
+            .iter()
             .flat_map(|vals| vals.iter())
             .map(|v| metadata::Contributor {
                 name: v.name.clone(),
@@ -321,6 +327,7 @@ impl MetaV1 {
             protonation_method,
             pdb_id,
             dois: None,
+            is_embargoed: None,
             uniprot_ids: non_empty(uniprot_ids),
             water,
             ligands: non_empty(ligands),
