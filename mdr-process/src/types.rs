@@ -490,6 +490,9 @@ pub struct ExportSimulation {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_embargoed: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_coarse_grained: Option<bool>,
 }
 
 // --------------------------------------------------
