@@ -436,6 +436,30 @@ pub fn process_trajectories(
 }
 
 // --------------------------------------------------
+pub fn get_is_coarse_grained(min_pdb: &Path, script_dir: &Path) -> Result<bool> {
+    debug!("Checking if coarse-grained");
+    let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
+    let script = script_dir.join("simulation_is_coarse_grained.py");
+    let mut cmd = Command::new(&uv);
+    cmd.current_dir(script_dir).args([
+        "run",
+        script.to_string_lossy().as_ref(),
+        min_pdb.to_string_lossy().as_ref(),
+    ]);
+    debug!("Running {cmd:?}");
+    let output = cmd.output()?;
+
+    if !output.status.success() {
+        bail!("{}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    let stdout = str::from_utf8(&output.stdout)?.trim();
+    debug!("stdout = {stdout}");
+
+    Ok(stdout == "True")
+}
+
+// --------------------------------------------------
 pub fn get_rmsd_rmsf(
     min_pdb: &Path,
     min_xtc: &Path,
@@ -754,6 +778,9 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<Vec<String>> {
         args.script_dir,
     )?;
 
+    let is_coarse_grained =
+        get_is_coarse_grained(&args.example_trajectory.min_pdb, args.script_dir)?;
+
     let duration = get_duration(
         &args.example_trajectory.full_xtc,
         meta.integration_timestep_fs,
@@ -1040,6 +1067,7 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<Vec<String>> {
         solutes: meta.solutes.unwrap_or_default(),
         papers,
         is_embargoed: meta.is_embargoed,
+        is_coarse_grained: Some(is_coarse_grained),
     };
 
     if !warnings.is_empty() {
