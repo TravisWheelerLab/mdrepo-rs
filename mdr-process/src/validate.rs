@@ -6,7 +6,7 @@ use libmdrepo::{
     metadata::Meta,
 };
 use log::debug;
-use std::{fs, path::Path};
+use std::{collections::HashMap, fs, path::Path};
 
 // --------------------------------------------------
 pub fn validate(dir: &Path) -> Result<Vec<String>> {
@@ -34,6 +34,7 @@ pub fn validate(dir: &Path) -> Result<Vec<String>> {
     }
 
     let mut errors = vec![];
+    let mut md5_hashes: HashMap<String, u32> = HashMap::new();
     let completed_path = dir.join("mdrepo-submission.completed.json");
     if completed_path.is_file() {
         let completed: SubmissionCompleteJson =
@@ -94,7 +95,23 @@ pub fn validate(dir: &Path) -> Result<Vec<String>> {
                     file.irods_path, size, file.size
                 ))
             }
+            md5_hashes
+                .entry(local_md5)
+                .and_modify(|val| *val += 1)
+                .or_insert(1);
         }
+    }
+
+    let dup_hashes: Vec<&str> = md5_hashes
+        .iter()
+        .filter_map(|(hash, count)| if *count > 1 { Some(hash.as_str()) } else { None })
+        .collect();
+
+    if !dup_hashes.is_empty() {
+        errors.push(format!(
+            "File hashes are duplicated: {}",
+            dup_hashes.join(", ")
+        ));
     }
 
     // Validate meta
