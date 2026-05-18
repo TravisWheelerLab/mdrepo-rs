@@ -1366,7 +1366,7 @@ fn round_dp(x: f64, dp: u32) -> f64 {
 pub fn get_file_hash(path: &Path) -> Result<String> {
     let contents = fs::read(path)?;
     let digest = Sha1::digest(&contents);
-    Ok(format!("{digest:x}"))
+    Ok(format!("{digest:?}"))
 }
 
 // --------------------------------------------------
