@@ -36,7 +36,15 @@ pub fn get_md5(path: &Path) -> Result<String> {
         .to_string();
     let md5_file = input_dir.join(format!("{filename}.md5"));
 
-    if !file_exists(&md5_file) {
+    let needs_compute = if file_exists(&md5_file) {
+        let src_mtime = fs::metadata(path)?.modified()?;
+        let cache_mtime = fs::metadata(&md5_file)?.modified()?;
+        src_mtime > cache_mtime
+    } else {
+        true
+    };
+
+    if needs_compute {
         let md5_prg = which("md5sum")?;
         let cmd = Command::new(&md5_prg).arg(path).output()?;
         if !cmd.status.success() {
