@@ -88,8 +88,12 @@ fn run(args: Cli) -> Result<()> {
             Ok(())
         }
         Command::Validate(args) => {
-            for dirname in &args.dirnames {
-                print!("{}: ", dirname.display());
+            for (dir_num, dirname) in args.dirnames.iter().enumerate() {
+                print!(
+                    "{}{}: ",
+                    if dir_num > 0 { "\n" } else { "" },
+                    dirname.display()
+                );
 
                 match validate::validate(&dirname) {
                     Err(e) => bail!("{e}"),
@@ -97,6 +101,11 @@ fn run(args: Cli) -> Result<()> {
                         if errors.is_empty() {
                             println!("OK");
                         } else {
+                            let num_errors = errors.len();
+                            println!(
+                                "{num_errors} error{}",
+                                if num_errors == 1 { "" } else { "s" }
+                            );
                             for error in errors {
                                 println!("{error}");
                             }
