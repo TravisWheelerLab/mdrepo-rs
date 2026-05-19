@@ -2,8 +2,9 @@ use crate::{
     types::{
         BlastResult, CheckedLigand, DoiPaper, Duration, Export, ExportSimulation,
         ImportJsonArgs, ImportResult, InferredLigand, MdFile, PdbEntry, PdbResponse,
-        ProcessArgs, ProcessedTarball, ProcessedTrajectory, ProcessedTrajectoryType,
-        PushResult, RmsdRmsf, UniprotDb, UniprotEntry, UniprotResponse,
+        ProcessArgs, ProcessTrajectoryArgs, ProcessedTarball, ProcessedTrajectory,
+        ProcessedTrajectoryType, PushResult, RmsdRmsf, UniprotDb, UniprotEntry,
+        UniprotResponse,
     },
     validate,
 };
@@ -15,9 +16,11 @@ use libmdrepo::{
     metadata::{self, Meta, MetaCheckOptions},
 };
 use log::debug;
+use rayon::prelude::*;
 use regex::Regex;
 use sha1::{Digest, Sha1};
 use std::{
+    collections::HashSet,
     env,
     fs::{self, File},
     io::{BufReader, Write},
@@ -52,7 +55,7 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
     // Check metadata first
     let meta_path = input_dir.join("mdrepo-metadata.toml");
     let meta = Meta::from_file(&meta_path)?;
-    let errors = meta.check(if args.no_id {
+    let meta_errors = meta.check(if args.no_id {
         Some(MetaCheckOptions {
             allow_no_pdb_uniprot: true,
         })
@@ -60,13 +63,13 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
         None
     });
 
-    if !errors.is_empty() {
+    if !meta_errors.is_empty() {
         bail!(
             "Found {} error{} in {}:\n{}",
-            errors.len(),
-            if errors.len() == 1 { "" } else { "s" },
+            meta_errors.len(),
+            if meta_errors.len() == 1 { "" } else { "s" },
             meta_path.display(),
-            errors.join("\n")
+            meta_errors.join("\n")
         )
     }
 
@@ -98,8 +101,37 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
         fs::remove_dir_all(&processed_dir)?;
     }
 
-    let (processed_trajectories, mut errors) =
-        process_trajectories(&meta_path, &input_dir, &processed_dir, &script_dir)?;
+    let meta = Meta::from_file(&meta_path)?;
+    let mut trajectory_file_names = meta.trajectory_file_names.clone();
+    trajectory_file_names.sort();
+
+    let mut processed_trajectories = trajectory_file_names
+        .into_par_iter()
+        .enumerate()
+        .map(|(trajectory_num, trajectory_file_name)| {
+            process_trajectory(ProcessTrajectoryArgs {
+                trajectory_num,
+                trajectory_file_name: &trajectory_file_name,
+                structure_file_name: &meta.structure_file_name,
+                topology_file_name: &meta.topology_file_name,
+                input_dir: &input_dir,
+                processed_dir: &processed_dir,
+                script_dir: &script_dir,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    // Sort by size/trajectory name
+    processed_trajectories.sort_by(|a, b| {
+        a.full_xtc_size
+            .cmp(&b.full_xtc_size)
+            .then_with(|| a.trajectory_file_stem.cmp(&b.trajectory_file_stem))
+    });
+
+    let mut errors: Vec<String> = processed_trajectories
+        .iter()
+        .flat_map(|t| t.errors.iter().cloned())
+        .collect();
 
     // The processed trajectories are returned sorted by full xtc size and filename
     let example_trajectory = processed_trajectories
@@ -148,6 +180,23 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
     }
 
     debug!("Finished processing in {:?}", start_time.elapsed());
+
+    let errors_file = input_dir.join("processing_errors.txt");
+    if errors.is_empty() {
+        if errors_file.exists() {
+            fs::remove_file(&errors_file)?;
+        }
+        debug!("No errors");
+    } else {
+        let errors_fh = File::create(&errors_file)?;
+        write!(&errors_fh, "{}", errors.join("\n"))?;
+        let num_errors = errors.len();
+        debug!(
+            r#"Wrote {num_errors} error{} to "{}""#,
+            if num_errors == 1 { "" } else { "s" },
+            errors_file.display()
+        );
+    }
 
     Ok(errors)
 }
@@ -295,168 +344,193 @@ pub fn make_thumbnail(
 }
 
 // --------------------------------------------------
-pub fn process_trajectories(
-    meta_path: &Path,
-    input_dir: &Path,
-    processed_dir: &Path,
-    script_dir: &Path,
-) -> Result<(Vec<ProcessedTrajectory>, Vec<String>)> {
-    let meta = Meta::from_file(meta_path)?;
-    let mut processed = vec![];
-
-    let mut trajectory_file_names = meta.trajectory_file_names.clone();
-    trajectory_file_names.sort();
-
+pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajectory> {
     let mut errors = vec![];
-    for (num, trajectory_file_name) in trajectory_file_names.into_iter().enumerate() {
-        let trajectory_dir = processed_dir.join(format!("rep_{}", num + 1));
-        if !trajectory_dir.is_dir() {
-            fs::create_dir_all(&trajectory_dir)?;
-        }
+    let trajectory_dir = args
+        .processed_dir
+        .join(format!("rep_{}", args.trajectory_num + 1));
 
-        let full_min_files = &[
-            "full.gro",
-            "full.pdb",
-            "full.xtc",
-            "minimal.gro",
-            "minimal.pdb",
-            "minimal.xtc",
-        ]
-        .map(|filename| trajectory_dir.join(filename));
-
-        if full_min_files.iter().all(|f| file_exists(f)) {
-            debug!(r#"Full/minimal files all exist for "{trajectory_file_name}""#);
-        } else {
-            let micromamba = which("micromamba")
-                .map_err(|e| anyhow!("Failed to find micromamba ({e})"))?;
-            debug!("Making full/minimal files");
-
-            let cpp_traj = &script_dir.join("cpptraj_gmx_traj_manipulation.py");
-            if !cpp_traj.is_file() {
-                bail!(r#"Missing "{}""#, cpp_traj.display());
-            }
-
-            let mut cmd = Command::new(micromamba);
-            cmd.args([
-                "run",
-                "-n",
-                "simproc",
-                cpp_traj.to_string_lossy().as_ref(),
-                "--traj",
-                input_dir
-                    .join(&trajectory_file_name)
-                    .to_string_lossy()
-                    .as_ref(),
-                "--coord",
-                input_dir
-                    .join(&meta.structure_file_name)
-                    .to_string_lossy()
-                    .as_ref(),
-                "--top",
-                input_dir
-                    .join(&meta.topology_file_name)
-                    .to_string_lossy()
-                    .as_ref(),
-                "--outdir",
-                trajectory_dir.to_string_lossy().as_ref(),
-            ]);
-            debug!("Running {cmd:?}");
-
-            let output = cmd.output()?;
-            if !output.status.success() {
-                bail!("{}", String::from_utf8_lossy(&output.stderr));
-            }
-
-            let missing: Vec<_> = full_min_files
-                .iter()
-                .filter(|f| !file_exists(f))
-                .map(|f| f.to_string_lossy().to_string())
-                .collect();
-
-            if !missing.is_empty() {
-                let error_file = &trajectory_dir.join("errors.txt");
-                let error_fh = File::create(&error_file)?;
-                write!(
-                    &error_fh,
-                    "Failed command {cmd:?}\nFailed to create {}\n{}\n{}",
-                    missing.join(", "),
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr),
-                )?;
-                errors.push(error_file.to_string_lossy().to_string());
-                continue;
-            }
-        }
-
-        let full_gro = trajectory_dir.join("full.gro");
-        let full_pdb = trajectory_dir.join("full.pdb");
-        let full_xtc = trajectory_dir.join("full.xtc");
-        let min_gro = trajectory_dir.join("minimal.gro");
-        let min_pdb = trajectory_dir.join("minimal.pdb");
-        let min_xtc = trajectory_dir.join("minimal.xtc");
-        let sampled_xtc = trajectory_dir.join("sampled.xtc");
-        let thumbnail_png = trajectory_dir.join("thumbnail.png");
-        let full_xtc_size = fs::metadata(&full_xtc)?.len();
-
-        sample_trajectory(&min_xtc, &min_pdb, &sampled_xtc, script_dir)?;
-        make_thumbnail(&thumbnail_png, &sampled_xtc, &min_pdb, script_dir)?;
-
-        let trajectory_file_stem = Path::new(&trajectory_file_name)
-            .file_stem()
-            .ok_or_else(|| {
-                anyhow!(r#"Failed to extract file_stem from "{trajectory_file_name}""#)
-            })?
-            .to_string_lossy()
-            .to_string();
-
-        processed.push(ProcessedTrajectory {
-            full_gro,
-            full_pdb,
-            full_xtc,
-            min_gro,
-            min_pdb,
-            min_xtc,
-            sampled_xtc,
-            thumbnail_png,
-            full_xtc_size,
-            trajectory_file_name,
-            trajectory_file_stem,
-            directory_name: trajectory_dir.to_string_lossy().to_string(),
-        });
+    if !trajectory_dir.is_dir() {
+        fs::create_dir_all(&trajectory_dir)?;
     }
 
-    // Sort by size/trajectory name
-    processed.sort_by(|a, b| {
-        a.full_xtc_size
-            .cmp(&b.full_xtc_size)
-            .then_with(|| a.trajectory_file_stem.cmp(&b.trajectory_file_stem))
-    });
+    let full_min_files = &[
+        "full.gro",
+        "full.pdb",
+        "full.xtc",
+        "minimal.gro",
+        "minimal.pdb",
+        "minimal.xtc",
+    ]
+    .map(|filename| trajectory_dir.join(filename));
 
-    Ok((processed, errors))
+    if full_min_files.iter().all(|f| file_exists(f)) {
+        debug!(
+            r#"Full/minimal files all exist for "{}""#,
+            args.trajectory_file_name
+        );
+    } else {
+        let micromamba = which("micromamba")
+            .map_err(|e| anyhow!("Failed to find micromamba ({e})"))?;
+        debug!("Making full/minimal files");
+
+        let cpp_traj = args.script_dir.join("cpptraj_gmx_traj_manipulation.py");
+        if !cpp_traj.is_file() {
+            bail!(r#"Missing "{}""#, cpp_traj.display());
+        }
+
+        let mut cmd = Command::new(micromamba);
+        cmd.args([
+            "run",
+            "-n",
+            "simproc",
+            cpp_traj.to_string_lossy().as_ref(),
+            "--traj",
+            args.input_dir
+                .join(args.trajectory_file_name)
+                .to_string_lossy()
+                .as_ref(),
+            "--coord",
+            args.input_dir
+                .join(args.structure_file_name)
+                .to_string_lossy()
+                .as_ref(),
+            "--top",
+            args.input_dir
+                .join(args.topology_file_name)
+                .to_string_lossy()
+                .as_ref(),
+            "--outdir",
+            trajectory_dir.to_string_lossy().as_ref(),
+        ]);
+        debug!("Running {cmd:?}");
+
+        let output = cmd.output()?;
+        if !output.status.success() {
+            bail!("{}", String::from_utf8_lossy(&output.stderr));
+        }
+
+        let missing: Vec<_> = full_min_files
+            .iter()
+            .filter(|f| !file_exists(f))
+            .map(|f| f.to_string_lossy().to_string())
+            .collect();
+
+        if !missing.is_empty() {
+            let error_file = &trajectory_dir.join("errors.txt");
+            let error_fh = File::create(&error_file)?;
+            write!(
+                &error_fh,
+                "Failed command {cmd:?}\nFailed to create {}\n{}\n{}",
+                missing.join(", "),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            )?;
+            errors.push(error_file.to_string_lossy().to_string());
+        }
+    }
+
+    let full_gro = trajectory_dir.join("full.gro");
+    let full_pdb = trajectory_dir.join("full.pdb");
+    let full_xtc = trajectory_dir.join("full.xtc");
+    let min_gro = trajectory_dir.join("minimal.gro");
+    let min_pdb = trajectory_dir.join("minimal.pdb");
+    let min_xtc = trajectory_dir.join("minimal.xtc");
+    let sampled_xtc = trajectory_dir.join("sampled.xtc");
+    let thumbnail_png = trajectory_dir.join("thumbnail.png");
+    let full_xtc_size = fs::metadata(&full_xtc)?.len();
+    let is_coarse_grained = check_coarse_grained(&full_pdb, &min_pdb)?;
+
+    sample_trajectory(&min_xtc, &min_pdb, &sampled_xtc, args.script_dir)?;
+    make_thumbnail(&thumbnail_png, &sampled_xtc, &min_pdb, args.script_dir)?;
+
+    let trajectory_file_stem = Path::new(&args.trajectory_file_name)
+        .file_stem()
+        .ok_or_else(|| {
+            anyhow!(
+                r#"Failed to extract file_stem from "{}""#,
+                args.trajectory_file_name
+            )
+        })?
+        .to_string_lossy()
+        .to_string();
+
+    Ok(ProcessedTrajectory {
+        full_gro,
+        full_pdb,
+        full_xtc,
+        min_gro,
+        min_pdb,
+        min_xtc,
+        sampled_xtc,
+        thumbnail_png,
+        full_xtc_size,
+        trajectory_file_name: args.trajectory_file_name.to_string(),
+        trajectory_file_stem,
+        directory_name: trajectory_dir.to_string_lossy().to_string(),
+        is_coarse_grained,
+        errors,
+    })
 }
 
 // --------------------------------------------------
-pub fn get_is_coarse_grained(min_pdb: &Path, script_dir: &Path) -> Result<bool> {
-    debug!("Checking if coarse-grained");
-    let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
-    let script = script_dir.join("simulation_is_coarse_grained.py");
-    let mut cmd = Command::new(&uv);
-    cmd.current_dir(script_dir).args([
-        "run",
-        script.to_string_lossy().as_ref(),
-        min_pdb.to_string_lossy().as_ref(),
-    ]);
-    debug!("Running {cmd:?}");
-    let output = cmd.output()?;
+pub fn check_coarse_grained(full_pdb: &Path, min_pdb: &Path) -> Result<bool> {
+    let structure = pdbrust::parse_pdb_file(min_pdb)?;
+    let protein = structure.select("protein")?;
+    let total_atoms = protein.get_num_atoms();
+    let unique_residues: HashSet<_> = protein
+        .atoms
+        .iter()
+        .map(|a| (a.chain_id.clone(), a.residue_seq, a.ins_code))
+        .collect();
+    let num_residues = unique_residues.len();
+    let is_coarse_grained = total_atoms == num_residues;
+    debug!(
+        "Checking if coarse-grained ({})",
+        if is_coarse_grained { "Yes" } else { "No" }
+    );
 
-    if !output.status.success() {
-        bail!("{}", String::from_utf8_lossy(&output.stderr));
+    if is_coarse_grained {
+        for path in [min_pdb, full_pdb] {
+            fix_alpha_carbon_name(path)?;
+        }
     }
 
-    let stdout = str::from_utf8(&output.stdout)?.trim();
-    debug!("stdout = {stdout}");
+    Ok(is_coarse_grained)
+}
 
-    Ok(stdout == "True")
+// --------------------------------------------------
+fn fix_alpha_carbon_name(path: &Path) -> Result<()> {
+    let structure = pdbrust::parse_pdb_file(path)?;
+    let protein = structure.select("protein")?;
+    let total_atoms = protein.get_num_atoms();
+    let protein_serials: HashSet<i32> = protein
+        .atoms
+        .iter()
+        .filter_map(|a| (a.name == "A").then_some(a.serial))
+        .collect();
+
+    if protein_serials.len() == total_atoms {
+        debug!(
+            r#"All proteins in "{}" are named "A," changing to "CA""#,
+            path.display()
+        );
+        let mut fixed = structure.clone();
+        for atom in fixed.atoms.iter_mut() {
+            if protein_serials.contains(&atom.serial) {
+                atom.name = "CA".to_string();
+            }
+        }
+
+        // Backup original and then overwrite
+        let stem = path.file_stem().unwrap_or_default();
+        let backup =
+            path.with_file_name(format!("{}_orig.pdb", stem.to_string_lossy()));
+        fs::rename(path, backup)?;
+        fixed.to_file(&path)?;
+    }
+
+    Ok(())
 }
 
 // --------------------------------------------------
@@ -778,9 +852,6 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<Vec<String>> {
         args.script_dir,
     )?;
 
-    let is_coarse_grained =
-        get_is_coarse_grained(&args.example_trajectory.min_pdb, args.script_dir)?;
-
     let duration = get_duration(
         &args.example_trajectory.full_xtc,
         meta.integration_timestep_fs,
@@ -1067,7 +1138,7 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<Vec<String>> {
         solutes: meta.solutes.unwrap_or_default(),
         papers,
         is_embargoed: meta.is_embargoed,
-        is_coarse_grained: Some(is_coarse_grained),
+        is_coarse_grained: Some(args.example_trajectory.is_coarse_grained),
     };
 
     if !warnings.is_empty() {
