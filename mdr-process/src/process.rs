@@ -34,7 +34,7 @@ use which::which;
 
 // ── BLAST parameters ──────────────────────────────────────────────────────────
 const BLAST_EVALUE: &str = "1e-5";
-const BLAST_NUM_THREADS: &str = "16";
+const BLAST_NUM_THREADS: &str = "2"; // 16 -> or make variable
 const BLAST_MAX_TARGET_SEQS_SWISSPROT: &str = "20";
 const BLAST_MAX_TARGET_SEQS_TREMBL: &str = "100";
 const BLAST_MIN_PIDENT: f64 = 100.0;
@@ -1215,34 +1215,38 @@ pub fn get_uniprot_entries(
                 blast_uniprot(fasta_sequence_file, blast_dir, UniprotDb::Isoform)?;
 
             let mut found_in_isoform: Vec<(String, String)> = vec![];
-            for uniprot_id in &uniprot_ids {
+            for uniprot_id in &not_in_swissprot {
                 for isoform_id in &isoform_ids {
-                    if isoform_id.starts_with(uniprot_id) {
-                        found_in_isoform.push((uniprot_id.clone(), isoform_id.clone()));
+                    if isoform_id.starts_with(*uniprot_id) {
+                        found_in_isoform
+                            .push((uniprot_id.to_string(), isoform_id.clone()));
                     }
                 }
             }
 
-            for (uniprot_id, isoform_id) in found_in_isoform {
+            for (uniprot_id, isoform_id) in &found_in_isoform {
                 warnings.push(format!(
                     r#"Uniprot ID "{uniprot_id}" found in Isoform as "{isoform_id}""#,
                 ));
             }
 
-            let trembl_ids =
-                blast_uniprot(fasta_sequence_file, blast_dir, UniprotDb::Trembl)?;
+            // If we still haven't found all the Uniprot IDs, look in Trembl
+            if swissprot_ids.len() + found_in_isoform.len() < uniprot_ids.len() {
+                let trembl_ids =
+                    blast_uniprot(fasta_sequence_file, blast_dir, UniprotDb::Trembl)?;
 
-            let not_in_trembl: Vec<_> = not_in_swissprot
-                .iter()
-                .filter(|id| !trembl_ids.contains(id))
-                .map(|val| val.to_string())
-                .collect();
+                let not_in_trembl: Vec<_> = not_in_swissprot
+                    .iter()
+                    .filter(|id| !trembl_ids.contains(id))
+                    .map(|val| val.to_string())
+                    .collect();
 
-            if !not_in_trembl.is_empty() {
-                warnings.push(format!(
-                    "Uniprot IDs not found in Swissprot or Trembl: {}",
-                    not_in_trembl.join(", "),
-                ));
+                if !not_in_trembl.is_empty() {
+                    warnings.push(format!(
+                        "Uniprot IDs not found in Swissprot or Trembl: {}",
+                        not_in_trembl.join(", "),
+                    ));
+                }
             }
         }
     }
