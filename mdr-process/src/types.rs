@@ -247,6 +247,18 @@ pub struct SubmissionCompleteFile {
 
 // --------------------------------------------------
 #[derive(Debug)]
+pub struct ProcessTrajectoryArgs<'a> {
+    pub trajectory_num: usize,
+    pub trajectory_file_name: &'a str,
+    pub structure_file_name: &'a str,
+    pub topology_file_name: &'a str,
+    pub input_dir: &'a PathBuf,
+    pub processed_dir: &'a PathBuf,
+    pub script_dir: &'a PathBuf,
+}
+
+// --------------------------------------------------
+#[derive(Debug)]
 pub struct ProcessedTrajectory {
     pub full_gro: PathBuf,
     pub full_pdb: PathBuf,
@@ -260,6 +272,8 @@ pub struct ProcessedTrajectory {
     pub trajectory_file_name: String,
     pub trajectory_file_stem: String,
     pub directory_name: String,
+    pub is_coarse_grained: bool,
+    pub errors: Vec<String>,
 }
 
 // --------------------------------------------------
