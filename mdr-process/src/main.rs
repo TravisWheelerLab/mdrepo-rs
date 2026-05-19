@@ -33,6 +33,16 @@ fn run(args: Cli) -> Result<()> {
         })
         .init();
 
+    let num_threads = args.num_threads.unwrap_or(num_cpus::get());
+    info!(
+        "Using {num_threads} thread{}",
+        if num_threads == 1 { "" } else { "s" }
+    );
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .build_global()
+        .unwrap();
+
     match &args.command {
         Command::Process(args) => {
             validate::validate(&args.input_dir)?;
