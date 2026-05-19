@@ -94,8 +94,9 @@ pub fn process(args: &TicketArgs) -> Result<()> {
         bail!("Failed to download any directories for ticket")
     }
 
+    let start = Instant::now();
     for ticket_dir in ticket_dirs {
-        let start = Instant::now();
+        let ticket_start = Instant::now();
         debug!(r#"Processing ticket directory "{}""#, ticket_dir.display());
         match process::process(&ProcessArgs {
             input_dir: ticket_dir.clone(),
@@ -113,7 +114,7 @@ pub fn process(args: &TicketArgs) -> Result<()> {
                 debug!(
                     r#"Finished processing ticket directory "{}" in {:?}"#,
                     ticket_dir.display(),
-                    start.elapsed()
+                    ticket_start.elapsed()
                 );
                 if !errors.is_empty() {
                     info!(
@@ -133,7 +134,11 @@ pub fn process(args: &TicketArgs) -> Result<()> {
         }
     }
 
-    info!(r#"Done processing ticket "{}""#, args.ticket_id);
+    info!(
+        r#"Done processing ticket "{}" in {:?}"#,
+        args.ticket_id,
+        start.elapsed()
+    );
 
     Ok(())
 }
