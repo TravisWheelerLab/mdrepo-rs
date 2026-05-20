@@ -5,16 +5,16 @@ use libmdrepo::{
     constants::MAX_FILE_SIZE_BYTES,
     metadata::Meta,
 };
-use log::info;
-use std::{fs, path::Path};
+use log::debug;
+use std::{collections::HashMap, fs, path::Path};
 
 // --------------------------------------------------
-pub fn validate(dir: &Path) -> Result<()> {
+pub fn validate(dir: &Path) -> Result<Vec<String>> {
     if !dir.is_dir() {
         bail!(r#"Invalid directory "{}""#, dir.display())
     }
 
-    info!(r#"Processing input directory "{}""#, dir.display());
+    debug!(r#"Processing input directory "{}""#, dir.display());
 
     let mut files: Vec<String> = fs::read_dir(dir)?
         .filter_map(Result::ok)
@@ -24,14 +24,17 @@ pub fn validate(dir: &Path) -> Result<()> {
     files.sort();
 
     let num_files = files.len();
-    info!(
+    debug!(
         "Found {num_files} file{}",
         if num_files == 1 { "" } else { "s" }
     );
+
     if num_files == 0 {
         bail!(r#""{}" is empty!"#, dir.display());
     }
 
+    let mut errors = vec![];
+    let mut md5_hashes: HashMap<String, Vec<String>> = HashMap::new();
     let completed_path = dir.join("mdrepo-submission.completed.json");
     if completed_path.is_file() {
         let completed: SubmissionCompleteJson =
@@ -56,15 +59,15 @@ pub fn validate(dir: &Path) -> Result<()> {
         for file in &completed.files {
             let path = dir.join(&file.irods_path);
             if !path.exists() {
-                bail!(r#"Missing expected file "{}""#, file.irods_path);
+                errors.push(format!(r#"Missing expected file "{}""#, file.irods_path));
+                continue;
             }
 
             let size = path.metadata()?.len();
-
             let local_md5 = get_md5(&path)?;
 
-            info!(
-                r#"Checking "{}" = md5 {}, size {}"#,
+            debug!(
+                r#"Checking "{}" = expected md5 {}, size {}"#,
                 file.irods_path,
                 if file.md5_hash == local_md5 {
                     "OK"
@@ -74,23 +77,37 @@ pub fn validate(dir: &Path) -> Result<()> {
                 if file.size == size { "OK" } else { "Bad" }
             );
 
+            // What if the size is 0 but so is the expected size in the completed JSON?
+            //if size == 0 {
+            //    errors.push(format!(r#""{}" is empty"#, file.irods_path));
+            //}
+
             if file.md5_hash != local_md5 {
-                bail!(
+                errors.push(format!(
                     r#""{}" MD5 "{}" does not match meta "{}""#,
-                    file.irods_path,
-                    local_md5,
-                    file.md5_hash
-                )
+                    file.irods_path, local_md5, file.md5_hash
+                ));
             }
 
             if file.size != size {
-                bail!(
+                errors.push(format!(
                     r#""{}" size "{}" does not match meta "{}""#,
-                    file.irods_path,
-                    size,
-                    file.size
-                )
+                    file.irods_path, size, file.size
+                ))
             }
+            md5_hashes
+                .entry(local_md5)
+                .or_default()
+                .push(file.irods_path.clone());
+        }
+    }
+
+    for (hash, files) in md5_hashes {
+        if files.len() > 1 {
+            errors.push(format!(
+                r#"File hash "{hash}" is duplicated: [{}]"#,
+                files.join(", ")
+            ))
         }
     }
 
@@ -115,16 +132,16 @@ pub fn validate(dir: &Path) -> Result<()> {
 
     // Check min/max file size
     if total_file_size == 0 {
-        bail!("All local files are empty!");
+        errors.push(format!("All local files are empty!"));
     }
 
     if total_file_size > MAX_FILE_SIZE_BYTES {
-        bail!(
+        errors.push(format!(
             "Total file size ({total_file_size}) exceeds limit {MAX_FILE_SIZE_BYTES}"
-        );
+        ));
     }
 
-    Ok(())
+    Ok(errors)
 }
 
 #[cfg(test)]

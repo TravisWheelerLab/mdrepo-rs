@@ -83,6 +83,7 @@ pub struct Meta {
     pub pdb_id: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[validate(custom(function = "validate_uniprot_ids"))]
     pub uniprot_ids: Option<Vec<String>>,
 
     #[validate(nested)]
@@ -116,6 +117,9 @@ pub struct Meta {
     #[validate(nested)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contributors: Option<Vec<Contributor>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_embargoed: Option<bool>,
 }
 
 impl Meta {
@@ -125,7 +129,7 @@ impl Meta {
             self.topology_file_name.clone(),
         ];
 
-        filenames.extend_from_slice(&self.trajectory_file_names.clone());
+        filenames.extend_from_slice(&self.trajectory_file_names);
 
         if let Some(files) = &self.additional_files {
             for file in files {
@@ -141,9 +145,7 @@ impl Meta {
         let mut messages = vec![];
         if let Err(e) = self.validate() {
             for (field, val) in e.errors() {
-                for message in handle_validation_error_kind(field, val) {
-                    messages.push(message);
-                }
+                messages.extend(handle_validation_error_kind(field, val));
             }
         }
 
@@ -157,12 +159,10 @@ impl Meta {
                 ))
             }
         } else {
-            let mut valid_software_names: Vec<String> = constants::VALID_SOFTWARE
+            let valid_software_names: Vec<String> = constants::VALID_SOFTWARE
                 .keys()
                 .map(|val| val.to_string())
                 .collect();
-            // Must be sorted for testing
-            valid_software_names.sort();
             messages.push(format!(
                 r#"software_name: "{}" invalid, choose from {}"#,
                 self.software_name,
@@ -253,10 +253,7 @@ impl Meta {
                 _ => vec![],
             };
 
-            if !&["tpr", "gro"]
-                .iter()
-                .any(|ext| exts.contains(&ext.to_string()))
-            {
+            if !exts.iter().any(|e| matches!(e.as_str(), "tpr" | "gro")) {
                 messages.push(
                     "topology_file_name: GROMACS topology \".top\" file requires \
                     additional \".tpr\" or \".gro\""
@@ -299,20 +296,17 @@ impl Meta {
     }
 
     pub fn from_file(path: &Path) -> Result<Self> {
-        match path.extension() {
-            Some(ext) => {
-                let contents = read_file(path)?;
-                if contents.is_empty() {
-                    bail!("File is empty")
-                }
-                let meta = match ext.to_str() {
-                    Some("json") => Self::from_json(&contents)?,
-                    Some("toml") => Self::from_toml(&contents)?,
-                    _ => bail!(r#"Unknown file extension "{}""#, ext.display()),
-                };
-                Ok(meta)
-            }
-            _ => bail!("No file extension"),
+        let Some(ext) = path.extension() else {
+            bail!("No file extension")
+        };
+        let contents = read_file(path)?;
+        if contents.is_empty() {
+            bail!("File is empty")
+        }
+        match ext.to_str() {
+            Some("json") => Self::from_json(&contents),
+            Some("toml") => Self::from_toml(&contents),
+            _ => bail!(r#"Unknown file extension "{}""#, ext.display()),
         }
     }
 
@@ -344,7 +338,7 @@ impl Meta {
             short_description: "<short_description> (required)".to_string(),
             description: Some("<longer description>".to_string()),
             software_name: "GROMACS".to_string(),
-            software_version: "2024.5".to_string(),
+            software_version: "2024.4".to_string(),
             toml_version: Some(2),
             alias: Some("ABC123".to_string()),
             external_links: Some(vec![ExternalLink {
@@ -386,6 +380,7 @@ impl Meta {
             ]),
             papers: None,
             dois: Some(vec!["10.1017/j.str.2019.08.032".to_string()]),
+            is_embargoed: Some(true),
             contributors: Some(vec![Contributor {
                 name: "Barbara McClintock".to_string(),
                 institution: Some("Cold Spring Harbor Laboratory".to_string()),
@@ -407,7 +402,7 @@ impl Meta {
             short_description: "<short_description> (required)".to_string(),
             description: None,
             software_name: "GROMACS".to_string(),
-            software_version: "2024.5".to_string(),
+            software_version: "2024.4".to_string(),
             toml_version: None,
             alias: None,
             external_links: None,
@@ -423,6 +418,7 @@ impl Meta {
             solutes: None,
             papers: None,
             dois: None,
+            is_embargoed: None,
             contributors: None,
         }
     }
@@ -573,6 +569,16 @@ fn validate_solute_name(name: &str) -> Result<(), ValidationError> {
     Ok(())
 }
 
+fn validate_uniprot_ids(ids: &[String]) -> Result<(), ValidationError> {
+    if !ids
+        .iter()
+        .all(|val| constants::NOT_WHITESPACE_REGEX.is_match(val))
+    {
+        return Err(ValidationError::new("uniprot_id"));
+    }
+    Ok(())
+}
+
 fn handle_validation_error_kind(
     field: &str,
     err_kind: &ValidationErrorsKind,
@@ -593,9 +599,7 @@ fn handle_validation_error_kind(
             for (num, validation_errors) in tree {
                 for (sub_fld, err_kind) in validation_errors.errors() {
                     let fld = format!("{field}[{}].{sub_fld}", num + 1);
-                    for msg in handle_validation_error_kind(&fld, err_kind) {
-                        messages.push(msg);
-                    }
+                    messages.extend(handle_validation_error_kind(&fld, err_kind));
                 }
             }
         }
@@ -603,9 +607,7 @@ fn handle_validation_error_kind(
         ValidationErrorsKind::Struct(validation_errors) => {
             for (sub_fld, err_kind) in validation_errors.errors() {
                 let fld = format!("{field}.{sub_fld}");
-                for msg in handle_validation_error_kind(&fld, err_kind) {
-                    messages.push(msg);
-                }
+                messages.extend(handle_validation_error_kind(&fld, err_kind));
             }
         }
     };
@@ -615,8 +617,8 @@ fn handle_validation_error_kind(
 // --------------------------------------------------
 fn format_validation_error(err: &ValidationError) -> String {
     let given = match err.params.get("value") {
-        Some(val) => serde_json::to_string(val).unwrap_or("".to_string()),
-        _ => "".to_string(),
+        Some(val) => serde_json::to_string(val).unwrap_or_default(),
+        _ => String::new(),
     };
 
     let message = match err.code {
@@ -633,7 +635,7 @@ fn format_validation_error(err: &ValidationError) -> String {
                         format!("length must be >= {x} and <= {y}")
                     }
                 }
-                _ => "".to_string(),
+                _ => String::new(),
             }
         }
         Borrowed("range") => {
@@ -654,7 +656,7 @@ fn format_validation_error(err: &ValidationError) -> String {
                 (None, None, Some(x), None) => format!("must be > {x}"),
                 (None, None, None, Some(x)) => format!("must be < {x}"),
                 (None, None, Some(x), Some(y)) => format!("must be > {x} and < {y}"),
-                _ => "".to_string(),
+                _ => String::new(),
             }
         }
         _ => err.message.as_deref().unwrap_or("invalid").to_string(),
@@ -1029,92 +1031,80 @@ mod tests {
             Some(vec!["P04637".to_string(), "Q9Y5S2".to_string()])
         );
 
-        assert!(meta.water.is_some());
-        if let Some(water) = &meta.water {
-            assert_eq!(water.model, "TIP3P");
-            assert_eq!(water.density_kg_m3, 1000.0);
-        }
+        let water = meta.water.as_ref().expect("water should be Some");
+        assert_eq!(water.model, "TIP3P");
+        assert_eq!(water.density_kg_m3, 1000.0);
 
-        assert!(meta.external_links.is_some());
-        if let Some(links) = &meta.external_links {
-            assert_eq!(links.len(), 1);
-            if let Some(link) = links.first() {
-                assert_eq!(link.url, "https://zenodo.org/records/7711953");
-                assert_eq!(link.label, Some("Zenodo".to_string()));
-            }
-        }
+        let links = meta
+            .external_links
+            .as_ref()
+            .expect("external_links should be Some");
+        assert_eq!(links.len(), 1);
+        let link = links.first().expect("link should exist");
+        assert_eq!(link.url, "https://zenodo.org/records/7711953");
+        assert_eq!(link.label, Some("Zenodo".to_string()));
 
-        assert!(meta.ligands.is_some());
-        if let Some(ligands) = &meta.ligands {
-            assert_eq!(ligands.len(), 2);
-            if let Some(ligand) = ligands.first() {
-                assert_eq!(ligand.name, "FY8".to_string());
-                assert_eq!(ligand.smiles, "Oc1ccc(Cl)cc1NC(=O)C2CCNCC2".to_string());
-            }
-        }
+        let ligands = meta.ligands.as_ref().expect("ligands should be Some");
+        assert_eq!(ligands.len(), 2);
+        let ligand = ligands.first().expect("ligand should exist");
+        assert_eq!(ligand.name, "FY8".to_string());
+        assert_eq!(ligand.smiles, "Oc1ccc(Cl)cc1NC(=O)C2CCNCC2".to_string());
 
-        assert!(meta.solutes.is_some());
-        if let Some(solutes) = &meta.solutes {
-            assert_eq!(solutes.len(), 2);
-            if let Some(solute) = solutes.first() {
-                assert_eq!(solute.name, "Na+".to_string());
-                assert_eq!(solute.concentration_mol_liter, 0.15);
-            }
-        }
+        let solutes = meta.solutes.as_ref().expect("solutes should be Some");
+        assert_eq!(solutes.len(), 2);
+        let solute = solutes.first().expect("solute should exist");
+        assert_eq!(solute.name, "Na+".to_string());
+        assert_eq!(solute.concentration_mol_liter, 0.15);
 
-        assert!(meta.contributors.is_some());
-        if let Some(contributors) = &meta.contributors {
-            assert_eq!(contributors.len(), 1);
-            if let Some(c) = contributors.first() {
-                assert_eq!(c.name, "Alex Leifson".to_string());
-                assert_eq!(c.orcid, Some("0000-0003-2819-749X".to_string()));
-                assert_eq!(c.email, Some("alex@aol.com".to_string()));
-                assert_eq!(c.institution, Some("University of Montreal".to_string()));
-            }
-        }
+        let contributors = meta
+            .contributors
+            .as_ref()
+            .expect("contributors should be Some");
+        assert_eq!(contributors.len(), 1);
+        let c = contributors.first().expect("contributor should exist");
+        assert_eq!(c.name, "Alex Leifson".to_string());
+        assert_eq!(c.orcid, Some("0000-0003-2819-749X".to_string()));
+        assert_eq!(c.email, Some("alex@aol.com".to_string()));
+        assert_eq!(c.institution, Some("University of Montreal".to_string()));
 
-        assert!(meta.uniprot_ids.is_some());
-        if let Some(uniprot_ids) = &meta.uniprot_ids {
-            assert_eq!(uniprot_ids.len(), 2);
-            assert_eq!(
-                uniprot_ids,
-                &vec!["P04637".to_string(), "Q9Y5S2".to_string()]
-            );
-        }
+        let uniprot_ids = meta
+            .uniprot_ids
+            .as_ref()
+            .expect("uniprot_ids should be Some");
+        assert_eq!(uniprot_ids.len(), 2);
+        assert_eq!(
+            uniprot_ids,
+            &vec!["P04637".to_string(), "Q9Y5S2".to_string()]
+        );
 
-        assert!(meta.dois.is_some());
-        if let Some(dois) = &meta.dois {
-            assert_eq!(dois.len(), 1);
-            if let Some(doi) = dois.first() {
-                assert_eq!(doi, "10.1038/s43588-024-00627-2");
-            }
-        }
+        let dois = meta.dois.as_ref().expect("dois should be Some");
+        assert_eq!(dois.len(), 1);
+        assert_eq!(
+            dois.first().expect("doi should exist"),
+            "10.1038/s43588-024-00627-2"
+        );
 
-        assert!(meta.papers.is_some());
-        if let Some(papers) = &meta.papers {
-            assert_eq!(papers.len(), 1);
-            if let Some(paper) = papers.first() {
-                assert_eq!(
-                    paper.title,
-                    "MISATO: machine learning dataset of protein–ligand complexes \
-                    for structure-based drug discovery"
-                        .to_string()
-                );
-            }
-        }
+        let papers = meta.papers.as_ref().expect("papers should be Some");
+        assert_eq!(papers.len(), 1);
+        assert_eq!(
+            papers.first().expect("paper should exist").title,
+            "MISATO: machine learning dataset of protein–ligand complexes \
+            for structure-based drug discovery"
+                .to_string()
+        );
 
-        assert!(meta.additional_files.is_some());
-        if let Some(files) = &meta.additional_files {
-            assert_eq!(files.len(), 1);
-            if let Some(file) = files.first() {
-                assert_eq!(file.file_type, "Structure".to_string());
-                assert_eq!(file.file_name, "5aom_gromacs_cleaned.gro".to_string());
-                assert_eq!(
-                    file.description,
-                    Some(".gro format of the structure file".to_string())
-                );
-            }
-        }
+        let files = meta
+            .additional_files
+            .as_ref()
+            .expect("additional_files should be Some");
+        assert_eq!(files.len(), 1);
+        let file = files.first().expect("file should exist");
+        assert_eq!(file.file_type, "Structure".to_string());
+        assert_eq!(file.file_name, "5aom_gromacs_cleaned.gro".to_string());
+        assert_eq!(
+            file.description,
+            Some(".gro format of the structure file".to_string())
+        );
 
         let errors = meta.check(None);
         assert!(&errors.is_empty());

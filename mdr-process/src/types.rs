@@ -20,6 +20,10 @@ pub struct Cli {
     /// Log file
     #[arg(long)]
     pub log_file: Option<String>,
+
+    /// Number of threads
+    #[arg(short('t'), long)]
+    pub num_threads: Option<usize>,
 }
 
 // --------------------------------------------------
@@ -134,6 +138,10 @@ pub struct TicketArgs {
     /// Process files/create import JSON but do not import/push
     #[arg(short, long)]
     pub dry_run: bool,
+
+    /// Skip file download
+    #[arg(long)]
+    pub skip_download: bool,
 }
 
 // --------------------------------------------------
@@ -207,8 +215,8 @@ impl fmt::Display for Server {
 #[command(alias = "va")]
 pub struct ValidateArgs {
     /// Input directory
-    #[arg(value_name = "DIR")]
-    pub dirname: PathBuf,
+    #[arg(value_name = "DIR", num_args = 1..)]
+    pub dirnames: Vec<PathBuf>,
 }
 
 // --------------------------------------------------
@@ -247,6 +255,18 @@ pub struct SubmissionCompleteFile {
 
 // --------------------------------------------------
 #[derive(Debug)]
+pub struct ProcessTrajectoryArgs<'a> {
+    pub trajectory_num: usize,
+    pub trajectory_file_name: &'a str,
+    pub structure_file_name: &'a str,
+    pub topology_file_name: &'a str,
+    pub input_dir: &'a PathBuf,
+    pub processed_dir: &'a PathBuf,
+    pub script_dir: &'a PathBuf,
+}
+
+// --------------------------------------------------
+#[derive(Debug)]
 pub struct ProcessedTrajectory {
     pub full_gro: PathBuf,
     pub full_pdb: PathBuf,
@@ -260,6 +280,8 @@ pub struct ProcessedTrajectory {
     pub trajectory_file_name: String,
     pub trajectory_file_stem: String,
     pub directory_name: String,
+    pub is_coarse_grained: bool,
+    pub errors: Vec<String>,
 }
 
 // --------------------------------------------------
@@ -311,6 +333,7 @@ pub struct UniprotProteinDesc {
     #[serde(alias = "submissionNames")]
     pub submission_names: Option<UniprotProteinFullName>,
 }
+
 // --------------------------------------------------
 #[derive(Debug, Deserialize, Serialize)]
 pub struct UniprotProteinFullName {
@@ -409,35 +432,89 @@ pub struct Export {
 pub struct ExportSimulation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub simulation_id: Option<u64>,
+
     pub lead_contributor_orcid: String,
+
     pub unique_file_hash_string: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
+
     pub short_description: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+
     pub software_name: String,
+
     pub software_version: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub run_commands: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pdb: Option<PdbEntry>,
+
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub uniprots: Vec<UniprotEntry>,
+
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub external_links: Vec<metadata::ExternalLink>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub forcefield: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub forcefield_comments: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub protonation_method: Option<String>,
+
     pub rmsd_values: Vec<f64>,
+
     pub rmsf_values: Vec<f64>,
+
     pub duration: u32,
+
     pub sampling_frequency: f32,
+
     pub integration_timestep_fs: u32,
+
     pub temperature_kelvin: u32,
+
     pub fasta_sequence: String,
-    pub water: Option<metadata::Water>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub water_type: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub water_density: Option<f64>,
+
     pub structure_hash: String,
+
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub contributors: Vec<metadata::Contributor>,
+
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub original_files: Vec<MdFile>,
+
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub processed_files: Vec<MdFile>,
+
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub ligands: Vec<metadata::Ligand>,
+
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub solutes: Vec<metadata::Solute>,
+
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub papers: Vec<metadata::Paper>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_embargoed: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_coarse_grained: Option<bool>,
 }
 
 // --------------------------------------------------
@@ -605,6 +682,7 @@ pub struct BlastResult {
 #[derive(Debug, strum_macros::Display)]
 pub enum UniprotDb {
     Swissprot,
+    Isoform,
     Trembl,
 }
 
@@ -619,6 +697,7 @@ pub enum ProcessedTrajectoryType {
 // --------------------------------------------------
 #[derive(Debug)]
 pub struct ImportJsonArgs<'a> {
+    pub import_json: &'a Path,
     pub processed_dir: &'a Path,
     pub meta_path: &'a Path,
     pub input_dir: &'a Path,

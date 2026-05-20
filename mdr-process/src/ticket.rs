@@ -4,8 +4,10 @@ use crate::{
 };
 use anyhow::{anyhow, bail, Result};
 use dotenvy::dotenv;
+//use libmdrepo::metadata::Meta;
 use log::{debug, info};
-use std::{env, fs, path::PathBuf, process::Command};
+use rayon::prelude::*;
+use std::{env, fs, path::PathBuf, process::Command, time::Instant};
 use which::which;
 
 // --------------------------------------------------
@@ -45,19 +47,20 @@ pub fn process(args: &TicketArgs) -> Result<()> {
         fs::create_dir_all(landing_dir)?;
     }
 
-    let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
-    let fetch = script_dir.join("fetch_uploads.py");
     let ticket_dir = &landing_dir.join(format!("ticket-{}", args.ticket_id));
-
     debug!(
-        r#"Fetching ticket "{}" -> "{}""#,
+        r#"Processing ticket "{}" -> "{}""#,
         args.ticket_id,
         ticket_dir.display()
     );
 
-    let cmd = Command::new(&uv)
-        .current_dir(script_dir)
-        .args([
+    if args.skip_download {
+        debug!("Skipping download");
+    } else {
+        let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
+        let fetch = script_dir.join("fetch_uploads.py");
+        let mut cmd = Command::new(&uv);
+        cmd.current_dir(script_dir).args([
             "run",
             fetch.to_string_lossy().as_ref(),
             "--server",
@@ -66,19 +69,21 @@ pub fn process(args: &TicketArgs) -> Result<()> {
             &args.ticket_id.to_string(),
             "--landing-dir",
             landing_dir.to_string_lossy().as_ref(),
-        ])
-        .output()?;
+        ]);
+        debug!("Running {cmd:?}");
 
-    if !cmd.status.success() {
-        bail!("{}", String::from_utf8_lossy(&cmd.stderr));
-    }
+        let output = cmd.output()?;
+        if !output.status.success() {
+            bail!("{}", String::from_utf8_lossy(&output.stderr));
+        }
 
-    // The ticket directory should have been created by the fetch
-    if !ticket_dir.is_dir() {
-        bail!(
-            r#"Failed to create ticket directory "{}""#,
-            ticket_dir.display()
-        );
+        // The ticket directory should have been created by the fetch
+        if !ticket_dir.is_dir() {
+            bail!(
+                r#"Failed to create ticket directory "{}""#,
+                ticket_dir.display()
+            );
+        }
     }
 
     let mut ticket_dirs = vec![];
@@ -94,7 +99,24 @@ pub fn process(args: &TicketArgs) -> Result<()> {
         bail!("Failed to download any directories for ticket")
     }
 
-    for ticket_dir in ticket_dirs {
+    //let mut num_simulations = ticket_dirs.len();
+    //let mut num_trajectories = 0;
+    //for ticket_dir in ticket_dirs {
+    //    let path = ticket_dir.join("mdrepo-metadata.toml");
+    //    let meta = Meta::from_file(&path)?;
+    //    num_trajectories += meta.trajectory_file_names.len();
+    //}
+
+    //debug!(
+    //    "Found {num_trajectories} trajector{} in {num_simulations} simulation{}",
+    //    if num_trajectories == 1 { "" } else { "s" },
+    //    if num_simulations == 1 { "" } else { "s" },
+    //);
+    //let num_blast_threads = min(num_cpus::get(), num_trajectories) / num_trajectories;
+
+    let start = Instant::now();
+    ticket_dirs.into_par_iter().for_each(|ticket_dir| {
+        let ticket_start = Instant::now();
         debug!(r#"Processing ticket directory "{}""#, ticket_dir.display());
         match process::process(&ProcessArgs {
             input_dir: ticket_dir.clone(),
@@ -108,23 +130,34 @@ pub fn process(args: &TicketArgs) -> Result<()> {
             force: args.force,
             dry_run: args.dry_run,
         }) {
-            Ok(()) => {
+            Ok(errors) => {
                 debug!(
-                    r#"Finished processing ticket directory "{}""#,
-                    ticket_dir.display()
+                    r#"Finished processing ticket directory "{}" in {:?}"#,
+                    ticket_dir.display(),
+                    ticket_start.elapsed()
                 );
+                if !errors.is_empty() {
+                    info!(
+                        "Errors for {}:\n{}",
+                        ticket_dir.display(),
+                        errors.join("\n")
+                    )
+                }
             }
             Err(e) => {
-                debug!("{e}");
-                bail!(
-                    r#"Error processing ticket directory "{}""#,
+                debug!(
+                    r#"Error processing ticket directory "{}": {e}"#,
                     ticket_dir.display()
                 )
             }
         }
-    }
+    });
 
-    info!(r#"Done processing ticket "{}""#, args.ticket_id);
+    info!(
+        r#"Done processing ticket "{}" in {:?}"#,
+        args.ticket_id,
+        start.elapsed()
+    );
 
     Ok(())
 }

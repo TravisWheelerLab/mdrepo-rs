@@ -2,7 +2,7 @@ use crate::{
     common::read_file,
     metadata::{self, Meta},
 };
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use toml::value::Value as TomlValue;
@@ -34,7 +34,7 @@ impl Numlike {
         }
     }
 
-    pub fn to_string(&self) -> Option<String> {
+    pub fn as_string(&self) -> Option<String> {
         match self {
             Numlike::Stringy(val) => Some(val.clone()),
             Numlike::TomlVal(toml_val) => match toml_val {
@@ -115,6 +115,10 @@ pub struct MetaV1 {
     pub pdb_id: Option<String>,
 }
 
+fn non_empty<T>(v: Vec<T>) -> Option<Vec<T>> {
+    (!v.is_empty()).then_some(v)
+}
+
 impl MetaV1 {
     pub fn from_file(path: &Path) -> Result<Self> {
         let contents = read_file(path)?;
@@ -179,14 +183,12 @@ impl MetaV1 {
     }
 
     pub fn to_v2(&self) -> Result<Meta> {
-        let external_links = match &self.initial.external_link {
-            Some(link) => Some(vec![metadata::ExternalLink {
+        let external_links = self.initial.external_link.as_ref().map(|link| {
+            vec![metadata::ExternalLink {
                 url: link.clone(),
                 label: None,
-            }]),
-            _ => None,
-        };
-
+            }]
+        });
         let reqd = &self.required_files;
         let additional_files = self.additional_files.as_ref().map(|files| {
             files
@@ -231,25 +233,25 @@ impl MetaV1 {
             None
         };
 
-        let mut ligands = vec![];
-        if let Some(vals) = &self.ligands {
-            for v in vals {
-                ligands.push(metadata::Ligand {
-                    name: v.name.clone(),
-                    smiles: v.smiles.clone(),
-                })
-            }
-        }
+        let ligands: Vec<_> = self
+            .ligands
+            .iter()
+            .flat_map(|vals| vals.iter())
+            .map(|v| metadata::Ligand {
+                name: v.name.clone(),
+                smiles: v.smiles.clone(),
+            })
+            .collect();
 
-        let mut solutes = vec![];
-        if let Some(vals) = &self.solvents {
-            for v in vals {
-                solutes.push(metadata::Solute {
-                    name: v.name.clone(),
-                    concentration_mol_liter: v.ion_concentration,
-                })
-            }
-        }
+        let solutes: Vec<_> = self
+            .solvents
+            .iter()
+            .flat_map(|vals| vals.iter())
+            .map(|v| metadata::Solute {
+                name: v.name.clone(),
+                concentration_mol_liter: v.ion_concentration,
+            })
+            .collect();
 
         let mut papers = vec![];
         if let Some(vals) = &self.papers {
@@ -263,7 +265,7 @@ impl MetaV1 {
                         .to_integer()
                         .ok_or_else(|| anyhow!("paper volume is not an integer"))?
                         as u32,
-                    number: v.number.as_ref().and_then(|v| v.to_string()),
+                    number: v.number.as_ref().and_then(|v| v.as_string()),
                     year: v.year,
                     pages: v.pages.clone(),
                     doi: v.doi.clone(),
@@ -271,17 +273,17 @@ impl MetaV1 {
             }
         }
 
-        let mut contributors = vec![];
-        if let Some(vals) = &self.contributors {
-            for v in vals {
-                contributors.push(metadata::Contributor {
-                    name: v.name.clone(),
-                    email: v.email.clone(),
-                    institution: v.institution.clone(),
-                    orcid: v.orcid.clone(),
-                });
-            }
-        }
+        let contributors: Vec<_> = self
+            .contributors
+            .iter()
+            .flat_map(|vals| vals.iter())
+            .map(|v| metadata::Contributor {
+                name: v.name.clone(),
+                email: v.email.clone(),
+                institution: v.institution.clone(),
+                orcid: v.orcid.clone(),
+            })
+            .collect();
 
         let temperature_kelvin = self
             .temperature
@@ -325,32 +327,13 @@ impl MetaV1 {
             protonation_method,
             pdb_id,
             dois: None,
-            uniprot_ids: if uniprot_ids.is_empty() {
-                None
-            } else {
-                Some(uniprot_ids)
-            },
+            is_embargoed: None,
+            uniprot_ids: non_empty(uniprot_ids),
             water,
-            ligands: if ligands.is_empty() {
-                None
-            } else {
-                Some(ligands)
-            },
-            solutes: if solutes.is_empty() {
-                None
-            } else {
-                Some(solutes)
-            },
-            papers: if papers.is_empty() {
-                None
-            } else {
-                Some(papers)
-            },
-            contributors: if contributors.is_empty() {
-                None
-            } else {
-                Some(contributors)
-            },
+            ligands: non_empty(ligands),
+            solutes: non_empty(solutes),
+            papers: non_empty(papers),
+            contributors: non_empty(contributors),
         })
     }
 }
@@ -562,11 +545,9 @@ mod metav1_tests {
         let meta_v1 = res?;
         let meta_v2 = meta_v1.to_v2()?;
 
-        assert!(
-            meta_v2
-                .short_description
-                .starts_with("8 ns simulation of the 5aom PDB entry (P04637)")
-        );
+        assert!(meta_v2
+            .short_description
+            .starts_with("8 ns simulation of the 5aom PDB entry (P04637)"));
 
         let contributors = meta_v2.contributors;
         assert!(contributors.is_some());

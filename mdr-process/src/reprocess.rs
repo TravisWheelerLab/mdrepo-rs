@@ -2,7 +2,7 @@ use crate::{
     process,
     types::{ProcessArgs, ReprocessArgs},
 };
-use anyhow::{Result, anyhow, bail};
+use anyhow::{anyhow, bail, Result};
 use dotenvy::dotenv;
 use libmdrepo::{
     common::{file_exists, get_simulation_id},
@@ -16,7 +16,7 @@ use std::{
 };
 
 // --------------------------------------------------
-pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
+pub fn reprocess(args: &ReprocessArgs) -> Result<Vec<String>> {
     dotenv().ok();
     let work_dir = args.work_dir.clone().unwrap_or(PathBuf::from(
         env::var("MDREPO_WORK_DIR").map_err(|e| anyhow!("MDREPO_WORK_DIR: {e}"))?,
@@ -62,7 +62,7 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
         }
     }
 
-    process::process(&ProcessArgs {
+    let errors = process::process(&ProcessArgs {
         input_dir: data_dir.clone(),
         script_dir: None,
         work_dir: Some(work_dir),
@@ -79,7 +79,7 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
         fs::remove_dir_all(data_dir)?;
     }
 
-    Ok(())
+    Ok(errors)
 }
 
 // --------------------------------------------------

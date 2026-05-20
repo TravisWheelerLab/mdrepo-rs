@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Result};
 use lazy_regex::regex;
-use log::info;
+use log::debug;
 use std::{
     fs::{self, File},
     io::Write,
@@ -25,7 +25,7 @@ pub fn read_file(path: &Path) -> Result<String> {
 
 // --------------------------------------------------
 pub fn get_md5(path: &Path) -> Result<String> {
-    info!("Getting MD5 '{}'", path.display());
+    debug!("Getting MD5 '{}'", path.display());
     let input_dir = path
         .parent()
         .ok_or_else(|| anyhow!("No parent directory for '{}'", path.display()))?;
@@ -36,22 +36,28 @@ pub fn get_md5(path: &Path) -> Result<String> {
         .to_string();
     let md5_file = input_dir.join(format!("{filename}.md5"));
 
-    if !file_exists(&md5_file) {
+    let needs_compute = if file_exists(&md5_file) {
+        let src_mtime = fs::metadata(path)?.modified()?;
+        let cache_mtime = fs::metadata(&md5_file)?.modified()?;
+        src_mtime > cache_mtime
+    } else {
+        true
+    };
+
+    if needs_compute {
         let md5_prg = which("md5sum")?;
         let cmd = Command::new(&md5_prg).arg(path).output()?;
         if !cmd.status.success() {
             bail!(str::from_utf8(&cmd.stderr)?.to_string());
         }
-        let stdout = str::from_utf8(&cmd.stdout)?.to_string();
-        let stdout = stdout.trim_end();
+        let stdout = str::from_utf8(&cmd.stdout)?.trim_end();
         let re = regex!(r"^([a-f0-9]{32})\s+");
         let caps = re
             .captures(stdout)
             .ok_or(anyhow!(r#"Unexpected MD5: {stdout}"#))?;
-        if let Some(digest) = caps.get(1) {
-            let out_fh = File::create(&md5_file)?;
-            write!(&out_fh, "{}", digest.as_str())?;
-        }
+        let digest = &caps[1];
+        let out_fh = File::create(&md5_file)?;
+        write!(&out_fh, "{}", digest)?;
     }
 
     read_file(&md5_file)

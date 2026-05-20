@@ -9,7 +9,6 @@ use std::{
     env,
     fs::{self, File},
     io::Write,
-    path::Path,
 };
 
 const DEFAULT_ORCID: &str = "0000-0000-0000-0000";
@@ -33,9 +32,9 @@ fn run(args: Args) -> Result<()> {
         Ok(val) => val,
         Err(e) => bail!("{env_key}: {e}"),
     };
-    let out_dir = Path::new(&args.out_dir);
+    let out_dir = &args.out_dir;
     if !out_dir.exists() {
-        fs::create_dir(&out_dir)?;
+        fs::create_dir(out_dir)?;
     }
 
     let mut conn = mdr_db::connect(&url)?;
@@ -76,7 +75,7 @@ fn run(args: Args) -> Result<()> {
 
 // --------------------------------------------------
 fn empty_to_none(val: Option<String>) -> Option<String> {
-    val.map_or(None, |v| if v.is_empty() { None } else { Some(v.clone()) })
+    val.filter(|v| !v.is_empty())
 }
 
 // --------------------------------------------------
@@ -95,9 +94,11 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
         ops::list_simulation_uniprots(conn, Some(sim_id), None, None, None)?;
     let mut uniprot_ids: Vec<String> = vec![];
     for s2u in sim2uniprot {
-        if let Ok(uniprot) = ops::get_uniprot(conn, s2u.uniprot_id) {
-            uniprot_ids.push(uniprot.uniprot_id.to_string())
-        }
+        uniprot_ids.push(
+            ops::get_uniprot(conn, s2u.uniprot_id)?
+                .uniprot_id
+                .to_string(),
+        );
     }
 
     let water = match (&sim.water_type, &sim.water_density) {
@@ -178,92 +179,76 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
 
     let (_, ligands_res) = ops::list_ligands(conn, None, Some(sim_id), None, None)?;
 
-    let ligands = if ligands_res.is_empty() {
-        None
-    } else {
-        Some(
-            ligands_res
-                .iter()
-                .map(|val| metadata::Ligand {
-                    name: val.name.clone(),
-                    smiles: val.smiles_string.clone(),
-                })
-                .collect::<Vec<_>>(),
-        )
-    };
+    let ligands = (!ligands_res.is_empty()).then(|| {
+        ligands_res
+            .into_iter()
+            .map(|val| metadata::Ligand {
+                name: val.name,
+                smiles: val.smiles_string,
+            })
+            .collect::<Vec<_>>()
+    });
 
     let (_, solutes_res) = ops::list_solutes(conn, None, Some(sim_id), None, None)?;
 
-    let solutes = if solutes_res.is_empty() {
-        None
-    } else {
-        Some(
-            solutes_res
-                .iter()
-                .map(|val| metadata::Solute {
-                    name: val.name.clone(),
-                    concentration_mol_liter: val.concentration,
-                })
-                .collect::<Vec<_>>(),
-        )
-    };
+    let solutes = (!solutes_res.is_empty()).then(|| {
+        solutes_res
+            .into_iter()
+            .map(|val| metadata::Solute {
+                name: val.name,
+                concentration_mol_liter: val.concentration,
+            })
+            .collect::<Vec<_>>()
+    });
 
     let (_, links_res) =
         ops::list_external_links(conn, None, Some(sim_id), None, None)?;
 
-    let external_links = if links_res.is_empty() {
-        None
-    } else {
-        Some(
-            links_res
-                .iter()
-                .map(|val| metadata::ExternalLink {
-                    url: val.url.clone(),
-                    label: val.label.clone(),
-                })
-                .collect::<Vec<_>>(),
-        )
-    };
+    let external_links = (!links_res.is_empty()).then(|| {
+        links_res
+            .into_iter()
+            .map(|val| metadata::ExternalLink {
+                url: val.url,
+                label: val.label,
+            })
+            .collect::<Vec<_>>()
+    });
 
     let (_, contributors_res) =
         ops::list_contributions(conn, None, Some(sim_id), None, None)?;
 
-    let contributors = if contributors_res.is_empty() {
-        None
-    } else {
-        Some(
+    let contributors = (!contributors_res.is_empty())
+        .then(|| {
             contributors_res
-                .iter()
+                .into_iter()
                 .map(|val| -> Result<metadata::Contributor> {
                     Ok(metadata::Contributor {
                         name: val
                             .name
-                            .clone()
                             .ok_or_else(|| anyhow!("contributor has no name"))?,
-                        email: empty_to_none(val.email.clone()),
-                        institution: empty_to_none(val.institution.clone()),
-                        orcid: empty_to_none(val.orcid.clone()),
+                        email: empty_to_none(val.email),
+                        institution: empty_to_none(val.institution),
+                        orcid: empty_to_none(val.orcid),
                     })
                 })
-                .collect::<Result<Vec<_>>>()?,
-        )
-    };
+                .collect::<Result<Vec<_>>>()
+        })
+        .transpose()?;
 
     let (_, sim2pub) = ops::list_simulation_pubs(conn, Some(sim_id), None, None, None)?;
     let mut papers: Vec<metadata::Paper> = vec![];
     for s2p in sim2pub {
-        if let Ok(val) = ops::get_pub(conn, s2p.pub_id) {
-            papers.push(metadata::Paper {
-                title: val.title.clone(),
-                authors: val.authors.clone(),
-                journal: val.journal.clone(),
-                volume: val.volume as u32,
-                number: val.number.clone(),
-                year: val.year as u32,
-                pages: val.pages.clone(),
-                doi: Some(val.doi),
-            });
-        }
+        let val = ops::get_pub(conn, s2p.pub_id)?;
+        papers.push(metadata::Paper {
+            title: val.title,
+            authors: val.authors,
+            journal: val.journal,
+            volume: val.volume as u32,
+            number: val.number,
+            year: val.year as u32,
+            pages: val.pages,
+            doi: Some(val.doi),
+        });
     }
 
     let meta = metadata::Meta {
@@ -286,7 +271,7 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
             .short_description
             .ok_or_else(|| anyhow!("simulation has no short description"))?,
         software_name: software.name,
-        software_version: software.version.unwrap_or("".to_string()),
+        software_version: software.version.unwrap_or_default(),
         mdrepo_id: Some(format!("MDR{sim_id:08}")),
         description: sim.description,
         toml_version: Some(constants::METADATA_TOML_VERSION),
@@ -310,6 +295,7 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
         ligands,
         solutes,
         dois: None,
+        is_embargoed: None,
         papers: if papers.is_empty() {
             None
         } else {

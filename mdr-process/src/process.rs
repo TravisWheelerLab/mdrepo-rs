@@ -1,8 +1,12 @@
-use crate::types::{
-    BlastResult, CheckedLigand, DoiPaper, Duration, Export, ExportSimulation,
-    ImportJsonArgs, ImportResult, InferredLigand, MdFile, PdbEntry, PdbResponse,
-    ProcessArgs, ProcessedTarball, ProcessedTrajectory, ProcessedTrajectoryType,
-    PushResult, RmsdRmsf, UniprotDb, UniprotEntry, UniprotResponse,
+use crate::{
+    types::{
+        BlastResult, CheckedLigand, DoiPaper, Duration, Export, ExportSimulation,
+        ImportJsonArgs, ImportResult, InferredLigand, MdFile, PdbEntry, PdbResponse,
+        ProcessArgs, ProcessTrajectoryArgs, ProcessedTarball, ProcessedTrajectory,
+        ProcessedTrajectoryType, PushResult, RmsdRmsf, UniprotDb, UniprotEntry,
+        UniprotResponse,
+    },
+    validate,
 };
 use anyhow::{anyhow, bail, Result};
 use dotenvy::dotenv;
@@ -12,9 +16,11 @@ use libmdrepo::{
     metadata::{self, Meta, MetaCheckOptions},
 };
 use log::debug;
+use rayon::prelude::*;
 use regex::Regex;
 use sha1::{Digest, Sha1};
 use std::{
+    collections::HashSet,
     env,
     fs::{self, File},
     io::{BufReader, Write},
@@ -28,7 +34,7 @@ use which::which;
 
 // ── BLAST parameters ──────────────────────────────────────────────────────────
 const BLAST_EVALUE: &str = "1e-5";
-const BLAST_NUM_THREADS: &str = "16";
+const BLAST_NUM_THREADS: &str = "2"; // 16 -> or make variable
 const BLAST_MAX_TARGET_SEQS_SWISSPROT: &str = "20";
 const BLAST_MAX_TARGET_SEQS_TREMBL: &str = "100";
 const BLAST_MIN_PIDENT: f64 = 100.0;
@@ -39,12 +45,44 @@ const PS_PER_NS: f64 = 1000.0;
 const XTC_INFLATION_FACTOR: f64 = 1000.0;
 
 // --------------------------------------------------
-pub fn process(args: &ProcessArgs) -> Result<()> {
+pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
     debug!("{args:?}");
     dotenv().ok();
 
     let start_time = Instant::now();
     let input_dir = path::absolute(&args.input_dir)?;
+
+    // Check metadata first
+    let meta_path = input_dir.join("mdrepo-metadata.toml");
+    let meta = Meta::from_file(&meta_path)?;
+    let meta_errors = meta.check(if args.no_id {
+        Some(MetaCheckOptions {
+            allow_no_pdb_uniprot: true,
+        })
+    } else {
+        None
+    });
+
+    if !meta_errors.is_empty() {
+        bail!(
+            "Found {} error{} in {}:\n{}",
+            meta_errors.len(),
+            if meta_errors.len() == 1 { "" } else { "s" },
+            meta_path.display(),
+            meta_errors.join("\n")
+        )
+    }
+
+    // Check input files
+    match validate::validate(&input_dir) {
+        Err(e) => bail!("{e}"),
+        Ok(errors) => {
+            if !errors.is_empty() {
+                bail!("Errors:\n{}", errors.join("\n"))
+            }
+        }
+    }
+
     let processed_dir = args
         .out_dir
         .clone()
@@ -63,26 +101,37 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
         fs::remove_dir_all(&processed_dir)?;
     }
 
-    let meta_path = input_dir.join("mdrepo-metadata.toml");
     let meta = Meta::from_file(&meta_path)?;
-    let errors = meta.check(if args.no_id {
-        Some(MetaCheckOptions {
-            allow_no_pdb_uniprot: true,
-        })
-    } else {
-        None
-    });
-    if !errors.is_empty() {
-        bail!(
-            "Found {} error{} in mdrepo-metadata.toml:\n{}",
-            errors.len(),
-            if errors.len() == 1 { "" } else { "s" },
-            errors.join("\n")
-        )
-    }
+    let mut trajectory_file_names = meta.trajectory_file_names.clone();
+    trajectory_file_names.sort();
 
-    let processed_trajectories =
-        process_trajectories(&meta_path, &input_dir, &processed_dir, &script_dir)?;
+    let mut processed_trajectories = trajectory_file_names
+        .into_par_iter()
+        .enumerate()
+        .map(|(trajectory_num, trajectory_file_name)| {
+            process_trajectory(ProcessTrajectoryArgs {
+                trajectory_num,
+                trajectory_file_name: &trajectory_file_name,
+                structure_file_name: &meta.structure_file_name,
+                topology_file_name: &meta.topology_file_name,
+                input_dir: &input_dir,
+                processed_dir: &processed_dir,
+                script_dir: &script_dir,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    // Sort by size/trajectory name
+    processed_trajectories.sort_by(|a, b| {
+        a.full_xtc_size
+            .cmp(&b.full_xtc_size)
+            .then_with(|| a.trajectory_file_stem.cmp(&b.trajectory_file_stem))
+    });
+
+    let mut errors: Vec<String> = processed_trajectories
+        .iter()
+        .flat_map(|t| t.errors.iter().cloned())
+        .collect();
 
     // The processed trajectories are returned sorted by full xtc size and filename
     let example_trajectory = processed_trajectories
@@ -92,16 +141,19 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
     let trajectory_tarballs =
         make_trajectory_tarballs(&processed_dir, &processed_trajectories)?;
 
-    let import_json = make_import_json(ImportJsonArgs {
+    let import_json = &processed_dir.join("import.json");
+    let import_warnings = make_import_json(ImportJsonArgs {
+        import_json: &import_json,
         processed_dir: &processed_dir,
         meta_path: &meta_path,
         input_dir: &input_dir,
         script_dir: &script_dir,
         blast_dir: &blast_dir,
-        example_trajectory: &example_trajectory,
+        example_trajectory,
         trajectory_tarballs: &trajectory_tarballs,
         reprocess_simulation_id: args.reprocess_simulation_id,
     })?;
+    errors.extend_from_slice(&import_warnings);
 
     if !args.dry_run {
         let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
@@ -128,7 +180,25 @@ pub fn process(args: &ProcessArgs) -> Result<()> {
     }
 
     debug!("Finished processing in {:?}", start_time.elapsed());
-    Ok(())
+
+    let errors_file = input_dir.join("processing_errors.txt");
+    if errors.is_empty() {
+        if errors_file.exists() {
+            fs::remove_file(&errors_file)?;
+        }
+        debug!("No errors");
+    } else {
+        let errors_fh = File::create(&errors_file)?;
+        write!(&errors_fh, "{}", errors.join("\n"))?;
+        let num_errors = errors.len();
+        debug!(
+            r#"Wrote {num_errors} error{} to "{}""#,
+            if num_errors == 1 { "" } else { "s" },
+            errors_file.display()
+        );
+    }
+
+    Ok(errors)
 }
 
 // --------------------------------------------------
@@ -274,144 +344,202 @@ pub fn make_thumbnail(
 }
 
 // --------------------------------------------------
-pub fn process_trajectories(
-    meta_path: &Path,
-    input_dir: &Path,
-    processed_dir: &Path,
-    script_dir: &Path,
-) -> Result<Vec<ProcessedTrajectory>> {
-    let meta = Meta::from_file(meta_path)?;
-    let mut processed = vec![];
+pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajectory> {
+    let mut errors = vec![];
+    let trajectory_dir = args
+        .processed_dir
+        .join(format!("rep_{}", args.trajectory_num + 1));
 
-    let mut trajectory_file_names = meta.trajectory_file_names.clone();
-    trajectory_file_names.sort();
-
-    for (num, trajectory_file_name) in trajectory_file_names.into_iter().enumerate() {
-        let trajectory_dir = processed_dir.join(format!("rep_{}", num + 1));
-        if !trajectory_dir.is_dir() {
-            fs::create_dir_all(&trajectory_dir)?;
-        }
-
-        let full_min_files = &[
-            "full.gro",
-            "full.pdb",
-            "full.xtc",
-            "minimal.gro",
-            "minimal.pdb",
-            "minimal.xtc",
-        ]
-        .map(|filename| trajectory_dir.join(filename));
-
-        if full_min_files.iter().all(|f| file_exists(f)) {
-            debug!(r#"Full/minimal files all exist for "{trajectory_file_name}""#);
-        } else {
-            let micromamba = which("micromamba")
-                .map_err(|e| anyhow!("Failed to find micromamba ({e})"))?;
-            debug!("Making full/minimal files");
-
-            let cpp_traj = &script_dir.join("cpptraj_gmx_traj_manipulation.py");
-            if !cpp_traj.is_file() {
-                bail!(r#"Missing "{}""#, cpp_traj.display());
-            }
-
-            let mut cmd = Command::new(micromamba);
-            cmd.args([
-                "run",
-                "-n",
-                "simproc",
-                cpp_traj.to_string_lossy().as_ref(),
-                "--traj",
-                input_dir
-                    .join(&trajectory_file_name)
-                    .to_string_lossy()
-                    .as_ref(),
-                "--coord",
-                input_dir
-                    .join(&meta.structure_file_name)
-                    .to_string_lossy()
-                    .as_ref(),
-                "--top",
-                input_dir
-                    .join(&meta.topology_file_name)
-                    .to_string_lossy()
-                    .as_ref(),
-                "--outdir",
-                trajectory_dir.to_string_lossy().as_ref(),
-            ]);
-            debug!("Running {cmd:?}");
-
-            let output = cmd.output()?;
-            if !output.status.success() {
-                bail!("{}", String::from_utf8_lossy(&output.stderr));
-            }
-
-            let missing: Vec<_> = full_min_files
-                .iter()
-                .filter(|f| !file_exists(f))
-                .map(|f| f.to_string_lossy().to_string())
-                .collect();
-
-            if !missing.is_empty() {
-                bail!("Failed to create: {}", missing.join(", "));
-            }
-        }
-
-        let full_gro = trajectory_dir.join("full.gro");
-        let full_pdb = trajectory_dir.join("full.pdb");
-        let full_xtc = trajectory_dir.join("full.xtc");
-        let min_gro = trajectory_dir.join("minimal.gro");
-        let min_pdb = trajectory_dir.join("minimal.pdb");
-        let min_xtc = trajectory_dir.join("minimal.xtc");
-        let sampled_xtc = trajectory_dir.join("sampled.xtc");
-        let thumbnail_png = trajectory_dir.join("thumbnail.png");
-        let full_xtc_size = fs::metadata(&full_xtc)?.len();
-
-        sample_trajectory(&min_xtc, &min_pdb, &sampled_xtc, script_dir)?;
-        make_thumbnail(&thumbnail_png, &sampled_xtc, &min_pdb, script_dir)?;
-
-        let trajectory_file_stem = Path::new(&trajectory_file_name)
-            .file_stem()
-            .ok_or_else(|| {
-                anyhow!(r#"Failed to extract file_stem from "{trajectory_file_name}""#)
-            })?
-            .to_string_lossy()
-            .to_string();
-
-        processed.push(ProcessedTrajectory {
-            full_gro,
-            full_pdb,
-            full_xtc,
-            min_gro,
-            min_pdb,
-            min_xtc,
-            sampled_xtc,
-            thumbnail_png,
-            full_xtc_size,
-            trajectory_file_name,
-            trajectory_file_stem,
-            directory_name: trajectory_dir.to_string_lossy().to_string(),
-        });
+    if !trajectory_dir.is_dir() {
+        fs::create_dir_all(&trajectory_dir)?;
     }
 
-    // Sort by size/trajectory name
-    processed.sort_by(|a, b| {
-        a.full_xtc_size
-            .cmp(&b.full_xtc_size)
-            .then_with(|| a.trajectory_file_stem.cmp(&b.trajectory_file_stem))
-    });
+    let full_min_files = &[
+        "full.gro",
+        "full.pdb",
+        "full.xtc",
+        "minimal.gro",
+        "minimal.pdb",
+        "minimal.xtc",
+    ]
+    .map(|filename| trajectory_dir.join(filename));
 
-    Ok(processed)
+    if full_min_files.iter().all(|f| file_exists(f)) {
+        debug!(
+            r#"Full/minimal files all exist for "{}""#,
+            args.trajectory_file_name
+        );
+    } else {
+        let micromamba = which("micromamba")
+            .map_err(|e| anyhow!("Failed to find micromamba ({e})"))?;
+        debug!("Making full/minimal files");
+
+        let cpp_traj = args.script_dir.join("cpptraj_gmx_traj_manipulation.py");
+        if !cpp_traj.is_file() {
+            bail!(r#"Missing "{}""#, cpp_traj.display());
+        }
+
+        let mut cmd = Command::new(micromamba);
+        cmd.args([
+            "run",
+            "-n",
+            "simproc",
+            cpp_traj.to_string_lossy().as_ref(),
+            "--traj",
+            args.input_dir
+                .join(args.trajectory_file_name)
+                .to_string_lossy()
+                .as_ref(),
+            "--coord",
+            args.input_dir
+                .join(args.structure_file_name)
+                .to_string_lossy()
+                .as_ref(),
+            "--top",
+            args.input_dir
+                .join(args.topology_file_name)
+                .to_string_lossy()
+                .as_ref(),
+            "--outdir",
+            trajectory_dir.to_string_lossy().as_ref(),
+        ]);
+        debug!("Running {cmd:?}");
+
+        let output = cmd.output()?;
+        if !output.status.success() {
+            bail!("{}", String::from_utf8_lossy(&output.stderr));
+        }
+
+        let missing: Vec<_> = full_min_files
+            .iter()
+            .filter(|f| !file_exists(f))
+            .map(|f| f.to_string_lossy().to_string())
+            .collect();
+
+        if !missing.is_empty() {
+            let error_file = &trajectory_dir.join("errors.txt");
+            let error_fh = File::create(&error_file)?;
+            write!(
+                &error_fh,
+                "Failed command {cmd:?}\nFailed to create {}\n{}\n{}",
+                missing.join(", "),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            )?;
+            errors.push(error_file.to_string_lossy().to_string());
+        }
+    }
+
+    let full_gro = trajectory_dir.join("full.gro");
+    let full_pdb = trajectory_dir.join("full.pdb");
+    let full_xtc = trajectory_dir.join("full.xtc");
+    let min_gro = trajectory_dir.join("minimal.gro");
+    let min_pdb = trajectory_dir.join("minimal.pdb");
+    let min_xtc = trajectory_dir.join("minimal.xtc");
+    let sampled_xtc = trajectory_dir.join("sampled.xtc");
+    let thumbnail_png = trajectory_dir.join("thumbnail.png");
+    let full_xtc_size = fs::metadata(&full_xtc)?.len();
+    let is_coarse_grained = check_coarse_grained(&full_pdb, &min_pdb)?;
+
+    sample_trajectory(&min_xtc, &min_pdb, &sampled_xtc, args.script_dir)?;
+    make_thumbnail(&thumbnail_png, &sampled_xtc, &min_pdb, args.script_dir)?;
+
+    let trajectory_file_stem = Path::new(&args.trajectory_file_name)
+        .file_stem()
+        .ok_or_else(|| {
+            anyhow!(
+                r#"Failed to extract file_stem from "{}""#,
+                args.trajectory_file_name
+            )
+        })?
+        .to_string_lossy()
+        .to_string();
+
+    Ok(ProcessedTrajectory {
+        full_gro,
+        full_pdb,
+        full_xtc,
+        min_gro,
+        min_pdb,
+        min_xtc,
+        sampled_xtc,
+        thumbnail_png,
+        full_xtc_size,
+        trajectory_file_name: args.trajectory_file_name.to_string(),
+        trajectory_file_stem,
+        directory_name: trajectory_dir.to_string_lossy().to_string(),
+        is_coarse_grained,
+        errors,
+    })
+}
+
+// --------------------------------------------------
+pub fn check_coarse_grained(full_pdb: &Path, min_pdb: &Path) -> Result<bool> {
+    let structure = pdbrust::parse_pdb_file(min_pdb)?;
+    let protein = structure.select("protein")?;
+    let total_atoms = protein.get_num_atoms();
+    let unique_residues: HashSet<_> = protein
+        .atoms
+        .iter()
+        .map(|a| (a.chain_id.clone(), a.residue_seq, a.ins_code))
+        .collect();
+    let num_residues = unique_residues.len();
+    let is_coarse_grained = total_atoms == num_residues;
+    debug!(
+        "Checking if coarse-grained ({})",
+        if is_coarse_grained { "Yes" } else { "No" }
+    );
+
+    if is_coarse_grained {
+        for path in [min_pdb, full_pdb] {
+            fix_alpha_carbon_name(path)?;
+        }
+    }
+
+    Ok(is_coarse_grained)
+}
+
+// --------------------------------------------------
+fn fix_alpha_carbon_name(path: &Path) -> Result<()> {
+    let structure = pdbrust::parse_pdb_file(path)?;
+    let protein = structure.select("protein")?;
+    let total_atoms = protein.get_num_atoms();
+    let protein_serials: HashSet<i32> = protein
+        .atoms
+        .iter()
+        .filter_map(|a| (a.name == "A").then_some(a.serial))
+        .collect();
+
+    if protein_serials.len() == total_atoms {
+        debug!(
+            r#"All proteins in "{}" are named "A," changing to "CA""#,
+            path.display()
+        );
+        let mut fixed = structure.clone();
+        for atom in fixed.atoms.iter_mut() {
+            if protein_serials.contains(&atom.serial) {
+                atom.name = "CA".to_string();
+            }
+        }
+
+        // Backup original and then overwrite
+        let stem = path.file_stem().unwrap_or_default();
+        let backup =
+            path.with_file_name(format!("{}_orig.pdb", stem.to_string_lossy()));
+        fs::rename(path, backup)?;
+        fixed.to_file(&path)?;
+    }
+
+    Ok(())
 }
 
 // --------------------------------------------------
 pub fn get_rmsd_rmsf(
     min_pdb: &Path,
     min_xtc: &Path,
+    processed_dir: &Path,
     script_dir: &Path,
 ) -> Result<RmsdRmsf> {
-    let processed_dir = min_pdb
-        .parent()
-        .ok_or_else(|| anyhow!("No parent directory for '{}'", min_pdb.display()))?;
     let out_file = processed_dir.join("rmsd_rmsf.json");
 
     if file_exists(&out_file) {
@@ -465,25 +593,35 @@ pub fn blast_uniprot(
         anyhow!("No parent directory for '{}'", fasta_sequence.display())
     })?;
     let blast_results = processed_dir.join(format!(
-        "blast.{}.out",
+        "blast.{}.tsv",
         uniprot_db.to_string().to_lowercase()
     ));
 
     if file_exists(&blast_results) {
-        debug!("Uniprot BLAST results exists");
+        debug!(
+            "{uniprot_db} BLAST results exists ({})",
+            blast_results.display()
+        );
     } else {
-        debug!("Creating Uniprot BLAST results");
+        debug!(
+            "Creating {uniprot_db} BLAST results ({})",
+            blast_results.display()
+        );
         let blastp =
             which("blastp").map_err(|e| anyhow!("Failed to find blastp ({e})"))?;
 
         let mut cmd = Command::new(&blastp);
         let (blast_db, max_target_seqs) = match uniprot_db {
             UniprotDb::Swissprot => (
-                blast_dir.join("swissprot").join("uniprot_sprot"),
+                blast_dir.join("swissprot").join("swissprot"),
+                BLAST_MAX_TARGET_SEQS_SWISSPROT,
+            ),
+            UniprotDb::Isoform => (
+                blast_dir.join("isoform").join("isoform"),
                 BLAST_MAX_TARGET_SEQS_SWISSPROT,
             ),
             UniprotDb::Trembl => (
-                blast_dir.join("trembl").join("uniprot_trembl.fasta"),
+                blast_dir.join("trembl").join("trembl"),
                 BLAST_MAX_TARGET_SEQS_TREMBL,
             ),
         };
@@ -527,21 +665,29 @@ pub fn blast_uniprot(
             .has_headers(false)
             .from_reader(file);
 
+        // Swissprot also covers Isoform
+        let swissprot_regex = Regex::new(r"^sp[|]([^|]+)[|]")?;
         let trembl_regex = Regex::new(r"^tr[|]([^|]+)[|]")?;
         for result in reader.deserialize() {
             let hit: BlastResult =
                 result.map_err(|e| anyhow!("{}: {e}", blast_results.display()))?;
             if hit.pident >= BLAST_MIN_PIDENT {
-                match trembl_regex.captures(&hit.saccver) {
-                    Some(caps) => {
-                        let trembl_id = caps
-                            .get(1)
+                let hit_name =
+                    if let Some(caps) = swissprot_regex.captures(&hit.saccver) {
+                        caps.get(1)
                             .ok_or_else(|| anyhow!("regex capture group 1 not found"))?
-                            .as_str();
-                        results.push(trembl_id.to_string());
-                    }
-                    _ => results.push(hit.saccver),
-                }
+                            .as_str()
+                            .to_string()
+                    } else if let Some(caps) = trembl_regex.captures(&hit.saccver) {
+                        caps.get(1)
+                            .ok_or_else(|| anyhow!("regex capture group 1 not found"))?
+                            .as_str()
+                            .to_string()
+                    } else {
+                        hit.saccver
+                    };
+
+                results.push(hit_name)
             }
         }
     }
@@ -550,10 +696,11 @@ pub fn blast_uniprot(
 }
 
 // --------------------------------------------------
-pub fn get_sequence(full_pdb: &Path, script_dir: &Path) -> Result<PathBuf> {
-    let processed_dir = full_pdb
-        .parent()
-        .ok_or_else(|| anyhow!("No parent directory for '{}'", full_pdb.display()))?;
+pub fn get_sequence(
+    full_pdb: &Path,
+    processed_dir: &Path,
+    script_dir: &Path,
+) -> Result<PathBuf> {
     let sequence_file = processed_dir.join("sequence.fa");
 
     if file_exists(&sequence_file) {
@@ -657,12 +804,12 @@ pub fn make_trajectory_tarballs(
                 };
                 std::os::unix::fs::symlink(
                     trajectory,
-                    tar_dir.join(&format!("{}.xtc", processed.trajectory_file_stem)),
+                    tar_dir.join(format!("{}.xtc", processed.trajectory_file_stem)),
                 )?;
             }
 
             let mut cmd = Command::new("tar");
-            cmd.current_dir(processed_dir).args(&[
+            cmd.current_dir(processed_dir).args([
                 "--dereference", // follow symlinks
                 "-cf",           // create file
                 &tarball_name,
@@ -687,24 +834,35 @@ pub fn make_trajectory_tarballs(
 }
 
 // --------------------------------------------------
-pub fn make_import_json(args: ImportJsonArgs) -> Result<PathBuf> {
+pub fn make_import_json(args: ImportJsonArgs) -> Result<Vec<String>> {
     let meta = Meta::from_file(args.meta_path)?;
     let structure_path = args.input_dir.join(&meta.structure_file_name);
     let structure_hash = get_file_hash(&structure_path)?;
-    let fasta_sequence_file =
-        get_sequence(&args.example_trajectory.full_pdb, args.script_dir)?;
+
+    let fasta_sequence_file = get_sequence(
+        &args.example_trajectory.full_pdb,
+        args.processed_dir,
+        args.script_dir,
+    )?;
+
     let rmsd_rmsf = get_rmsd_rmsf(
         &args.example_trajectory.min_pdb,
         &args.example_trajectory.min_xtc,
+        args.processed_dir,
         args.script_dir,
     )?;
+
     let duration = get_duration(
         &args.example_trajectory.full_xtc,
         meta.integration_timestep_fs,
+        args.processed_dir,
     )?;
 
-    let inferred_ligands =
-        get_inferred_ligands(&args.example_trajectory.min_pdb, args.script_dir)?;
+    let inferred_ligands = get_inferred_ligands(
+        &args.example_trajectory.min_pdb,
+        args.processed_dir,
+        args.script_dir,
+    )?;
 
     let unique_file_hash_string = get_unique_file_hash(&meta, args.input_dir);
 
@@ -820,7 +978,7 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<PathBuf> {
 
         if meta.trajectory_file_names.len() > 1 {
             let tar_name = "trajectories.tar";
-            let local_path = args.input_dir.join(&tar_name);
+            let local_path = args.input_dir.join(tar_name);
             if local_path.is_file() {
                 fs::remove_file(&local_path)?;
             }
@@ -831,13 +989,13 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<PathBuf> {
                 if i == 0 {
                     // create tarball on first file
                     cmd.current_dir(args.input_dir)
-                        .args(&["-cf", &tar_name, &filename]);
+                        .args(["-cf", tar_name, filename]);
                     cmds.push(cmd);
                 } else {
                     // append successive files to prevent sending
                     // too many command-line args
                     cmd.current_dir(args.input_dir)
-                        .args(&["-rf", &tar_name, &filename]);
+                        .args(["-rf", tar_name, filename]);
                     cmds.push(cmd);
                 }
             }
@@ -901,9 +1059,9 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<PathBuf> {
         // Need to symlink from subdir to processed_dir
         let symlink = &args.processed_dir.join(&filename);
         if symlink.exists() {
-            fs::remove_file(&symlink)?;
+            fs::remove_file(symlink)?;
         }
-        std::os::unix::fs::symlink(&path, &symlink)?;
+        std::os::unix::fs::symlink(path, symlink)?;
 
         processed_export.push(MdFile {
             name: filename,
@@ -941,6 +1099,11 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<PathBuf> {
         }
     }
 
+    let (water_type, water_density) = match meta.water {
+        Some(water) => (Some(water.model), Some(water.density_kg_m3)),
+        _ => (None, None),
+    };
+
     let fasta_sequence = fs::read_to_string(fasta_sequence_file)?;
     let simulation = ExportSimulation {
         simulation_id: args.reprocess_simulation_id,
@@ -965,7 +1128,8 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<PathBuf> {
         rmsf_values: rmsd_rmsf.rmsf,
         temperature_kelvin: meta.temperature_kelvin,
         fasta_sequence,
-        water: meta.water,
+        water_type,
+        water_density,
         structure_hash,
         contributors: meta.contributors.unwrap_or_default(),
         original_files,
@@ -973,6 +1137,8 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<PathBuf> {
         ligands,
         solutes: meta.solutes.unwrap_or_default(),
         papers,
+        is_embargoed: meta.is_embargoed,
+        is_coarse_grained: Some(args.example_trajectory.is_coarse_grained),
     };
 
     if !warnings.is_empty() {
@@ -988,15 +1154,14 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<PathBuf> {
 
     let export = Export {
         simulation,
-        warnings,
+        warnings: warnings.clone(),
     };
 
-    let import_json = &args.processed_dir.join("import.json");
-    debug!(r#"Writing JSON to "{}""#, &import_json.display());
-    let file = File::create(import_json)?;
+    debug!(r#"Writing JSON to "{}""#, args.import_json.display());
+    let file = File::create(args.import_json)?;
     writeln!(&file, "{}", &serde_json::to_string_pretty(&export)?)?;
 
-    Ok(import_json.into())
+    Ok(warnings)
 }
 
 // --------------------------------------------------
@@ -1015,12 +1180,12 @@ pub fn get_uniprot_entries(
     if uniprot_ids.is_empty() {
         // There are no given Uniprot IDs, so search
         let swissprot_ids =
-            blast_uniprot(&fasta_sequence_file, &blast_dir, UniprotDb::Swissprot)?;
+            blast_uniprot(fasta_sequence_file, blast_dir, UniprotDb::Swissprot)?;
 
         if swissprot_ids.is_empty() {
             // Second-tier hits from Trembl
             let trembl_ids =
-                blast_uniprot(&fasta_sequence_file, blast_dir, UniprotDb::Trembl)?;
+                blast_uniprot(fasta_sequence_file, blast_dir, UniprotDb::Trembl)?;
 
             if let Some(first) = trembl_ids.first() {
                 uniprot_ids.push(first.clone());
@@ -1038,28 +1203,50 @@ pub fn get_uniprot_entries(
 
         // Check if the given IDs are found in Swissprot/Trembl
         let swissprot_ids =
-            blast_uniprot(&fasta_sequence_file, blast_dir, UniprotDb::Swissprot)?;
+            blast_uniprot(fasta_sequence_file, blast_dir, UniprotDb::Swissprot)?;
 
-        let not_swissprot: Vec<_> = uniprot_ids
+        let not_in_swissprot: Vec<_> = uniprot_ids
             .iter()
-            .filter(|id| !swissprot_ids.contains(&id))
+            .filter(|id| !swissprot_ids.contains(id))
             .collect();
 
-        if !not_swissprot.is_empty() {
-            let trembl_ids =
-                blast_uniprot(&fasta_sequence_file, blast_dir, UniprotDb::Trembl)?;
+        if !not_in_swissprot.is_empty() {
+            let isoform_ids =
+                blast_uniprot(fasta_sequence_file, blast_dir, UniprotDb::Isoform)?;
 
-            let not_trembl: Vec<_> = not_swissprot
-                .iter()
-                .filter(|id| !trembl_ids.contains(&id))
-                .map(|val| val.to_string())
-                .collect();
+            let mut found_in_isoform: Vec<(String, String)> = vec![];
+            for uniprot_id in &not_in_swissprot {
+                for isoform_id in &isoform_ids {
+                    if isoform_id.starts_with(*uniprot_id) {
+                        found_in_isoform
+                            .push((uniprot_id.to_string(), isoform_id.clone()));
+                    }
+                }
+            }
 
-            if !not_trembl.is_empty() {
+            for (uniprot_id, isoform_id) in &found_in_isoform {
                 warnings.push(format!(
-                    "Given Uniprot IDs not found in Swissprot or Trembl: {}",
-                    not_trembl.join(", "),
+                    r#"Uniprot ID "{uniprot_id}" found in Isoform as "{isoform_id}""#,
                 ));
+            }
+
+            // If we still haven't found all the Uniprot IDs, look in Trembl
+            if swissprot_ids.len() + found_in_isoform.len() < uniprot_ids.len() {
+                let trembl_ids =
+                    blast_uniprot(fasta_sequence_file, blast_dir, UniprotDb::Trembl)?;
+
+                let not_in_trembl: Vec<_> = not_in_swissprot
+                    .iter()
+                    .filter(|id| !trembl_ids.contains(id))
+                    .map(|val| val.to_string())
+                    .collect();
+
+                if !not_in_trembl.is_empty() {
+                    warnings.push(format!(
+                        "Uniprot IDs not found in Swissprot or Trembl: {}",
+                        not_in_trembl.join(", "),
+                    ));
+                }
             }
         }
     }
@@ -1105,11 +1292,9 @@ pub fn check_ligand(
 // --------------------------------------------------
 pub fn get_inferred_ligands(
     min_pdb: &Path,
+    processed_dir: &Path,
     script_dir: &Path,
 ) -> Result<Vec<InferredLigand>> {
-    let processed_dir = min_pdb
-        .parent()
-        .ok_or_else(|| anyhow!("No parent directory for '{}'", min_pdb.display()))?;
     let out_file = processed_dir.join("inferred_ligands.json");
     if file_exists(&out_file) {
         debug!("Inferred ligands file exists");
@@ -1136,7 +1321,7 @@ pub fn get_inferred_ligands(
         // The script throws an exception when no ligands are found
         // But the simulation may just be in APO form, so report and move on
         if !output.status.success() {
-            debug!("{}", str::from_utf8(&output.stderr)?.to_string());
+            debug!("{}", str::from_utf8(&output.stderr)?);
         }
     }
 
@@ -1150,10 +1335,11 @@ pub fn get_inferred_ligands(
 }
 
 // --------------------------------------------------
-pub fn get_duration(full_xtc: &Path, integration_timestep_fs: u32) -> Result<Duration> {
-    let processed_dir = full_xtc
-        .parent()
-        .ok_or_else(|| anyhow!("No parent directory for '{}'", full_xtc.display()))?;
+pub fn get_duration(
+    full_xtc: &Path,
+    integration_timestep_fs: u32,
+    processed_dir: &Path,
+) -> Result<Duration> {
     let out_file = processed_dir.join("duration.json");
 
     if file_exists(&out_file) {
@@ -1283,7 +1469,7 @@ fn round_dp(x: f64, dp: u32) -> f64 {
 pub fn get_file_hash(path: &Path) -> Result<String> {
     let contents = fs::read(path)?;
     let digest = Sha1::digest(&contents);
-    Ok(format!("{digest:x}"))
+    Ok(format!("{digest:?}"))
 }
 
 // --------------------------------------------------
