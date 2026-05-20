@@ -3,13 +3,16 @@ use anyhow::{anyhow, bail, Result};
 use libmdrepo::{
     common::{get_md5, read_file},
     constants::MAX_FILE_SIZE_BYTES,
-    metadata::Meta,
+    metadata::{Meta, MetaCheckOptions},
 };
 use log::debug;
 use std::{collections::HashMap, fs, path::Path};
 
 // --------------------------------------------------
-pub fn validate(dir: &Path) -> Result<Vec<String>> {
+pub fn validate(
+    dir: &Path,
+    meta_check_opts: Option<MetaCheckOptions>,
+) -> Result<Vec<String>> {
     if !dir.is_dir() {
         bail!(r#"Invalid directory "{}""#, dir.display())
     }
@@ -112,13 +115,23 @@ pub fn validate(dir: &Path) -> Result<Vec<String>> {
     }
 
     // Validate meta
-    let meta_toml = dir.join("mdrepo-metadata.toml");
-    if !meta_toml.is_file() {
-        bail!("Missing {}", meta_toml.display());
+    let meta_path = dir.join("mdrepo-metadata.toml");
+    if !meta_path.is_file() {
+        bail!("Missing {}", meta_path.display());
     }
+    let meta = Meta::from_file(&meta_path)?;
+    let meta_errors = meta.check(meta_check_opts);
+    errors.extend_from_slice(&meta_errors);
 
-    // This automatically checks the validity of the TOML
-    let meta = Meta::from_file(&meta_toml)?;
+    //if !meta_errors.is_empty() {
+    //    bail!(
+    //        "Found {} error{} in {}:\n{}",
+    //        meta_errors.len(),
+    //        if meta_errors.len() == 1 { "" } else { "s" },
+    //        meta_path.display(),
+    //        meta_errors.join("\n")
+    //    )
+    //}
 
     let mut total_file_size = 0;
     for filename in &meta.all_filenames() {
@@ -132,7 +145,7 @@ pub fn validate(dir: &Path) -> Result<Vec<String>> {
 
     // Check min/max file size
     if total_file_size == 0 {
-        errors.push(format!("All local files are empty!"));
+        errors.push("All local files are empty!".to_string());
     }
 
     if total_file_size > MAX_FILE_SIZE_BYTES {
@@ -152,13 +165,13 @@ mod tests {
 
     #[test]
     fn rejects_nonexistent_dir() {
-        assert!(validate(Path::new("/nonexistent/path")).is_err());
+        assert!(validate(Path::new("/nonexistent/path"), None).is_err());
     }
 
     #[test]
     fn rejects_empty_dir() {
         let dir = tempdir().unwrap();
-        let err = validate(dir.path()).unwrap_err();
+        let err = validate(dir.path(), None).unwrap_err();
         assert!(err.to_string().contains("empty"));
     }
 
@@ -166,7 +179,7 @@ mod tests {
     fn rejects_dir_without_toml() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("sim.xtc"), b"data").unwrap();
-        let err = validate(dir.path()).unwrap_err();
+        let err = validate(dir.path(), None).unwrap_err();
         assert!(err.to_string().contains("Missing"));
     }
 
@@ -174,7 +187,7 @@ mod tests {
     fn rejects_invalid_toml() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("mdrepo-metadata.toml"), "not {{ valid").unwrap();
-        assert!(validate(dir.path()).is_err());
+        assert!(validate(dir.path(), None).is_err());
     }
 
     #[test]
@@ -199,6 +212,6 @@ mod tests {
         fs::write(dir.path().join("sim.xtc"), b"trajectory").unwrap();
         fs::write(dir.path().join("sim.pdb"), b"structure").unwrap();
         fs::write(dir.path().join("sim.top"), b"topology").unwrap();
-        assert!(validate(dir.path()).is_ok());
+        assert!(validate(dir.path(), None).is_ok());
     }
 }
