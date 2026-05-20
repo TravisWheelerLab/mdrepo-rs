@@ -20,6 +20,10 @@ pub struct Cli {
     /// Log file
     #[arg(long)]
     pub log_file: Option<String>,
+
+    /// Number of threads
+    #[arg(short('t'), long)]
+    pub num_threads: Option<usize>,
 }
 
 // --------------------------------------------------
@@ -134,6 +138,10 @@ pub struct TicketArgs {
     /// Process files/create import JSON but do not import/push
     #[arg(short, long)]
     pub dry_run: bool,
+
+    /// Skip file download
+    #[arg(long)]
+    pub skip_download: bool,
 }
 
 // --------------------------------------------------
