@@ -45,7 +45,6 @@ fn run(args: Cli) -> Result<()> {
 
     match &args.command {
         Command::Process(args) => {
-            validate::validate(&args.input_dir)?;
             let errors = process::process(args)?;
             if !errors.is_empty() {
                 info!("Errors:\n{}", errors.join("\n"));
@@ -105,7 +104,10 @@ fn run(args: Cli) -> Result<()> {
                     dirname.display()
                 );
 
-                match validate::validate(&dirname) {
+                let opts = args.no_id.then_some(MetaCheckOptions {
+                    allow_no_pdb_uniprot: true,
+                });
+                match validate::validate(&dirname, opts) {
                     Err(e) => bail!("{e}"),
                     Ok(errors) => {
                         if errors.is_empty() {

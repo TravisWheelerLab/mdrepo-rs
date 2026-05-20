@@ -24,7 +24,6 @@ use std::{
     env,
     fs::{self, File},
     io::{BufReader, Write},
-    mem,
     path::{self, Path, PathBuf},
     process::Command,
     time::Instant,
@@ -52,29 +51,13 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
     let start_time = Instant::now();
     let input_dir = path::absolute(&args.input_dir)?;
 
-    // Check metadata first
-    let meta_path = input_dir.join("mdrepo-metadata.toml");
-    let meta = Meta::from_file(&meta_path)?;
-    let meta_errors = meta.check(if args.no_id {
-        Some(MetaCheckOptions {
-            allow_no_pdb_uniprot: true,
-        })
-    } else {
-        None
+    // Validate
+    let meta_check_opts = args.no_id.then_some(MetaCheckOptions {
+        allow_no_pdb_uniprot: true,
     });
 
-    if !meta_errors.is_empty() {
-        bail!(
-            "Found {} error{} in {}:\n{}",
-            meta_errors.len(),
-            if meta_errors.len() == 1 { "" } else { "s" },
-            meta_path.display(),
-            meta_errors.join("\n")
-        )
-    }
-
     // Check input files
-    match validate::validate(&input_dir) {
+    match validate::validate(&input_dir, meta_check_opts) {
         Err(e) => bail!("{e}"),
         Ok(errors) => {
             if !errors.is_empty() {
@@ -101,6 +84,9 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
         fs::remove_dir_all(&processed_dir)?;
     }
 
+    let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
+
+    let meta_path = input_dir.join("mdrepo-metadata.toml");
     let meta = Meta::from_file(&meta_path)?;
     let mut trajectory_file_names = meta.trajectory_file_names.clone();
     trajectory_file_names.sort();
@@ -117,6 +103,7 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
                 input_dir: &input_dir,
                 processed_dir: &processed_dir,
                 script_dir: &script_dir,
+                uv: &uv,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -143,20 +130,21 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
 
     let import_json = &processed_dir.join("import.json");
     let import_warnings = make_import_json(ImportJsonArgs {
+        meta,
         import_json: &import_json,
         processed_dir: &processed_dir,
         meta_path: &meta_path,
         input_dir: &input_dir,
         script_dir: &script_dir,
         blast_dir: &blast_dir,
+        uv: &uv,
         example_trajectory,
         trajectory_tarballs: &trajectory_tarballs,
         reprocess_simulation_id: args.reprocess_simulation_id,
     })?;
-    errors.extend_from_slice(&import_warnings);
+    errors.extend(import_warnings);
 
     if !args.dry_run {
-        let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
         let import_result = run_import(
             &uv,
             &script_dir,
@@ -309,8 +297,8 @@ pub fn make_thumbnail(
     sampled_trajectory: &Path,
     min_pdb: &Path,
     script_dir: &Path,
+    uv: &Path,
 ) -> Result<()> {
-    let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
     if file_exists(thumbnail) {
         debug!("Thumbnail exists");
     } else {
@@ -441,8 +429,14 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
     let full_xtc_size = fs::metadata(&full_xtc)?.len();
     let is_coarse_grained = check_coarse_grained(&full_pdb, &min_pdb)?;
 
-    sample_trajectory(&min_xtc, &min_pdb, &sampled_xtc, args.script_dir)?;
-    make_thumbnail(&thumbnail_png, &sampled_xtc, &min_pdb, args.script_dir)?;
+    sample_trajectory(&min_xtc, &min_pdb, &sampled_xtc, args.script_dir, args.uv)?;
+    make_thumbnail(
+        &thumbnail_png,
+        &sampled_xtc,
+        &min_pdb,
+        args.script_dir,
+        args.uv,
+    )?;
 
     let trajectory_file_stem = Path::new(&args.trajectory_file_name)
         .file_stem()
@@ -539,6 +533,7 @@ pub fn get_rmsd_rmsf(
     min_xtc: &Path,
     processed_dir: &Path,
     script_dir: &Path,
+    uv: &Path,
 ) -> Result<RmsdRmsf> {
     let out_file = processed_dir.join("rmsd_rmsf.json");
 
@@ -546,7 +541,6 @@ pub fn get_rmsd_rmsf(
         debug!("RMSD/RMSF file exists");
     } else {
         debug!("Creating RMSD/RMSF file");
-        let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
         let script = script_dir.join("get_rmsd_rmsf.py");
         let mut cmd = Command::new(&uv);
         cmd.current_dir(script_dir).args([
@@ -661,7 +655,7 @@ pub fn blast_uniprot(
         );
 
         let mut reader = csv::ReaderBuilder::new()
-            .delimiter(9) // Tab
+            .delimiter(b'\t')
             .has_headers(false)
             .from_reader(file);
 
@@ -700,6 +694,7 @@ pub fn get_sequence(
     full_pdb: &Path,
     processed_dir: &Path,
     script_dir: &Path,
+    uv: &Path,
 ) -> Result<PathBuf> {
     let sequence_file = processed_dir.join("sequence.fa");
 
@@ -707,7 +702,6 @@ pub fn get_sequence(
         debug!("Sequence file exists");
     } else {
         debug!("Creating sequence file");
-        let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
         let script = script_dir.join("get_sequence_from_pdb.py");
         let mut cmd = Command::new(&uv);
         cmd.current_dir(script_dir).args([
@@ -740,12 +734,12 @@ pub fn sample_trajectory(
     min_pdb: &Path,
     out_file: &Path,
     script_dir: &Path,
+    uv: &Path,
 ) -> Result<()> {
     if file_exists(out_file) {
         debug!("Sampled trajectory exists");
     } else {
         debug!("Creating sampled trajectory");
-        let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
         let sampler = script_dir.join("sample_trajectory.py");
         let mut cmd = Command::new(&uv);
         cmd.current_dir(script_dir).args([
@@ -822,6 +816,7 @@ pub fn make_trajectory_tarballs(
             if !output.status.success() {
                 bail!("{}", String::from_utf8_lossy(&output.stderr));
             }
+            fs::remove_dir_all(&tar_dir)?;
 
             tarballs.push(ProcessedTarball {
                 path: tarball_path,
@@ -835,14 +830,14 @@ pub fn make_trajectory_tarballs(
 
 // --------------------------------------------------
 pub fn make_import_json(args: ImportJsonArgs) -> Result<Vec<String>> {
-    let meta = Meta::from_file(args.meta_path)?;
-    let structure_path = args.input_dir.join(&meta.structure_file_name);
-    let structure_hash = get_file_hash(&structure_path)?;
+    let structure_hash =
+        get_file_hash(&args.input_dir.join(&args.meta.structure_file_name))?;
 
     let fasta_sequence_file = get_sequence(
         &args.example_trajectory.full_pdb,
         args.processed_dir,
         args.script_dir,
+        args.uv,
     )?;
 
     let rmsd_rmsf = get_rmsd_rmsf(
@@ -850,11 +845,12 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<Vec<String>> {
         &args.example_trajectory.min_xtc,
         args.processed_dir,
         args.script_dir,
+        args.uv,
     )?;
 
     let duration = get_duration(
         &args.example_trajectory.full_xtc,
-        meta.integration_timestep_fs,
+        args.meta.integration_timestep_fs,
         args.processed_dir,
     )?;
 
@@ -862,235 +858,54 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<Vec<String>> {
         &args.example_trajectory.min_pdb,
         args.processed_dir,
         args.script_dir,
+        args.uv,
     )?;
 
-    let unique_file_hash_string = get_unique_file_hash(&meta, args.input_dir);
+    let unique_file_hash_string = get_unique_file_hash(&args.meta, args.input_dir);
 
-    let (uniprots, mut uniprot_warnings) = get_uniprot_entries(
-        meta.uniprot_ids.clone(),
+    let (uniprots, uniprot_warnings) = get_uniprot_entries(
+        args.meta.uniprot_ids.clone(),
         &fasta_sequence_file,
         args.blast_dir,
     )?;
 
-    let mut ligands = vec![];
-    let mut warnings = mem::take(&mut uniprot_warnings);
-    if let Some(given_ligands) = &meta.ligands {
-        // For now, we'll still take all the given ligands
-        ligands = given_ligands.clone();
+    let (ligands, ligand_warnings) = resolve_ligands(
+        args.meta.ligands.as_ref(),
+        inferred_ligands,
+        args.script_dir,
+        args.uv,
+    )?;
 
-        // But we'll check them against any inferred values
-        if !inferred_ligands.is_empty() {
-            for (ligand_num, given_ligand) in given_ligands.iter().enumerate() {
-                let mut found_match = false;
-                for inferred in &inferred_ligands {
-                    let check = check_ligand(given_ligand, inferred, args.script_dir)?;
-                    if check.exact_match
-                        || check.same_connectivity
-                        || check.same_connectivity_and_stereo
-                        || check.same_inchi
-                    {
-                        found_match = true;
-                        break;
-                    }
-                }
-
-                if !found_match {
-                    warnings.push(format!(
-                        "Unable to verify ligand [{ligand_num}] ({})",
-                        given_ligand.smiles
-                    ));
-                }
-            }
-        }
-    } else {
-        for ligand in inferred_ligands {
-            let name = ligand
-                .name
-                .best_name
-                .unwrap_or(ligand.name.iupac_name.unwrap_or("NA".to_string()));
-
-            ligands.push({
-                metadata::Ligand {
-                    name,
-                    smiles: ligand.structure.smiles,
-                }
-            })
-        }
-    }
+    let mut warnings = uniprot_warnings;
+    warnings.extend(ligand_warnings);
 
     let mut pdb = None;
-    if let Some(pdb_id) = &meta.pdb_id {
+    if let Some(pdb_id) = &args.meta.pdb_id {
         match get_pdb_entry(pdb_id) {
-            Ok(pdb_tmp) => {
-                pdb = Some(pdb_tmp);
-            }
+            Ok(entry) => pdb = Some(entry),
             Err(e) => warnings.push(e.to_string()),
         }
     }
 
-    // No need to push original files when reprocessing
-    let mut original_files: Vec<MdFile> = vec![];
-    if args.reprocess_simulation_id.is_none() {
-        original_files.push(MdFile {
-            name: args
-                .meta_path
-                .file_name()
-                .ok_or_else(|| {
-                    anyhow!("No filename for '{}'", args.meta_path.display())
-                })?
-                .to_string_lossy()
-                .to_string(),
-            file_type: "Metadata".to_string(),
-            size: args.meta_path.metadata()?.len(),
-            md5_sum: get_md5(args.meta_path)?,
-            description: None,
-            is_primary: None,
-        });
+    let original_files = if args.reprocess_simulation_id.is_none() {
+        collect_original_files(
+            &args.meta,
+            args.meta_path,
+            args.input_dir,
+            args.example_trajectory,
+        )?
+    } else {
+        vec![]
+    };
 
-        for (file_type, filename) in &[
-            ("Structure", &meta.structure_file_name),
-            ("Topology", &meta.topology_file_name),
-        ] {
-            let local_path = args.input_dir.join(filename);
-            original_files.push(MdFile {
-                name: filename.to_string(),
-                file_type: file_type.to_string(),
-                size: local_path.metadata()?.len(),
-                md5_sum: get_md5(&local_path)?,
-                description: None,
-                is_primary: Some(true),
-            })
-        }
+    let processed_files = collect_processed_files(
+        args.processed_dir,
+        args.example_trajectory,
+        args.trajectory_tarballs,
+    )?;
 
-        for filename in &meta.trajectory_file_names {
-            if *filename == args.example_trajectory.trajectory_file_name {
-                let local_path = args.input_dir.join(filename);
-                original_files.push(MdFile {
-                    name: filename.to_string(),
-                    file_type: "Trajectory".to_string(),
-                    size: local_path.metadata()?.len(),
-                    md5_sum: get_md5(&local_path)?,
-                    description: None,
-                    is_primary: Some(true),
-                })
-            }
-        }
-
-        if meta.trajectory_file_names.len() > 1 {
-            let tar_name = "trajectories.tar";
-            let local_path = args.input_dir.join(tar_name);
-            if local_path.is_file() {
-                fs::remove_file(&local_path)?;
-            }
-
-            let mut cmds = vec![];
-            for (i, filename) in meta.trajectory_file_names.iter().enumerate() {
-                let mut cmd = Command::new("tar");
-                if i == 0 {
-                    // create tarball on first file
-                    cmd.current_dir(args.input_dir)
-                        .args(["-cf", tar_name, filename]);
-                    cmds.push(cmd);
-                } else {
-                    // append successive files to prevent sending
-                    // too many command-line args
-                    cmd.current_dir(args.input_dir)
-                        .args(["-rf", tar_name, filename]);
-                    cmds.push(cmd);
-                }
-            }
-
-            for mut cmd in cmds {
-                debug!("Running {cmd:?}");
-                let output = cmd.output()?;
-                if !output.status.success() {
-                    bail!("{}", String::from_utf8_lossy(&output.stderr));
-                }
-            }
-
-            original_files.push(MdFile {
-                name: tar_name.to_string(),
-                file_type: "Trajectories (All)".to_string(),
-                size: local_path.metadata()?.len(),
-                md5_sum: get_md5(&local_path)?,
-                description: None,
-                is_primary: None,
-            })
-        }
-
-        if let Some(files) = &meta.additional_files {
-            for file in files {
-                let path = args.input_dir.join(&file.file_name);
-                let md5_sum = get_md5(&path)?;
-                if !original_files.iter().any(|f| f.md5_sum == md5_sum) {
-                    original_files.push(MdFile {
-                        name: file.file_name.to_string(),
-                        file_type: file.file_type.to_string(),
-                        size: path.metadata()?.len(),
-                        md5_sum,
-                        description: file.description.clone(),
-                        is_primary: None,
-                    })
-                }
-            }
-        }
-    }
-
-    let mut processed_export: Vec<MdFile> = vec![];
-    for (file_type, path) in &[
-        ("Processed topology", &args.example_trajectory.full_gro),
-        ("Processed structure", &args.example_trajectory.full_pdb),
-        ("Processed trajectory", &args.example_trajectory.full_xtc),
-        ("Minimal topology", &args.example_trajectory.min_gro),
-        ("Minimal structure", &args.example_trajectory.min_pdb),
-        ("Minimal trajectory", &args.example_trajectory.min_xtc),
-        (
-            "Sampled minimal trajectory",
-            &args.example_trajectory.sampled_xtc,
-        ),
-        ("Preview image", &args.example_trajectory.thumbnail_png),
-    ] {
-        let filename = path
-            .file_name()
-            .ok_or_else(|| anyhow!("No filename for '{}'", path.display()))?
-            .to_string_lossy()
-            .to_string();
-
-        // Need to symlink from subdir to processed_dir
-        let symlink = &args.processed_dir.join(&filename);
-        if symlink.exists() {
-            fs::remove_file(symlink)?;
-        }
-        std::os::unix::fs::symlink(path, symlink)?;
-
-        processed_export.push(MdFile {
-            name: filename,
-            file_type: file_type.to_string(),
-            size: path.metadata()?.len(),
-            md5_sum: get_md5(path)?,
-            description: None,
-            is_primary: None,
-        })
-    }
-
-    for tarball in args.trajectory_tarballs {
-        processed_export.push(MdFile {
-            name: tarball
-                .path
-                .file_name()
-                .ok_or_else(|| anyhow!("No filename for '{}'", tarball.path.display()))?
-                .to_string_lossy()
-                .to_string(),
-            file_type: tarball.file_type.clone(),
-            size: tarball.path.metadata()?.len(),
-            md5_sum: get_md5(&tarball.path)?,
-            description: None,
-            is_primary: None,
-        })
-    }
-
-    let mut papers: Vec<metadata::Paper> = meta.papers.unwrap_or_default();
-    if let Some(dois) = &meta.dois {
+    let mut papers: Vec<metadata::Paper> = args.meta.papers.unwrap_or_default();
+    if let Some(dois) = &args.meta.dois {
         for doi in dois {
             match get_doi(doi) {
                 Ok(paper) => papers.push(paper),
@@ -1099,7 +914,7 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<Vec<String>> {
         }
     }
 
-    let (water_type, water_density) = match meta.water {
+    let (water_type, water_density) = match args.meta.water {
         Some(water) => (Some(water.model), Some(water.density_kg_m3)),
         _ => (None, None),
     };
@@ -1107,37 +922,37 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<Vec<String>> {
     let fasta_sequence = fs::read_to_string(fasta_sequence_file)?;
     let simulation = ExportSimulation {
         simulation_id: args.reprocess_simulation_id,
-        lead_contributor_orcid: meta.lead_contributor_orcid,
+        lead_contributor_orcid: args.meta.lead_contributor_orcid,
         unique_file_hash_string,
-        alias: meta.alias,
-        description: meta.description,
-        short_description: meta.short_description,
-        run_commands: meta.run_commands,
-        software_name: meta.software_name,
-        software_version: meta.software_version,
+        alias: args.meta.alias,
+        description: args.meta.description,
+        short_description: args.meta.short_description,
+        run_commands: args.meta.run_commands,
+        software_name: args.meta.software_name,
+        software_version: args.meta.software_version,
         pdb,
         uniprots,
         duration: duration.totaltime_ns,
         sampling_frequency: duration.sampling_frequency_ns,
-        integration_timestep_fs: meta.integration_timestep_fs,
-        external_links: meta.external_links.unwrap_or_default(),
-        forcefield: meta.forcefield,
-        forcefield_comments: meta.forcefield_comments,
-        protonation_method: meta.protonation_method,
+        integration_timestep_fs: args.meta.integration_timestep_fs,
+        external_links: args.meta.external_links.unwrap_or_default(),
+        forcefield: args.meta.forcefield,
+        forcefield_comments: args.meta.forcefield_comments,
+        protonation_method: args.meta.protonation_method,
         rmsd_values: rmsd_rmsf.rmsd,
         rmsf_values: rmsd_rmsf.rmsf,
-        temperature_kelvin: meta.temperature_kelvin,
+        temperature_kelvin: args.meta.temperature_kelvin,
         fasta_sequence,
         water_type,
         water_density,
         structure_hash,
-        contributors: meta.contributors.unwrap_or_default(),
+        contributors: args.meta.contributors.unwrap_or_default(),
         original_files,
-        processed_files: processed_export,
+        processed_files,
         ligands,
-        solutes: meta.solutes.unwrap_or_default(),
+        solutes: args.meta.solutes.unwrap_or_default(),
         papers,
-        is_embargoed: meta.is_embargoed,
+        is_embargoed: args.meta.is_embargoed,
         is_coarse_grained: Some(args.example_trajectory.is_coarse_grained),
     };
 
@@ -1162,6 +977,213 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<Vec<String>> {
     writeln!(&file, "{}", &serde_json::to_string_pretty(&export)?)?;
 
     Ok(warnings)
+}
+
+// --------------------------------------------------
+fn resolve_ligands(
+    given_ligands: Option<&Vec<metadata::Ligand>>,
+    inferred_ligands: Vec<InferredLigand>,
+    script_dir: &Path,
+    uv: &Path,
+) -> Result<(Vec<metadata::Ligand>, Vec<String>)> {
+    let mut ligands = vec![];
+    let mut warnings = vec![];
+
+    if let Some(given_ligands) = given_ligands {
+        ligands = given_ligands.clone();
+
+        if !inferred_ligands.is_empty() {
+            for (ligand_num, given_ligand) in given_ligands.iter().enumerate() {
+                let mut found_match = false;
+                for inferred in &inferred_ligands {
+                    let check = check_ligand(given_ligand, inferred, script_dir, uv)?;
+                    if check.exact_match
+                        || check.same_connectivity
+                        || check.same_connectivity_and_stereo
+                        || check.same_inchi
+                    {
+                        found_match = true;
+                        break;
+                    }
+                }
+                if !found_match {
+                    warnings.push(format!(
+                        "Unable to verify ligand [{ligand_num}] ({})",
+                        given_ligand.smiles
+                    ));
+                }
+            }
+        }
+    } else {
+        for ligand in inferred_ligands {
+            let name = ligand
+                .name
+                .best_name
+                .unwrap_or(ligand.name.iupac_name.unwrap_or("NA".to_string()));
+            ligands.push(metadata::Ligand {
+                name,
+                smiles: ligand.structure.smiles,
+            });
+        }
+    }
+
+    Ok((ligands, warnings))
+}
+
+// --------------------------------------------------
+fn collect_original_files(
+    meta: &Meta,
+    meta_path: &Path,
+    input_dir: &Path,
+    example_trajectory: &ProcessedTrajectory,
+) -> Result<Vec<MdFile>> {
+    let mut files = vec![];
+
+    files.push(MdFile {
+        name: meta_path
+            .file_name()
+            .ok_or_else(|| anyhow!("No filename for '{}'", meta_path.display()))?
+            .to_string_lossy()
+            .to_string(),
+        file_type: "Metadata".to_string(),
+        size: meta_path.metadata()?.len(),
+        md5_sum: get_md5(meta_path)?,
+        description: None,
+        is_primary: None,
+    });
+
+    for (file_type, filename) in &[
+        ("Structure", &meta.structure_file_name),
+        ("Topology", &meta.topology_file_name),
+    ] {
+        let local_path = input_dir.join(filename);
+        files.push(MdFile {
+            name: filename.to_string(),
+            file_type: file_type.to_string(),
+            size: local_path.metadata()?.len(),
+            md5_sum: get_md5(&local_path)?,
+            description: None,
+            is_primary: Some(true),
+        });
+    }
+
+    for filename in &meta.trajectory_file_names {
+        if *filename == example_trajectory.trajectory_file_name {
+            let local_path = input_dir.join(filename);
+            files.push(MdFile {
+                name: filename.to_string(),
+                file_type: "Trajectory".to_string(),
+                size: local_path.metadata()?.len(),
+                md5_sum: get_md5(&local_path)?,
+                description: None,
+                is_primary: Some(true),
+            });
+        }
+    }
+
+    if meta.trajectory_file_names.len() > 1 {
+        let tar_name = "trajectories.tar";
+        let local_path = input_dir.join(tar_name);
+        if local_path.is_file() {
+            fs::remove_file(&local_path)?;
+        }
+        for (i, filename) in meta.trajectory_file_names.iter().enumerate() {
+            let mut cmd = Command::new("tar");
+            let flag = if i == 0 { "-cf" } else { "-rf" };
+            cmd.current_dir(input_dir).args([flag, tar_name, filename]);
+            debug!("Running {cmd:?}");
+            let output = cmd.output()?;
+            if !output.status.success() {
+                bail!("{}", String::from_utf8_lossy(&output.stderr));
+            }
+        }
+        files.push(MdFile {
+            name: tar_name.to_string(),
+            file_type: "Trajectories (All)".to_string(),
+            size: local_path.metadata()?.len(),
+            md5_sum: get_md5(&local_path)?,
+            description: None,
+            is_primary: None,
+        });
+    }
+
+    if let Some(addl_files) = &meta.additional_files {
+        for file in addl_files {
+            let path = input_dir.join(&file.file_name);
+            let md5_sum = get_md5(&path)?;
+            if !files.iter().any(|f| f.md5_sum == md5_sum) {
+                files.push(MdFile {
+                    name: file.file_name.to_string(),
+                    file_type: file.file_type.to_string(),
+                    size: path.metadata()?.len(),
+                    md5_sum,
+                    description: file.description.clone(),
+                    is_primary: None,
+                });
+            }
+        }
+    }
+
+    Ok(files)
+}
+
+// --------------------------------------------------
+fn collect_processed_files(
+    processed_dir: &Path,
+    example_trajectory: &ProcessedTrajectory,
+    trajectory_tarballs: &[ProcessedTarball],
+) -> Result<Vec<MdFile>> {
+    let mut files = vec![];
+
+    for (file_type, path) in &[
+        ("Processed topology", &example_trajectory.full_gro),
+        ("Processed structure", &example_trajectory.full_pdb),
+        ("Processed trajectory", &example_trajectory.full_xtc),
+        ("Minimal topology", &example_trajectory.min_gro),
+        ("Minimal structure", &example_trajectory.min_pdb),
+        ("Minimal trajectory", &example_trajectory.min_xtc),
+        ("Sampled minimal trajectory", &example_trajectory.sampled_xtc),
+        ("Preview image", &example_trajectory.thumbnail_png),
+    ] {
+        let filename = path
+            .file_name()
+            .ok_or_else(|| anyhow!("No filename for '{}'", path.display()))?
+            .to_string_lossy()
+            .to_string();
+
+        let symlink = processed_dir.join(&filename);
+        if symlink.exists() {
+            fs::remove_file(&symlink)?;
+        }
+        std::os::unix::fs::symlink(path, &symlink)?;
+
+        files.push(MdFile {
+            name: filename,
+            file_type: file_type.to_string(),
+            size: path.metadata()?.len(),
+            md5_sum: get_md5(path)?,
+            description: None,
+            is_primary: None,
+        });
+    }
+
+    for tarball in trajectory_tarballs {
+        files.push(MdFile {
+            name: tarball
+                .path
+                .file_name()
+                .ok_or_else(|| anyhow!("No filename for '{}'", tarball.path.display()))?
+                .to_string_lossy()
+                .to_string(),
+            file_type: tarball.file_type.clone(),
+            size: tarball.path.metadata()?.len(),
+            md5_sum: get_md5(&tarball.path)?,
+            description: None,
+            is_primary: None,
+        });
+    }
+
+    Ok(files)
 }
 
 // --------------------------------------------------
@@ -1267,8 +1289,8 @@ pub fn check_ligand(
     ligand: &metadata::Ligand,
     inferred_ligand: &InferredLigand,
     script_dir: &Path,
+    uv: &Path,
 ) -> Result<CheckedLigand> {
-    let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
     let script = script_dir.join("compare_smiles.py");
     let mut cmd = Command::new(&uv);
     cmd.current_dir(script_dir).args([
@@ -1294,13 +1316,13 @@ pub fn get_inferred_ligands(
     min_pdb: &Path,
     processed_dir: &Path,
     script_dir: &Path,
+    uv: &Path,
 ) -> Result<Vec<InferredLigand>> {
     let out_file = processed_dir.join("inferred_ligands.json");
     if file_exists(&out_file) {
         debug!("Inferred ligands file exists");
     } else {
         debug!("Creating inferred ligands file");
-        let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
         let mol_tools = script_dir.join("mol_id.py");
         let mut cmd = Command::new(&uv);
         cmd.current_dir(script_dir).args([
@@ -1492,13 +1514,13 @@ pub fn get_doi(doi: &str) -> Result<metadata::Paper> {
         .join(", ");
 
     let year = if let Some(published) = doi_paper.published {
-        *published.date_parts.first().unwrap()
+        published.date_parts.first().copied().unwrap_or(0)
     } else if let Some(issued) = doi_paper.issued {
-        if let Some(val) = issued.date_parts.first() {
-            *val.first().unwrap()
-        } else {
-            0
-        }
+        issued
+            .date_parts
+            .first()
+            .and_then(|parts| parts.first().copied())
+            .unwrap_or(0)
     } else {
         0
     };

@@ -1,10 +1,7 @@
-use clap::{builder::PossibleValue, Parser, ValueEnum};
-use libmdrepo::metadata;
+use clap::Parser;
+use libmdrepo::metadata::{self, Meta};
 use serde::{Deserialize, Serialize};
-use std::{
-    fmt,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 // --------------------------------------------------
 #[derive(Parser, Debug)]
@@ -27,23 +24,10 @@ pub struct Cli {
 }
 
 // --------------------------------------------------
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, clap::ValueEnum)]
 pub enum LogLevel {
     Info,
     Debug,
-}
-
-impl ValueEnum for LogLevel {
-    fn value_variants<'a>() -> &'a [Self] {
-        &[LogLevel::Info, LogLevel::Debug]
-    }
-
-    fn to_possible_value<'a>(&self) -> Option<PossibleValue> {
-        Some(match self {
-            LogLevel::Info => PossibleValue::new("info"),
-            LogLevel::Debug => PossibleValue::new("debug"),
-        })
-    }
 }
 
 // --------------------------------------------------
@@ -178,36 +162,13 @@ pub struct ReprocessArgs {
 }
 
 // --------------------------------------------------
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, clap::ValueEnum, strum_macros::Display)]
 pub enum Server {
+    #[value(name = "prod")]
+    #[strum(serialize = "prod")]
     Production,
+    #[strum(serialize = "staging")]
     Staging,
-}
-
-impl ValueEnum for Server {
-    fn value_variants<'a>() -> &'a [Self] {
-        &[Server::Production, Server::Staging]
-    }
-
-    fn to_possible_value<'a>(&self) -> Option<PossibleValue> {
-        Some(match self {
-            Server::Production => PossibleValue::new("prod"),
-            Server::Staging => PossibleValue::new("staging"),
-        })
-    }
-}
-
-impl fmt::Display for Server {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Server::Production => "prod",
-                Server::Staging => "staging",
-            }
-        )
-    }
 }
 
 // --------------------------------------------------
@@ -217,6 +178,10 @@ pub struct ValidateArgs {
     /// Input directory
     #[arg(value_name = "DIR", num_args = 1..)]
     pub dirnames: Vec<PathBuf>,
+
+    /// Allow missing PDB/Uniprot IDs in metadata
+    #[arg(short, long)]
+    pub no_id: bool,
 }
 
 // --------------------------------------------------
@@ -260,9 +225,10 @@ pub struct ProcessTrajectoryArgs<'a> {
     pub trajectory_file_name: &'a str,
     pub structure_file_name: &'a str,
     pub topology_file_name: &'a str,
-    pub input_dir: &'a PathBuf,
-    pub processed_dir: &'a PathBuf,
-    pub script_dir: &'a PathBuf,
+    pub input_dir: &'a Path,
+    pub processed_dir: &'a Path,
+    pub script_dir: &'a Path,
+    pub uv: &'a Path,
 }
 
 // --------------------------------------------------
@@ -697,12 +663,14 @@ pub enum ProcessedTrajectoryType {
 // --------------------------------------------------
 #[derive(Debug)]
 pub struct ImportJsonArgs<'a> {
+    pub meta: Meta,
     pub import_json: &'a Path,
     pub processed_dir: &'a Path,
     pub meta_path: &'a Path,
     pub input_dir: &'a Path,
     pub script_dir: &'a Path,
     pub blast_dir: &'a Path,
+    pub uv: &'a Path,
     pub example_trajectory: &'a ProcessedTrajectory,
     pub trajectory_tarballs: &'a [ProcessedTarball],
     pub reprocess_simulation_id: Option<u64>,
