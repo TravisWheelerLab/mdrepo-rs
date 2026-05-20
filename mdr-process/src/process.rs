@@ -142,7 +142,7 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
         trajectory_tarballs: &trajectory_tarballs,
         reprocess_simulation_id: args.reprocess_simulation_id,
     })?;
-    errors.extend_from_slice(&import_warnings);
+    errors.extend(import_warnings);
 
     if !args.dry_run {
         let import_result = run_import(

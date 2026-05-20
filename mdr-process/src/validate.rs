@@ -121,7 +121,7 @@ pub fn validate(
     }
     let meta = Meta::from_file(&meta_path)?;
     let meta_errors = meta.check(meta_check_opts);
-    errors.extend_from_slice(&meta_errors);
+    errors.extend(meta_errors);
 
     //if !meta_errors.is_empty() {
     //    bail!(
