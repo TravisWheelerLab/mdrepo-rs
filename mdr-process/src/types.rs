@@ -592,7 +592,7 @@ pub struct InferredLigandName {
     pub name_source: Option<String>,
     pub common_name: Option<String>,
     pub formula: Option<String>,
-    pub charge: Option<u32>,
+    pub charge: Option<i32>,
     pub synonyms: Option<Vec<String>>,
 }
 
@@ -603,7 +603,7 @@ pub struct InferredLigandStructure {
     pub formula: String,
     pub num_atoms: u32,
     pub num_heavy_atoms: u32,
-    pub charge: u32,
+    pub charge: i32,
     pub inchikey: String,
     pub resname: String,
 }
@@ -615,8 +615,8 @@ pub struct CheckedLigand {
     pub smi2_canonical: String,
     pub formula1: String,
     pub formula2: String,
-    pub charge1: u32,
-    pub charge2: u32,
+    pub charge1: i32,
+    pub charge2: i32,
     pub exact_match: bool,
     pub same_connectivity: bool,
     pub same_connectivity_and_stereo: bool,
