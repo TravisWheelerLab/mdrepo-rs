@@ -514,9 +514,10 @@ pub struct Water {
 
 #[cfg(test)]
 mod metav1_tests {
-    use super::MetaV1;
+    use super::{MetaV1, Numlike};
     use anyhow::Result;
     use std::path::Path;
+    use toml::value::Value as TomlValue;
     const INPUT1: &str = "tests/inputs/metadata/MDR00015378.v1.toml";
 
     #[test]
@@ -557,5 +558,118 @@ mod metav1_tests {
         assert_eq!(contributors.len(), 14);
 
         Ok(())
+    }
+
+    #[test]
+    fn to_v2_detailed() -> Result<()> {
+        let meta_v1 = MetaV1::from_file(&Path::new(INPUT1))?;
+        let meta_v2 = meta_v1.to_v2()?;
+
+        assert_eq!(meta_v2.temperature_kelvin, 300);
+        assert_eq!(meta_v2.integration_timestep_fs, 2);
+        assert_eq!(meta_v2.software_name, "AMBER");
+        assert_eq!(meta_v2.software_version, "20");
+        assert_eq!(meta_v2.structure_file_name, "5aom_cleaned.pdb");
+        assert_eq!(meta_v2.topology_file_name, "5aom_gromacs_cleaned.top");
+        assert_eq!(meta_v2.trajectory_file_names, vec!["5aom.xtc"]);
+
+        assert!(meta_v2.pdb_id.is_none());
+        let uniprot_ids = meta_v2.uniprot_ids.as_ref().expect("uniprot_ids");
+        assert_eq!(uniprot_ids, &vec!["P04637".to_string()]);
+
+        let water = meta_v2.water.as_ref().expect("water");
+        assert_eq!(water.model, "TIP3P");
+        assert_eq!(water.density_kg_m3, 1000.0);
+
+        let ligands = meta_v2.ligands.as_ref().expect("ligands");
+        assert_eq!(ligands.len(), 1);
+        assert_eq!(ligands[0].name, "FY8");
+        assert_eq!(ligands[0].smiles, "Oc1ccc(Cl)cc1NC(=O)C2CCNCC2");
+
+        let links = meta_v2.external_links.as_ref().expect("external_links");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].url, "https://zenodo.org/records/7711953");
+        assert!(links[0].label.is_none());
+
+        assert_eq!(meta_v2.forcefield, Some("ff14SB".to_string()));
+        assert_eq!(
+            meta_v2.forcefield_comments,
+            Some("Also gaff2 for ligands".to_string())
+        );
+        assert_eq!(meta_v2.protonation_method, Some("AutoDockFR".to_string()));
+
+        let addl = meta_v2.additional_files.as_ref().expect("additional_files");
+        assert_eq!(addl.len(), 7);
+
+        let papers = meta_v2.papers.as_ref().expect("papers");
+        assert_eq!(papers.len(), 1);
+        assert_eq!(papers[0].year, 2024);
+        assert_eq!(papers[0].volume, 4);
+
+        Ok(())
+    }
+
+    // --- Numlike conversions ---
+
+    #[test]
+    fn numlike_to_integer_stringy() {
+        assert_eq!(Numlike::Stringy("42".into()).to_integer(), Some(42));
+        assert_eq!(Numlike::Stringy("0".into()).to_integer(), Some(0));
+        assert_eq!(Numlike::Stringy("-5".into()).to_integer(), Some(-5));
+        assert_eq!(Numlike::Stringy("abc".into()).to_integer(), None);
+        assert_eq!(Numlike::Stringy("3.7".into()).to_integer(), None);
+    }
+
+    #[test]
+    fn numlike_to_integer_toml_val() {
+        assert_eq!(
+            Numlike::TomlVal(TomlValue::Integer(10)).to_integer(),
+            Some(10)
+        );
+        assert_eq!(
+            Numlike::TomlVal(TomlValue::String("5".into())).to_integer(),
+            Some(5)
+        );
+        assert_eq!(
+            Numlike::TomlVal(TomlValue::Float(3.7)).to_integer(),
+            Some(4)
+        );
+        assert_eq!(
+            Numlike::TomlVal(TomlValue::Float(3.2)).to_integer(),
+            Some(3)
+        );
+        assert_eq!(
+            Numlike::TomlVal(TomlValue::Boolean(true)).to_integer(),
+            None
+        );
+    }
+
+    #[test]
+    fn numlike_as_string_stringy() {
+        assert_eq!(
+            Numlike::Stringy("hello".into()).as_string(),
+            Some("hello".into())
+        );
+    }
+
+    #[test]
+    fn numlike_as_string_toml_val() {
+        assert_eq!(
+            Numlike::TomlVal(TomlValue::String("world".into())).as_string(),
+            Some("world".into())
+        );
+        assert_eq!(
+            Numlike::TomlVal(TomlValue::Integer(42)).as_string(),
+            Some("42".into())
+        );
+        let f = 1.5f64;
+        assert_eq!(
+            Numlike::TomlVal(TomlValue::Float(f)).as_string(),
+            Some(f.to_string())
+        );
+        assert_eq!(
+            Numlike::TomlVal(TomlValue::Boolean(true)).as_string(),
+            None
+        );
     }
 }

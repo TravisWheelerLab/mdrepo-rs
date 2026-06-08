@@ -1002,7 +1002,7 @@ mod tests {
     const JSON_OK1: &str = "tests/inputs/metadata/ok1.json";
     const JSON_BAD1: &str = "tests/inputs/metadata/bad1.json";
 
-    use super::Meta;
+    use super::{is_valid_smiles, AdditionalFile, Meta, MetaCheckOptions};
     use anyhow::Result;
     use std::path::PathBuf;
     use validator::Validate;
@@ -1175,5 +1175,223 @@ mod tests {
             assert!(errors.contains(&message.to_string()));
         }
         Ok(())
+    }
+
+    // --- from_file error cases ---
+
+    #[test]
+    fn meta_from_file_no_extension() {
+        let res = Meta::from_file(&PathBuf::from("no_such_file_without_ext"));
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("No file extension"));
+    }
+
+    #[test]
+    fn meta_from_file_empty() {
+        let res = Meta::from_file(&PathBuf::from("tests/inputs/metadata/empty.txt"));
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("File is empty"));
+    }
+
+    // --- all_filenames ---
+
+    #[test]
+    fn meta_all_filenames_without_additional() {
+        let meta = Meta::example_minimal();
+        let filenames = meta.all_filenames();
+        assert!(filenames.contains(&"struct.pdb".to_string()));
+        assert!(filenames.contains(&"topology.gro".to_string()));
+        assert!(filenames.contains(&"traj.xtc".to_string()));
+        assert_eq!(filenames.len(), 3);
+    }
+
+    #[test]
+    fn meta_all_filenames_with_additional() {
+        let meta = Meta::example();
+        let filenames = meta.all_filenames();
+        assert!(filenames.contains(&"struct.pdb".to_string()));
+        assert!(filenames.contains(&"topology.gro".to_string()));
+        assert!(filenames.contains(&"traj.xtc".to_string()));
+        assert!(filenames.contains(&"README.txt".to_string()));
+        assert_eq!(filenames.len(), 4);
+    }
+
+    // --- MetaCheckOptions ---
+
+    #[test]
+    fn meta_check_allow_no_pdb_uniprot_suppresses_error() {
+        let meta = Meta::example_minimal();
+        let errors = meta.check(Some(MetaCheckOptions {
+            allow_no_pdb_uniprot: true,
+        }));
+        assert!(
+            !errors.iter().any(|e| e.contains("Missing PDB and Uniprot IDs")),
+            "Expected no ID error with allow_no_pdb_uniprot=true, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn meta_check_missing_pdb_uniprot_error() {
+        let meta = Meta::example_minimal();
+        let errors = meta.check(None);
+        assert!(
+            errors.iter().any(|e| e.contains("Missing PDB and Uniprot IDs")),
+            "Expected missing ID error, got: {errors:?}"
+        );
+    }
+
+    // --- is_valid_smiles ---
+
+    #[test]
+    fn test_is_valid_smiles_valid() {
+        assert!(is_valid_smiles("C").is_ok());
+        assert!(is_valid_smiles("CC").is_ok());
+        assert!(is_valid_smiles("Oc1ccc(Cl)cc1NC(=O)C2CCNCC2").is_ok());
+    }
+
+    #[test]
+    fn test_is_valid_smiles_invalid() {
+        assert!(is_valid_smiles("smiles_string").is_err());
+        assert!(is_valid_smiles("not!valid").is_err());
+    }
+
+    // --- example() / example_minimal() validity ---
+
+    #[test]
+    fn meta_example_is_valid() {
+        let meta = Meta::example();
+        let errors = meta.check(None);
+        assert!(
+            errors.is_empty(),
+            "example() should produce no check errors, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn meta_example_minimal_only_id_error() {
+        let meta = Meta::example_minimal();
+        let errors = meta.check(None);
+        assert!(
+            errors.iter().any(|e| e.contains("Missing PDB and Uniprot IDs")),
+            "Expected missing ID error, got: {errors:?}"
+        );
+        let other_errors: Vec<_> = errors
+            .iter()
+            .filter(|e| !e.contains("Missing PDB and Uniprot IDs"))
+            .collect();
+        assert!(
+            other_errors.is_empty(),
+            "Unexpected extra errors: {other_errors:?}"
+        );
+    }
+
+    // --- software name/version validation ---
+
+    #[test]
+    fn meta_check_invalid_software_version() {
+        let mut meta = Meta::example_minimal();
+        meta.software_name = "AMBER".to_string();
+        meta.software_version = "99.99".to_string();
+        let errors = meta.check(None);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.starts_with("software_version:") && e.contains("99.99")),
+            "Expected invalid version error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn meta_check_valid_software_version() {
+        let mut meta = Meta::example_minimal();
+        meta.pdb_id = Some("5aom".to_string());
+        meta.software_name = "AMBER".to_string();
+        meta.software_version = "2020".to_string();
+        let errors = meta.check(None);
+        assert!(
+            !errors.iter().any(|e| e.starts_with("software_")),
+            "Expected no software errors, got: {errors:?}"
+        );
+    }
+
+    // --- file extension checks ---
+
+    #[test]
+    fn meta_check_invalid_structure_extension() {
+        let mut meta = Meta::example_minimal();
+        meta.structure_file_name = "struct.xyz".to_string();
+        let errors = meta.check(None);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.starts_with("structure_file_name:") && e.contains("xyz")),
+            "Expected structure extension error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn meta_check_invalid_topology_extension() {
+        let mut meta = Meta::example_minimal();
+        meta.topology_file_name = "topology.xyz".to_string();
+        let errors = meta.check(None);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.starts_with("topology_file_name:") && e.contains("xyz")),
+            "Expected topology extension error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn meta_check_invalid_trajectory_extension() {
+        let mut meta = Meta::example_minimal();
+        meta.trajectory_file_names = vec!["traj.mp4".to_string()];
+        let errors = meta.check(None);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.starts_with("trajectory_file_names[1]:") && e.contains("mp4")),
+            "Expected trajectory extension error, got: {errors:?}"
+        );
+    }
+
+    // --- multiple trajectory files ---
+
+    #[test]
+    fn meta_multiple_trajectory_files() -> Result<()> {
+        let meta = Meta::from_file(&PathBuf::from(
+            "tests/inputs/metadata/minimal_mult_traj.toml",
+        ))?;
+        assert_eq!(meta.trajectory_file_names.len(), 2);
+        assert!(meta.trajectory_file_names.contains(&"5aom.xtc".to_string()));
+        assert!(meta
+            .trajectory_file_names
+            .contains(&"5aom_2.xtc".to_string()));
+        Ok(())
+    }
+
+    // --- duplicate filenames in additional_files ---
+
+    #[test]
+    fn meta_check_duplicate_in_additional_files() {
+        let mut meta = Meta::example_minimal();
+        let dup_name = "README.txt".to_string();
+        meta.additional_files = Some(vec![
+            AdditionalFile {
+                file_name: dup_name.clone(),
+                file_type: "Documentation".to_string(),
+                description: None,
+            },
+            AdditionalFile {
+                file_name: dup_name.clone(),
+                file_type: "Documentation".to_string(),
+                description: None,
+            },
+        ]);
+        let errors = meta.check(None);
+        assert!(
+            errors.iter().any(|e| e.contains("is duplicated")),
+            "Expected duplicate filename error, got: {errors:?}"
+        );
     }
 }

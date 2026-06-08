@@ -154,4 +154,36 @@ mod tests {
             let _ = fs::remove_file(&cached);
         }
     }
+
+    #[test]
+    fn test_file_exists_directory() {
+        assert!(!file_exists(&Path::new("tests/inputs/metadata")));
+    }
+
+    #[test]
+    fn test_file_exists_empty_file() {
+        assert!(!file_exists(&Path::new("tests/inputs/metadata/empty.txt")));
+    }
+
+    #[test]
+    fn test_read_file_with_content() {
+        let res = read_file(&Path::new("tests/inputs/metadata/minimal.toml"));
+        assert!(res.is_ok());
+        assert!(res.unwrap().contains("lead_contributor_orcid"));
+    }
+
+    #[test]
+    fn test_get_simulation_id_alphabetic() {
+        assert!(get_simulation_id("ABCDEF").is_err());
+    }
+
+    #[test]
+    fn test_get_simulation_id_mixed_suffix() {
+        assert!(get_simulation_id("123abc").is_err());
+    }
+
+    #[test]
+    fn test_get_simulation_id_leading_zeros_only() {
+        assert!(get_simulation_id("00000").is_err());
+    }
 }
