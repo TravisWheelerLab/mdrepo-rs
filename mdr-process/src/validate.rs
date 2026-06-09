@@ -160,8 +160,31 @@ pub fn validate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use libmdrepo::common::get_md5;
     use std::fs;
     use tempfile::tempdir;
+
+    fn write_minimal_dir(dir: &Path) {
+        let toml = r#"
+            lead_contributor_orcid = "0000-0000-0000-0000"
+            trajectory_file_names = ["sim.xtc"]
+            structure_file_name = "sim.pdb"
+            topology_file_name = "sim.top"
+            temperature_kelvin = 300
+            integration_timestep_fs = 2
+            short_description = "A test simulation"
+            software_name = "GROMACS"
+            software_version = "2023"
+            pdb_id = "1ABC"
+            [water]
+            model = "TIP3P"
+            density_kg_m3 = 1000.0
+        "#;
+        fs::write(dir.join("mdrepo-metadata.toml"), toml).unwrap();
+        fs::write(dir.join("sim.xtc"), b"trajectory").unwrap();
+        fs::write(dir.join("sim.pdb"), b"structure").unwrap();
+        fs::write(dir.join("sim.top"), b"topology").unwrap();
+    }
 
     #[test]
     fn rejects_nonexistent_dir() {
@@ -193,25 +216,87 @@ mod tests {
     #[test]
     fn accepts_valid_submission() {
         let dir = tempdir().unwrap();
-        let toml = r#"
-            lead_contributor_orcid = "0000-0000-0000-0000"
-            trajectory_file_names = ["sim.xtc"]
-            structure_file_name = "sim.pdb"
-            topology_file_name = "sim.top"
-            temperature_kelvin = 300
-            integration_timestep_fs = 2
-            short_description = "A test simulation"
-            software_name = "GROMACS"
-            software_version = "2023"
-            pdb_id = "1ABC"
-            [water]
-            model = "TIP3P"
-            density_kg_m3 = 1000.0
-        "#;
-        fs::write(dir.path().join("mdrepo-metadata.toml"), toml).unwrap();
-        fs::write(dir.path().join("sim.xtc"), b"trajectory").unwrap();
-        fs::write(dir.path().join("sim.pdb"), b"structure").unwrap();
-        fs::write(dir.path().join("sim.top"), b"topology").unwrap();
+        write_minimal_dir(dir.path());
         assert!(validate(dir.path(), None).is_ok());
+    }
+
+    #[test]
+    fn completed_json_wrong_filenum_bails() {
+        let dir = tempdir().unwrap();
+        write_minimal_dir(dir.path());
+        let json = r#"{"total_filenum":5,"total_filesize":0,"status":"completed","files":[{"irods_path":"sim.xtc","size":9,"md5_hash":"abc"}]}"#;
+        fs::write(
+            dir.path().join("mdrepo-submission.completed.json"),
+            json,
+        )
+        .unwrap();
+        assert!(validate(dir.path(), None).is_err());
+    }
+
+    #[test]
+    fn completed_json_missing_file_returns_error() {
+        let dir = tempdir().unwrap();
+        write_minimal_dir(dir.path());
+        let json = r#"{"total_filenum":1,"total_filesize":0,"status":"completed","files":[{"irods_path":"ghost.xtc","size":0,"md5_hash":"abc123abc123abc123abc123abc12300"}]}"#;
+        fs::write(
+            dir.path().join("mdrepo-submission.completed.json"),
+            json,
+        )
+        .unwrap();
+        let errors = validate(dir.path(), None).unwrap();
+        assert!(errors.iter().any(|e| e.contains("Missing") && e.contains("ghost.xtc")));
+    }
+
+    #[test]
+    fn completed_json_md5_mismatch_returns_error() {
+        let dir = tempdir().unwrap();
+        write_minimal_dir(dir.path());
+        let json = r#"{"total_filenum":1,"total_filesize":0,"status":"completed","files":[{"irods_path":"sim.xtc","size":9,"md5_hash":"00000000000000000000000000000000"}]}"#;
+        fs::write(
+            dir.path().join("mdrepo-submission.completed.json"),
+            json,
+        )
+        .unwrap();
+        let errors = validate(dir.path(), None).unwrap();
+        assert!(errors.iter().any(|e| e.contains("MD5") && e.contains("sim.xtc")));
+    }
+
+    #[test]
+    fn completed_json_size_mismatch_returns_error() {
+        let dir = tempdir().unwrap();
+        write_minimal_dir(dir.path());
+        let xtc_md5 = get_md5(&dir.path().join("sim.xtc")).unwrap();
+        let json = format!(
+            r#"{{"total_filenum":1,"total_filesize":0,"status":"completed","files":[{{"irods_path":"sim.xtc","size":9999,"md5_hash":"{xtc_md5}"}}]}}"#
+        );
+        fs::write(
+            dir.path().join("mdrepo-submission.completed.json"),
+            json,
+        )
+        .unwrap();
+        let errors = validate(dir.path(), None).unwrap();
+        assert!(errors.iter().any(|e| e.contains("size") && e.contains("sim.xtc")));
+    }
+
+    #[test]
+    fn completed_json_duplicate_md5_returns_error() {
+        let dir = tempdir().unwrap();
+        write_minimal_dir(dir.path());
+        fs::write(dir.path().join("copy_a.dat"), b"identical").unwrap();
+        fs::write(dir.path().join("copy_b.dat"), b"identical").unwrap();
+        let md5 = get_md5(&dir.path().join("copy_a.dat")).unwrap();
+        let json = format!(
+            r#"{{"total_filenum":2,"total_filesize":0,"status":"completed","files":[
+                {{"irods_path":"copy_a.dat","size":9,"md5_hash":"{md5}"}},
+                {{"irods_path":"copy_b.dat","size":9,"md5_hash":"{md5}"}}
+            ]}}"#
+        );
+        fs::write(
+            dir.path().join("mdrepo-submission.completed.json"),
+            json,
+        )
+        .unwrap();
+        let errors = validate(dir.path(), None).unwrap();
+        assert!(errors.iter().any(|e| e.contains("duplicated")));
     }
 }

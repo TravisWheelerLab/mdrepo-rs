@@ -1631,8 +1631,21 @@ pub fn get_unique_file_hash(meta: &Meta, input_dir: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use libmdrepo::metadata::Meta;
     use std::io::Write;
-    use tempfile::NamedTempFile;
+    use tempfile::{tempdir, NamedTempFile};
+
+    const MINIMAL_TOML: &str = r#"
+        lead_contributor_orcid = "0000-0000-0000-0000"
+        trajectory_file_names = ["traj.xtc"]
+        structure_file_name = "struct.pdb"
+        topology_file_name = "top.top"
+        temperature_kelvin = 300
+        integration_timestep_fs = 2
+        short_description = "A test simulation"
+        software_name = "GROMACS"
+        software_version = "2023"
+    "#;
 
     #[test]
     fn test_round_dp() {
@@ -1666,5 +1679,109 @@ mod tests {
     #[test]
     fn topology_hash_missing_file_errors() {
         assert!(get_file_hash(Path::new("/nonexistent")).is_err());
+    }
+
+    #[test]
+    fn unique_file_hash_is_deterministic() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("struct.pdb"), b"structure").unwrap();
+        fs::write(dir.path().join("top.top"), b"topology").unwrap();
+        fs::write(dir.path().join("traj.xtc"), b"trajectory").unwrap();
+        let meta = Meta::from_toml(MINIMAL_TOML).unwrap();
+        let h1 = get_unique_file_hash(&meta, dir.path());
+        let h2 = get_unique_file_hash(&meta, dir.path());
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn unique_file_hash_changes_with_content() {
+        let dir_a = tempdir().unwrap();
+        fs::write(dir_a.path().join("struct.pdb"), b"structure A").unwrap();
+        fs::write(dir_a.path().join("top.top"), b"topology A").unwrap();
+        fs::write(dir_a.path().join("traj.xtc"), b"trajectory A").unwrap();
+
+        let dir_b = tempdir().unwrap();
+        fs::write(dir_b.path().join("struct.pdb"), b"structure B").unwrap();
+        fs::write(dir_b.path().join("top.top"), b"topology B").unwrap();
+        fs::write(dir_b.path().join("traj.xtc"), b"trajectory B").unwrap();
+
+        let meta = Meta::from_toml(MINIMAL_TOML).unwrap();
+        assert_ne!(
+            get_unique_file_hash(&meta, dir_a.path()),
+            get_unique_file_hash(&meta, dir_b.path()),
+        );
+    }
+
+    #[test]
+    fn unique_file_hash_skips_missing_files() {
+        // Only struct.pdb exists; topology and trajectory are absent.
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("struct.pdb"), b"structure").unwrap();
+        let meta = Meta::from_toml(MINIMAL_TOML).unwrap();
+        // Should not panic or error — missing files are silently dropped.
+        let hash = get_unique_file_hash(&meta, dir.path());
+        assert!(!hash.is_empty());
+    }
+
+    fn write_blast_tsv(dir: &Path, db: &str, rows: &[(u32, &str, f64)]) {
+        let content = rows
+            .iter()
+            .map(|(qaccver, saccver, pident)| {
+                format!("{qaccver}\t{saccver}\t{pident}\t150\t0\t0\t1\t150\t1\t150\t1e-80\t300.0")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(dir.join(format!("blast.{db}.tsv")), content).unwrap();
+    }
+
+    #[test]
+    fn blast_uniprot_parses_swissprot_hit() {
+        let tmp = tempdir().unwrap();
+        let blast_dir = tempdir().unwrap();
+        let fasta = tmp.path().join("sequence.fa");
+        fs::write(&fasta, b">1\nACGT").unwrap();
+        write_blast_tsv(tmp.path(), "swissprot", &[(1, "sp|P12345|PROT_HUMAN", 100.0)]);
+        let ids = blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Swissprot).unwrap();
+        assert_eq!(ids, vec!["P12345".to_string()]);
+    }
+
+    #[test]
+    fn blast_uniprot_parses_trembl_hit() {
+        let tmp = tempdir().unwrap();
+        let blast_dir = tempdir().unwrap();
+        let fasta = tmp.path().join("sequence.fa");
+        fs::write(&fasta, b">1\nACGT").unwrap();
+        write_blast_tsv(tmp.path(), "trembl", &[(1, "tr|A0A000XYZ|PROT_MOUSE", 100.0)]);
+        let ids = blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Trembl).unwrap();
+        assert_eq!(ids, vec!["A0A000XYZ".to_string()]);
+    }
+
+    #[test]
+    fn blast_uniprot_excludes_low_pident() {
+        let tmp = tempdir().unwrap();
+        let blast_dir = tempdir().unwrap();
+        let fasta = tmp.path().join("sequence.fa");
+        fs::write(&fasta, b">1\nACGT").unwrap();
+        write_blast_tsv(
+            tmp.path(),
+            "swissprot",
+            &[
+                (1, "sp|P99999|GOOD_HUMAN", 100.0),
+                (1, "sp|P00001|POOR_HUMAN", 95.0),
+            ],
+        );
+        let ids = blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Swissprot).unwrap();
+        assert_eq!(ids, vec!["P99999".to_string()]);
+    }
+
+    #[test]
+    fn blast_uniprot_rejects_nonexistent_blast_dir() {
+        let tmp = tempdir().unwrap();
+        let fasta = tmp.path().join("sequence.fa");
+        fs::write(&fasta, b">1\nACGT").unwrap();
+        assert!(
+            blast_uniprot(&fasta, Path::new("/nonexistent/blast"), UniprotDb::Swissprot)
+                .is_err()
+        );
     }
 }
