@@ -117,8 +117,8 @@ pub const VALID_WATER_MODEL: &[&str] = &[
 // - .trj — generic trajectory (various tools)
 // - .binpos — binary positions (AMBER)
 pub const TRAJECTORY_FILE_EXTS: &[&str] = &[
-    "xtc", "nc", "ncdf", "dcd", "trr", "tng", "edr", "rst", "rst7", "coor", "vel",
-    "trj",
+    "coor", "dcd", "edr", "mdc", "nc", "ncdf", "rst", "rst7", "tng", "trj", "trr",
+    "vel", "xtc",
 ];
 
 // Here are common structure file extensions used in molecular dynamics simulations:
