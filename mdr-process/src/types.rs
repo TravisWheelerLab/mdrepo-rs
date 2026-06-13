@@ -88,6 +88,10 @@ pub struct ProcessArgs {
     /// Process files/create import JSON but do not import/push
     #[arg(short, long)]
     pub dry_run: bool,
+
+    /// Replace original files
+    #[arg(long)]
+    pub replace_original_files: bool,
 }
 
 // --------------------------------------------------
@@ -450,6 +454,8 @@ pub struct ExportSimulation {
 
     pub fasta_sequence: String,
 
+    pub num_replicates: u32,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub water_type: Option<String>,
 
@@ -466,6 +472,9 @@ pub struct ExportSimulation {
 
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub processed_files: Vec<MdFile>,
+
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub replicates: Vec<String>,
 
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub ligands: Vec<metadata::Ligand>,
@@ -674,6 +683,21 @@ pub struct ImportJsonArgs<'a> {
     pub example_trajectory: &'a ProcessedTrajectory,
     pub trajectory_tarballs: &'a [ProcessedTarball],
     pub reprocess_simulation_id: Option<u64>,
+    pub replicates: &'a [String],
+    pub replace_original_files: bool,
+}
+
+// --------------------------------------------------
+#[derive(Debug)]
+pub struct RunImportArgs<'a> {
+    pub uv: &'a Path,
+    pub script_dir: &'a Path,
+    pub import_json: &'a Path,
+    pub input_dir: &'a Path,
+    pub server: &'a str,
+    pub reprocess_simulation_id: Option<u64>,
+    pub processed_dir: &'a Path,
+    pub replace_original_files: bool,
 }
 
 // --------------------------------------------------

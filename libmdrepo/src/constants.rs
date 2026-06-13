@@ -14,7 +14,7 @@ pub static DOI_REGEX: Lazy<Regex> =
 pub static NOT_WHITESPACE_REGEX: Lazy<Regex> = lazy_regex!(r"\S+");
 
 pub static MOLLY_TIME_REGEX: Lazy<Regex> =
-    lazy_regex!(r"^time:\s*(\d+)-(\d+(?:\.\d)?)\s+ps");
+    lazy_regex!(r"^time:\s*(\d+)(?:\.\d+)?-(\d+)(?:\.\d+)?\s+ps");
 
 pub static MOLLY_NFRAMES_REGEX: Lazy<Regex> = lazy_regex!(r"^nframes:\s*(\d+)");
 

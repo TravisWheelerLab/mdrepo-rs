@@ -129,6 +129,7 @@ pub fn process(args: &TicketArgs) -> Result<()> {
             no_id: true,
             force: args.force,
             dry_run: args.dry_run,
+            replace_original_files: false,
         }) {
             Ok(errors) => {
                 debug!(

@@ -48,8 +48,10 @@ fn run(args: Args) -> Result<()> {
     for (i, sim_id) in simulation_ids.into_iter().enumerate() {
         let mdrepo_id = format!("MDR{sim_id:08}");
         let out_file = out_dir.join(format!("{}.{}", mdrepo_id, args.format));
-        if !out_file.exists() {
-            println!("{:6}: {mdrepo_id}", i + 1);
+        print!("{:6}: {mdrepo_id}", i + 1,);
+
+        if !out_file.exists() || args.overwrite {
+            println!();
             match get_sim(&mut conn, sim_id) {
                 Ok(meta) => {
                     let mut out_fh = File::create(&out_file)?;
@@ -67,6 +69,8 @@ fn run(args: Args) -> Result<()> {
                     eprintln!("{e}");
                 }
             }
+        } else {
+            println!(" outfile exists, skipping");
         }
     }
 
@@ -91,7 +95,7 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
         .map(|pdb_pk| ops::get_pdb(conn, pdb_pk))
         .transpose()?;
     let (_, sim2uniprot) =
-        ops::list_simulation_uniprots(conn, Some(sim_id), None, None, None)?;
+        ops::list_simulation_uniprots(conn, Some(sim_id), None, true, None, None)?;
     let mut uniprot_ids: Vec<String> = vec![];
     for s2u in sim2uniprot {
         uniprot_ids.push(
@@ -115,6 +119,7 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
                 conn,
                 Some("orcid".to_string()),
                 Some(user_id),
+                true,
                 None,
                 None,
             )?;
@@ -123,7 +128,8 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
         _ => None,
     };
 
-    let (_, up_files) = ops::list_uploaded_files(conn, None, Some(sim_id), None, None)?;
+    let (_, up_files) =
+        ops::list_uploaded_files(conn, None, Some(sim_id), true, None, None)?;
 
     let mut additional_files: Vec<metadata::AdditionalFile> = vec![];
     let mut trajectory_file_names: Vec<String> = vec![];
@@ -173,11 +179,20 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
         }
     }
 
+    let (_, replicates_res) =
+        ops::list_replicates(conn, None, Some(sim_id), true, None, None)?;
+    let replicates = replicates_res
+        .into_iter()
+        .map(|val| val.trajectory_file_name.to_string())
+        .collect::<Vec<_>>();
+    dbg!(&replicates);
+
     if trajectory_file_names.is_empty() {
         bail!(r#""trajectory_file_names" is empty"#)
     }
 
-    let (_, ligands_res) = ops::list_ligands(conn, None, Some(sim_id), None, None)?;
+    let (_, ligands_res) =
+        ops::list_ligands(conn, None, Some(sim_id), true, None, None)?;
 
     let ligands = (!ligands_res.is_empty()).then(|| {
         ligands_res
@@ -189,7 +204,8 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
             .collect::<Vec<_>>()
     });
 
-    let (_, solutes_res) = ops::list_solutes(conn, None, Some(sim_id), None, None)?;
+    let (_, solutes_res) =
+        ops::list_solutes(conn, None, Some(sim_id), true, None, None)?;
 
     let solutes = (!solutes_res.is_empty()).then(|| {
         solutes_res
@@ -202,7 +218,7 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
     });
 
     let (_, links_res) =
-        ops::list_external_links(conn, None, Some(sim_id), None, None)?;
+        ops::list_external_links(conn, None, Some(sim_id), true, None, None)?;
 
     let external_links = (!links_res.is_empty()).then(|| {
         links_res
@@ -215,7 +231,7 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
     });
 
     let (_, contributors_res) =
-        ops::list_contributions(conn, None, Some(sim_id), None, None)?;
+        ops::list_contributions(conn, None, Some(sim_id), true, None, None)?;
 
     let contributors = (!contributors_res.is_empty())
         .then(|| {
@@ -235,7 +251,8 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
         })
         .transpose()?;
 
-    let (_, sim2pub) = ops::list_simulation_pubs(conn, Some(sim_id), None, None, None)?;
+    let (_, sim2pub) =
+        ops::list_simulation_pubs(conn, Some(sim_id), None, true, None, None)?;
     let mut papers: Vec<metadata::Paper> = vec![];
     for s2p in sim2pub {
         let val = ops::get_pub(conn, s2p.pub_id)?;
@@ -254,7 +271,7 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
     let meta = metadata::Meta {
         lead_contributor_orcid: lead_contributor_orcid
             .unwrap_or(DEFAULT_ORCID.to_string()),
-        trajectory_file_names,
+        trajectory_file_names: replicates,
         structure_file_name: structure_file_name
             .ok_or_else(|| anyhow!("simulation has no structure file"))?,
         topology_file_name: topology_file_name

@@ -3,8 +3,8 @@ use crate::{
         BlastResult, CheckedLigand, DoiPaper, Duration, Export, ExportSimulation,
         ImportJsonArgs, ImportResult, InferredLigand, MdFile, PdbEntry, PdbResponse,
         ProcessArgs, ProcessTrajectoryArgs, ProcessedTarball, ProcessedTrajectory,
-        ProcessedTrajectoryType, PushResult, RmsdRmsf, UniprotDb, UniprotEntry,
-        UniprotResponse,
+        ProcessedTrajectoryType, PushResult, RmsdRmsf, RunImportArgs, UniprotDb,
+        UniprotEntry, UniprotResponse,
     },
     validate,
 };
@@ -115,6 +115,11 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
             .then_with(|| a.trajectory_file_stem.cmp(&b.trajectory_file_stem))
     });
 
+    let replicates: Vec<_> = processed_trajectories
+        .iter()
+        .map(|val| val.trajectory_file_name.to_string())
+        .collect();
+
     let mut errors: Vec<String> = processed_trajectories
         .iter()
         .flat_map(|t| t.errors.iter().cloned())
@@ -141,19 +146,22 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
         example_trajectory,
         trajectory_tarballs: &trajectory_tarballs,
         reprocess_simulation_id: args.reprocess_simulation_id,
+        replicates: &replicates,
+        replace_original_files: args.replace_original_files,
     })?;
     errors.extend(import_warnings);
 
     if !args.dry_run {
-        let import_result = run_import(
-            &uv,
-            &script_dir,
-            &import_json,
-            &input_dir,
-            &args.server.to_string(),
-            args.reprocess_simulation_id,
-            &processed_dir,
-        )?;
+        let import_result = run_import(RunImportArgs {
+            uv: &uv,
+            script_dir: &script_dir,
+            import_json: &import_json,
+            input_dir: &input_dir,
+            server: &args.server.to_string(),
+            reprocess_simulation_id: args.reprocess_simulation_id,
+            processed_dir: &processed_dir,
+            replace_original_files: args.replace_original_files,
+        })?;
 
         let push_res = run_push(
             &uv,
@@ -190,38 +198,34 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
 }
 
 // --------------------------------------------------
-fn run_import(
-    uv: &Path,
-    script_dir: &Path,
-    import_json: &Path,
-    input_dir: &Path,
-    server: &str,
-    reprocess_simulation_id: Option<u64>,
-    processed_dir: &Path,
-) -> Result<ImportResult> {
-    let import_script = script_dir.join("import_preprocessed.py");
-    let out_file = processed_dir.join("imported.json");
-    debug!(r#"Import "{}""#, import_json.display());
+fn run_import(args: RunImportArgs) -> Result<ImportResult> {
+    let import_script = args.script_dir.join("import_preprocessed.py");
+    let out_file = args.processed_dir.join("imported.json");
+    debug!(r#"Import "{}""#, args.import_json.display());
 
-    let mut args = vec![
+    let mut cmd_args = vec![
         "run".to_string(),
         import_script.to_string_lossy().to_string(),
         "--file".to_string(),
-        import_json.to_string_lossy().to_string(),
+        args.import_json.to_string_lossy().to_string(),
         "--data-dir".to_string(),
-        input_dir.to_string_lossy().to_string(),
+        args.input_dir.to_string_lossy().to_string(),
         "--server".to_string(),
-        server.to_string(),
+        args.server.to_string(),
         "--out-file".to_string(),
         out_file.to_string_lossy().to_string(),
     ];
 
-    if let Some(id) = reprocess_simulation_id {
-        args.extend(["--simulation-id".to_string(), id.to_string()]);
+    if let Some(id) = args.reprocess_simulation_id {
+        cmd_args.extend(["--simulation-id".to_string(), id.to_string()]);
     }
 
-    let mut cmd = Command::new(uv);
-    cmd.current_dir(script_dir).args(&args);
+    if args.replace_original_files {
+        cmd_args.extend(["--replace-original-files".to_string()]);
+    }
+
+    let mut cmd = Command::new(args.uv);
+    cmd.current_dir(args.script_dir).args(&cmd_args);
     debug!("Running {cmd:?}");
 
     let output = cmd.output()?;
@@ -358,6 +362,50 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
             args.trajectory_file_name
         );
     } else {
+        let mut trajectory_path = args.input_dir.join(args.trajectory_file_name);
+        let trajectory_ext = trajectory_path.extension().ok_or_else(|| {
+            anyhow!(
+                r#"Failed to get file extension for "{}""#,
+                args.trajectory_file_name
+            )
+        })?;
+
+        if trajectory_ext == "mdc" {
+            let mdcompress = which("mdcompress")
+                .map_err(|e| anyhow!("Failed to find mdcompress ({e})"))?;
+            let trajectory_stem = trajectory_path.file_stem().ok_or_else(|| {
+                anyhow!(
+                    r#"Failed to get file stem for "{}""#,
+                    args.trajectory_file_name
+                )
+            })?;
+            let xtc_path = args
+                .input_dir
+                .join(format!("{}.xtc", trajectory_stem.to_string_lossy()));
+            let mut cmd = Command::new(mdcompress);
+            cmd.arg("decompress")
+                .arg("-i")
+                .arg(&trajectory_path)
+                .arg("-o")
+                .arg(&xtc_path);
+
+            debug!("Running {cmd:?}");
+
+            let output = cmd.output()?;
+            if !output.status.success() {
+                bail!("{}", String::from_utf8_lossy(&output.stderr));
+            }
+
+            if !file_exists(&xtc_path) {
+                bail!(
+                    r#"Failed to decompress {} to {}"#,
+                    trajectory_path.to_string_lossy(),
+                    xtc_path.to_string_lossy(),
+                );
+            }
+            trajectory_path = xtc_path;
+        }
+
         let micromamba = which("micromamba")
             .map_err(|e| anyhow!("Failed to find micromamba ({e})"))?;
         debug!("Making full/minimal files");
@@ -374,10 +422,7 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
             "simproc",
             cpp_traj.to_string_lossy().as_ref(),
             "--traj",
-            args.input_dir
-                .join(args.trajectory_file_name)
-                .to_string_lossy()
-                .as_ref(),
+            trajectory_path.to_string_lossy().as_ref(),
             "--coord",
             args.input_dir
                 .join(args.structure_file_name)
@@ -887,16 +932,17 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<Vec<String>> {
         }
     }
 
-    let original_files = if args.reprocess_simulation_id.is_none() {
-        collect_original_files(
-            &args.meta,
-            args.meta_path,
-            args.input_dir,
-            args.example_trajectory,
-        )?
-    } else {
-        vec![]
-    };
+    let original_files =
+        if args.reprocess_simulation_id.is_none() || args.replace_original_files {
+            collect_original_files(
+                &args.meta,
+                args.meta_path,
+                args.input_dir,
+                args.example_trajectory,
+            )?
+        } else {
+            vec![]
+        };
 
     let processed_files = collect_processed_files(
         args.processed_dir,
@@ -943,6 +989,7 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<Vec<String>> {
         rmsf_values: rmsd_rmsf.rmsf,
         temperature_kelvin: args.meta.temperature_kelvin,
         fasta_sequence,
+        num_replicates: args.meta.trajectory_file_names.len() as u32,
         water_type,
         water_density,
         structure_hash,
@@ -954,6 +1001,7 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<Vec<String>> {
         papers,
         is_embargoed: args.meta.is_embargoed,
         is_coarse_grained: Some(args.example_trajectory.is_coarse_grained),
+        replicates: args.replicates.to_vec(),
     };
 
     if !warnings.is_empty() {
@@ -1142,7 +1190,10 @@ fn collect_processed_files(
         ("Minimal topology", &example_trajectory.min_gro),
         ("Minimal structure", &example_trajectory.min_pdb),
         ("Minimal trajectory", &example_trajectory.min_xtc),
-        ("Sampled minimal trajectory", &example_trajectory.sampled_xtc),
+        (
+            "Sampled minimal trajectory",
+            &example_trajectory.sampled_xtc,
+        ),
         ("Preview image", &example_trajectory.thumbnail_png),
     ] {
         let filename = path
@@ -1417,6 +1468,7 @@ pub fn get_duration(
                 }
             }
         }
+
         let (time_start, time_stop, num_frames) =
             match (time_start, time_stop, num_frames) {
                 (Some(a), Some(b), Some(c)) => (a as f64, b as f64, c as f64),
@@ -1740,8 +1792,13 @@ mod tests {
         let blast_dir = tempdir().unwrap();
         let fasta = tmp.path().join("sequence.fa");
         fs::write(&fasta, b">1\nACGT").unwrap();
-        write_blast_tsv(tmp.path(), "swissprot", &[(1, "sp|P12345|PROT_HUMAN", 100.0)]);
-        let ids = blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Swissprot).unwrap();
+        write_blast_tsv(
+            tmp.path(),
+            "swissprot",
+            &[(1, "sp|P12345|PROT_HUMAN", 100.0)],
+        );
+        let ids =
+            blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Swissprot).unwrap();
         assert_eq!(ids, vec!["P12345".to_string()]);
     }
 
@@ -1751,7 +1808,11 @@ mod tests {
         let blast_dir = tempdir().unwrap();
         let fasta = tmp.path().join("sequence.fa");
         fs::write(&fasta, b">1\nACGT").unwrap();
-        write_blast_tsv(tmp.path(), "trembl", &[(1, "tr|A0A000XYZ|PROT_MOUSE", 100.0)]);
+        write_blast_tsv(
+            tmp.path(),
+            "trembl",
+            &[(1, "tr|A0A000XYZ|PROT_MOUSE", 100.0)],
+        );
         let ids = blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Trembl).unwrap();
         assert_eq!(ids, vec!["A0A000XYZ".to_string()]);
     }
@@ -1770,7 +1831,8 @@ mod tests {
                 (1, "sp|P00001|POOR_HUMAN", 95.0),
             ],
         );
-        let ids = blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Swissprot).unwrap();
+        let ids =
+            blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Swissprot).unwrap();
         assert_eq!(ids, vec!["P99999".to_string()]);
     }
 
@@ -1779,9 +1841,11 @@ mod tests {
         let tmp = tempdir().unwrap();
         let fasta = tmp.path().join("sequence.fa");
         fs::write(&fasta, b">1\nACGT").unwrap();
-        assert!(
-            blast_uniprot(&fasta, Path::new("/nonexistent/blast"), UniprotDb::Swissprot)
-                .is_err()
-        );
+        assert!(blast_uniprot(
+            &fasta,
+            Path::new("/nonexistent/blast"),
+            UniprotDb::Swissprot
+        )
+        .is_err());
     }
 }
