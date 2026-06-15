@@ -23,12 +23,13 @@ use std::{
     collections::HashSet,
     env,
     fs::{self, File},
-    io::{BufReader, Write},
+    io::{BufRead, BufReader, Write},
     path::{self, Path, PathBuf},
     process::Command,
     time::Instant,
 };
 use strum::IntoEnumIterator;
+use tempfile::NamedTempFile;
 use which::which;
 
 // ── BLAST parameters ──────────────────────────────────────────────────────────
@@ -472,9 +473,13 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
     let sampled_xtc = trajectory_dir.join("sampled.xtc");
     let thumbnail_png = trajectory_dir.join("thumbnail.png");
     let full_xtc_size = fs::metadata(&full_xtc)?.len();
+
+    println!("check_coarse_grained");
     let is_coarse_grained = check_coarse_grained(&full_pdb, &min_pdb)?;
 
+    println!("sample_trajectory");
     sample_trajectory(&min_xtc, &min_pdb, &sampled_xtc, args.script_dir, args.uv)?;
+    println!("make_thumbnail");
     make_thumbnail(
         &thumbnail_png,
         &sampled_xtc,
@@ -514,7 +519,19 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
 
 // --------------------------------------------------
 pub fn check_coarse_grained(full_pdb: &Path, min_pdb: &Path) -> Result<bool> {
-    let structure = pdbrust::parse_pdb_file(min_pdb)?;
+    println!("parsing min_pdb {}", min_pdb.display());
+
+    let mut tmp = NamedTempFile::new()?;
+    for line in BufReader::new(File::open(min_pdb)?).lines() {
+        let line = line?;
+        if !line.starts_with("REMARK") {
+            writeln!(tmp, "{line}")?;
+        }
+    }
+
+    let structure = pdbrust::parse_pdb_file(tmp.path())
+        .map_err(|err| anyhow!("{}: {err}", min_pdb.display()))?;
+    dbg!(&structure);
     let protein = structure.select("protein")?;
     let total_atoms = protein.get_num_atoms();
     let unique_residues: HashSet<_> = protein

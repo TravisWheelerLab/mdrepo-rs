@@ -26,7 +26,7 @@ toml = "1"
 urlencoding = "2.1.3"
 validator = { version = "0.20.0", features = ["derive"] }
 which = "8.0.0"
+tempfile = "3"
 
 [dev-dependencies]
 assert_cmd = "2.1.2"
-tempfile = "3"
