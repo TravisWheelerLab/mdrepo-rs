@@ -35,6 +35,10 @@ pub struct Cli {
     /// Path to Chrome/Chromium binary (auto-detected if not set)
     #[arg(long)]
     pub chrome: Option<String>,
+
+    /// Only run checks whose path contains this substring (case-insensitive)
+    #[arg(short, long)]
+    pub filter: Option<String>,
 }
 
 /// One endpoint definition from the config file.

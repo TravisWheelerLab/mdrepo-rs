@@ -27,11 +27,17 @@ async fn run(args: Cli) -> Result<()> {
 
     let base_url = build_base_url(&args);
 
-    // Keep only endpoints that apply to the current host.
+    // Keep only endpoints that apply to the current host and match any filter.
+    let filter = args.filter.as_deref().map(str::to_lowercase);
     let endpoints: Vec<Endpoint> = config
         .endpoints
         .into_iter()
         .filter(|e| e.host.as_deref().map_or(true, |h| h == args.url))
+        .filter(|e| {
+            filter
+                .as_deref()
+                .map_or(true, |f| e.path.to_lowercase().contains(f))
+        })
         .collect();
 
     println!("Checking {} paths at {base_url} ...\n", endpoints.len());
