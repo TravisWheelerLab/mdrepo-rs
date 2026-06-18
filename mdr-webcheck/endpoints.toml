@@ -118,6 +118,21 @@ host = "staging.mdrepo.org"
 path = "/pub/view/13"
 contains = ["10.48550/arXiv.2504.18367"]
 
+#
+# This will have to wait until I figure out logging in.
+#
+# Metadata creation
+#
+#[[endpoints]]
+#host = "localhost"
+#path = "/metadata"
+#contains = ["Metadata Generator"]
+
+#[[endpoints]]
+#host = "mdrepo.org"
+#path = "/metadata"
+#contains = ["Metadata Generator"]
+
 
 # --------------------------------------------------
 # API
