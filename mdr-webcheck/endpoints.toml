@@ -76,11 +76,47 @@ path = "/pdb/list"
 contains = ["Found"]
 
 #
+# PDB view
+#
+[[endpoints]]
+host = "localhost"
+path = "/pdb/view/10gs"
+contains = ["HUMAN GLUTATHIONE S-TRANSFERASE P1-1, COMPLEX WITH TER117"]
+
+[[endpoints]]
+host = "mdrepo.org"
+path = "/pdb/view/10gs"
+contains = ["HUMAN GLUTATHIONE S-TRANSFERASE P1-1, COMPLEX WITH TER117"]
+
+[[endpoints]]
+host = "stagingmdrepo.org"
+path = "/pdb/view/1a7x"
+contains = ["FKBP12-FK1012 COMPLEX"]
+
+#
 # Pub list
 #
 [[endpoints]]
 path = "/pub/list"
 contains = ["Found"]
+
+#
+# Pub view
+#
+[[endpoints]]
+host = "localhost"
+path = "/pub/view/106"
+contains = ["10.1016/j.cell.2020.01.008"]
+
+[[endpoints]]
+host = "mdrepo.org"
+path = "/pub/view/153"
+contains = ["10.48550/arXiv.2504.18367"]
+
+[[endpoints]]
+host = "staging.mdrepo.org"
+path = "/pub/view/13"
+contains = ["10.48550/arXiv.2504.18367"]
 
 
 # --------------------------------------------------
@@ -98,6 +134,9 @@ browser = false
   path = "count"
   gt = 0
 
+#
+# Simulation view
+#
 [[endpoints]]
 host = "localhost"
 path = "/api/v1/simulation_view/16143"
@@ -133,6 +172,9 @@ browser = false
   path = "short_description"
   eq = "EHMT1 ankyrin repeat domain V786L variant"
 
+#
+# Uniprot list
+#
 [[endpoints]]
 path = "/api/v1/uniprot_list"
 browser = false
@@ -141,6 +183,38 @@ browser = false
   path = "count"
   gt = 0
 
+#
+# Uniprot view
+#
+[[endpoints]]
+host = "localhost"
+path = "/api/v1/uniprot_view/A0A023J4Z7"
+browser = false
+
+  [[endpoints.json_checks]]
+  path = "uniprot_id"
+  eq = "A0A023J4Z7"
+
+  [[endpoints.json_checks]]
+  path = "name"
+  eq = "Pre-glycoprotein polyprotein GP complex"
+
+[[endpoints]]
+host = "mdrepo.org"
+path = "/api/v1/uniprot_view/A0A023J4Z7"
+browser = false
+
+  [[endpoints.json_checks]]
+  path = "uniprot_id"
+  eq = "A0A023J4Z7"
+
+  [[endpoints.json_checks]]
+  path = "name"
+  eq = "Pre-glycoprotein polyprotein GP complex"
+
+#
+# PDB list
+#
 [[endpoints]]
 path = "/api/v1/pdb_list"
 browser = false
@@ -149,6 +223,38 @@ browser = false
   path = "count"
   gt = 0
 
+#
+# PDB view
+#
+[[endpoints]]
+host = "localhost"
+path = "/api/v1/pdb_view/10gs"
+browser = false
+
+  [[endpoints.json_checks]]
+  path = "pdb_id"
+  eq = "10gs"
+
+  [[endpoints.json_checks]]
+  path = "title"
+  eq = "HUMAN GLUTATHIONE S-TRANSFERASE P1-1, COMPLEX WITH TER117"
+
+[[endpoints]]
+host = "mdrepo.org"
+path = "/api/v1/pdb_view/10gs"
+browser = false
+
+  [[endpoints.json_checks]]
+  path = "pdb_id"
+  eq = "10gs"
+
+  [[endpoints.json_checks]]
+  path = "title"
+  eq = "HUMAN GLUTATHIONE S-TRANSFERASE P1-1, COMPLEX WITH TER117"
+
+#
+# Pub list
+#
 [[endpoints]]
 path = "/api/v1/pub_list"
 browser = false
@@ -156,3 +262,32 @@ browser = false
   [[endpoints.json_checks]]
   path = "count"
   gt = 0
+
+#
+# Pub view
+#
+[[endpoints]]
+host = "localhost"
+path = "/api/v1/pub_view/106"
+browser = false
+
+  [[endpoints.json_checks]]
+  path = "title"
+  contains = "Activation and Signaling Mechanism Revealed"
+
+  [[endpoints.json_checks]]
+  path = "doi"
+  eq = "10.1016/j.cell.2020.01.008"
+
+[[endpoints]]
+host = "mdrepo.org"
+path = "/api/v1/pub_view/153"
+browser = false
+
+  [[endpoints.json_checks]]
+  path = "title"
+  contains = "A Novel 4-D Dataset Paradigm for Studying"
+
+  [[endpoints.json_checks]]
+  path = "doi"
+  eq = "10.48550/arXiv.2504.18367"
