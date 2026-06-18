@@ -1,0 +1,158 @@
+# Endpoints to check against the mdrepo web application.
+# Run with:
+#   mdr-webcheck --url localhost --port 80
+#   mdr-webcheck --url staging.mdrepo.org
+#   mdr-webcheck --url mdrepo.org
+#
+# Endpoints with no "host" field are checked against every host.
+# Endpoints with a "host" field are only checked for that host.
+
+# --------------------------------------------------
+# User Interface
+# --------------------------------------------------
+
+#
+# Home page
+#
+[[endpoints]]
+path = "/"
+contains = ["MDRepo is an open repository of MD simulations for proteins"]
+
+#
+# Simulation list
+#
+[[endpoints]]
+path = "/explore"
+contains = ["Found"]
+
+#
+# Simulation view
+#
+[[endpoints]]
+host = "localhost"
+path = "/explore/MDR00016143"
+contains = ["8 ns simulation of the 5gid PDB entry (P13053)"]
+
+[[endpoints]]
+host = "mdrepo.org"
+path = "/explore/4438"
+contains = ["Adaptive sampling of AncFT luciferase"]
+
+[[endpoints]]
+host = "staging.mdrepo.org"
+path = "/explore/MDR00000137"
+contains = ["8 ns simulation of the 1k1n PDB entry (P00760)"]
+
+#
+# Uniprot list
+#
+[[endpoints]]
+path = "/uniprot/list"
+contains = ["Found"]
+
+#
+# Uniprot view
+#
+[[endpoints]]
+host = "localhost"
+path = "/uniprot/view/A0A023J4Z7"
+contains = ["Pre-glycoprotein polyprotein GP complex"]
+
+[[endpoints]]
+host = "staging.mdrepo.org"
+path = "/uniprot/view/A0A024E3Q2"
+contains = ["Neuraminidase"]
+
+[[endpoints]]
+host = "mdrepo.org"
+path = "/uniprot/view/A0A023J4Z7"
+contains = ["Pre-glycoprotein polyprotein GP complex"]
+
+#
+# PDB list
+#
+[[endpoints]]
+path = "/pdb/list"
+contains = ["Found"]
+
+#
+# Pub list
+#
+[[endpoints]]
+path = "/pub/list"
+contains = ["Found"]
+
+
+# --------------------------------------------------
+# API
+# --------------------------------------------------
+
+#
+# Simulation list
+#
+[[endpoints]]
+path = "/api/v1/simulation_list"
+browser = false
+
+  [[endpoints.json_checks]]
+  path = "count"
+  gt = 0
+
+[[endpoints]]
+host = "localhost"
+path = "/api/v1/simulation_view/16143"
+browser = false
+
+  [[endpoints.json_checks]]
+  path = "slug"
+  eq = "MDR00016143"
+
+[[endpoints]]
+host = "staging.mdrepo.org"
+path = "/api/v1/simulation_view/556"
+browser = false
+
+  [[endpoints.json_checks]]
+  path = "slug"
+  eq = "MDR00000556"
+
+  [[endpoints.json_checks]]
+  path = "short_description"
+  contains = "5ht2b receptor"
+
+[[endpoints]]
+host = "mdrepo.org"
+path = "/api/v1/simulation_view/21597"
+browser = false
+
+  [[endpoints.json_checks]]
+  path = "slug"
+  eq = "MDR00021597"
+
+  [[endpoints.json_checks]]
+  path = "short_description"
+  eq = "EHMT1 ankyrin repeat domain V786L variant"
+
+[[endpoints]]
+path = "/api/v1/uniprot_list"
+browser = false
+
+  [[endpoints.json_checks]]
+  path = "count"
+  gt = 0
+
+[[endpoints]]
+path = "/api/v1/pdb_list"
+browser = false
+
+  [[endpoints.json_checks]]
+  path = "count"
+  gt = 0
+
+[[endpoints]]
+path = "/api/v1/pub_list"
+browser = false
+
+  [[endpoints.json_checks]]
+  path = "count"
+  gt = 0
