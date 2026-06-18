@@ -273,7 +273,7 @@ pub struct RmsdRmsf {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Duration {
-    pub totaltime_ns: u32,
+    pub totaltime_ns: f64,
     pub sampling_frequency_ns: f32,
 }
 
@@ -444,7 +444,7 @@ pub struct ExportSimulation {
 
     pub rmsf_values: Vec<f64>,
 
-    pub duration: u32,
+    pub duration: f64,
 
     pub sampling_frequency: f32,
 
