@@ -52,6 +52,17 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
     let start_time = Instant::now();
     let input_dir = path::absolute(&args.input_dir)?;
 
+    // Resolve these early so canonicalization can run before validation
+    let script_dir = args.script_dir.clone().unwrap_or(PathBuf::from(
+        env::var("SCRIPT_DIR").map_err(|e| anyhow!("SCRIPT_DIR: {e}"))?,
+    ));
+    let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
+    let meta_path = input_dir.join("mdrepo-metadata.toml");
+
+    // Canonicalize ligand SMILES before validation so non-standard notation
+    // (e.g. [N+H3]) is normalised to the form the validator accepts ([NH3+])
+    canonicalize_toml_smiles(&meta_path, &script_dir, &uv)?;
+
     // Validate
     let meta_check_opts = args.no_id.then_some(MetaCheckOptions {
         allow_no_pdb_uniprot: true,
@@ -71,9 +82,6 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
         .out_dir
         .clone()
         .map_or(input_dir.join("processed"), PathBuf::from);
-    let script_dir = args.script_dir.clone().unwrap_or(PathBuf::from(
-        env::var("SCRIPT_DIR").map_err(|e| anyhow!("SCRIPT_DIR: {e}"))?,
-    ));
     let work_dir = args.work_dir.clone().unwrap_or(PathBuf::from(
         env::var("MDREPO_WORK_DIR").map_err(|e| anyhow!("MDREPO_WORK_DIR: {e}"))?,
     ));
@@ -85,9 +93,6 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
         fs::remove_dir_all(&processed_dir)?;
     }
 
-    let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
-
-    let meta_path = input_dir.join("mdrepo-metadata.toml");
     let meta = Meta::from_file(&meta_path)?;
     let mut trajectory_file_names = meta.trajectory_file_names.clone();
     trajectory_file_names.sort();
@@ -519,8 +524,7 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
 
 // --------------------------------------------------
 pub fn check_coarse_grained(full_pdb: &Path, min_pdb: &Path) -> Result<bool> {
-    println!("parsing min_pdb {}", min_pdb.display());
-
+    // TEMPORARY FIX TO REMOVE REMARK UNTIL PR IS ACCEPTED
     let mut tmp = NamedTempFile::new()?;
     for line in BufReader::new(File::open(min_pdb)?).lines() {
         let line = line?;
@@ -531,7 +535,6 @@ pub fn check_coarse_grained(full_pdb: &Path, min_pdb: &Path) -> Result<bool> {
 
     let structure = pdbrust::parse_pdb_file(tmp.path())
         .map_err(|err| anyhow!("{}: {err}", min_pdb.display()))?;
-    dbg!(&structure);
     let protein = structure.select("protein")?;
     let total_atoms = protein.get_num_atoms();
     let unique_residues: HashSet<_> = protein
@@ -557,7 +560,15 @@ pub fn check_coarse_grained(full_pdb: &Path, min_pdb: &Path) -> Result<bool> {
 
 // --------------------------------------------------
 fn fix_alpha_carbon_name(path: &Path) -> Result<()> {
-    let structure = pdbrust::parse_pdb_file(path)?;
+    // TEMPORARY FIX TO REMOVE REMARK UNTIL PR IS ACCEPTED
+    let mut tmp = NamedTempFile::new()?;
+    for line in BufReader::new(File::open(path)?).lines() {
+        let line = line?;
+        if !line.starts_with("REMARK") {
+            writeln!(tmp, "{line}")?;
+        }
+    }
+    let structure = pdbrust::parse_pdb_file(tmp.path())?;
     let protein = structure.select("protein")?;
     let total_atoms = protein.get_num_atoms();
     let protein_serials: HashSet<i32> = protein
@@ -1350,6 +1361,26 @@ pub fn get_uniprot_entries(
     }
 
     Ok((entries, warnings))
+}
+
+// --------------------------------------------------
+fn canonicalize_toml_smiles(meta_path: &Path, script_dir: &Path, uv: &Path) -> Result<()> {
+    let script = script_dir.join("canonicalize_toml_smiles.py");
+    let mut cmd = Command::new(uv);
+    cmd.current_dir(script_dir).args([
+        "run",
+        script.to_string_lossy().as_ref(),
+        meta_path.to_string_lossy().as_ref(),
+    ]);
+    debug!("Canonicalizing SMILES in {}", meta_path.display());
+    let output = cmd.output()?;
+    if !output.status.success() {
+        bail!(
+            "canonicalize_toml_smiles failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
 }
 
 // --------------------------------------------------
