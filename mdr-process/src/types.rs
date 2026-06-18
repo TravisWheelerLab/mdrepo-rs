@@ -233,6 +233,10 @@ pub struct ProcessTrajectoryArgs<'a> {
     pub processed_dir: &'a Path,
     pub script_dir: &'a Path,
     pub uv: &'a Path,
+    /// Prefix of the `simproc` conda env, discovered once at startup.
+    /// We invoke its `bin/python` directly (and set PATH/AMBERHOME) instead of
+    /// going through `micromamba run`, which serializes on a global lock.
+    pub simproc_prefix: &'a Path,
 }
 
 // --------------------------------------------------
