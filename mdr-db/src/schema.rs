@@ -114,6 +114,15 @@ diesel::table! {
 
 diesel::table! {
     use diesel::sql_types::*;
+    md_replicate (id) {
+        id -> Int8,
+        trajectory_file_name -> Varchar,
+        simulation_id -> Int8,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
     md_simulation (id) {
         id -> Int8,
         description -> Nullable<Text>,
@@ -351,6 +360,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     md_pdb,
     md_processed_file,
     md_pub,
+    md_replicate,
     md_simulation,
     md_simulation_pub,
     md_simulation_replicate_group,

@@ -18,6 +18,10 @@ pub struct Args {
     /// Output format
     #[arg(short, long, value_name = "FORMAT", default_value = "toml")]
     pub format: FileFormat,
+
+    /// Force overwrite of existing files
+    #[arg(short('O'), long)]
+    pub overwrite: bool,
 }
 
 // --------------------------------------------------

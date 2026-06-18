@@ -72,6 +72,7 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<Vec<String>> {
         force: args.force,
         no_id: true, // If it had no PDB/Uniprots before, let it stand
         dry_run: args.dry_run,
+        replace_original_files: false,
     })?;
 
     if !args.dry_run && !args.preserve {

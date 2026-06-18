@@ -36,6 +36,7 @@ pub fn list_contributions(
     conn: &mut PgConnection,
     search: Option<String>,
     sim_id: Option<i64>,
+    all: bool,
     lim: Option<i64>,
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<Contribution>)> {
@@ -43,12 +44,13 @@ pub fn list_contributions(
     let count = contribution_query(search.as_deref(), sim_id)
         .select(count_star())
         .first(conn)?;
-    let results = contribution_query(search.as_deref(), sim_id)
+    let mut q = contribution_query(search.as_deref(), sim_id)
         .order(id.desc())
-        .limit(limit(lim))
-        .offset(offset.unwrap_or(0))
-        .select(Contribution::as_select())
-        .load(conn)?;
+        .select(Contribution::as_select());
+    if !all {
+        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
+    }
+    let results = q.load(conn)?;
     Ok((count, results))
 }
 
@@ -109,6 +111,7 @@ pub fn list_external_links(
     conn: &mut PgConnection,
     search: Option<String>,
     sim_id: Option<i64>,
+    all: bool,
     lim: Option<i64>,
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<ExternalLink>)> {
@@ -116,12 +119,13 @@ pub fn list_external_links(
     let count = external_link_query(search.as_deref(), sim_id)
         .select(count_star())
         .first(conn)?;
-    let results = external_link_query(search.as_deref(), sim_id)
+    let mut q = external_link_query(search.as_deref(), sim_id)
         .order(id.desc())
-        .limit(limit(lim))
-        .offset(offset.unwrap_or(0))
-        .select(ExternalLink::as_select())
-        .load(conn)?;
+        .select(ExternalLink::as_select());
+    if !all {
+        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
+    }
+    let results = q.load(conn)?;
     Ok((count, results))
 }
 
@@ -164,17 +168,20 @@ pub fn delete_external_link(conn: &mut PgConnection, rid: i64) -> QueryResult<us
 
 pub fn list_feature_switches(
     conn: &mut PgConnection,
+    all: bool,
     lim: Option<i64>,
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<FeatureSwitch>)> {
     use crate::schema::md_feature_switch::dsl::*;
     let count: i64 = md_feature_switch.count().get_result(conn)?;
-    let results = md_feature_switch
+    let mut q = md_feature_switch
         .order(id.desc())
-        .limit(limit(lim))
-        .offset(offset.unwrap_or(0))
         .select(FeatureSwitch::as_select())
-        .load(conn)?;
+        .into_boxed();
+    if !all {
+        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
+    }
+    let results = q.load(conn)?;
     Ok((count, results))
 }
 
@@ -234,6 +241,7 @@ pub fn list_download_instances(
     conn: &mut PgConnection,
     sim_id: Option<i64>,
     uid: Option<i64>,
+    all: bool,
     lim: Option<i64>,
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<DownloadInstance>)> {
@@ -241,12 +249,13 @@ pub fn list_download_instances(
     let count = download_instance_query(sim_id, uid)
         .select(count_star())
         .first(conn)?;
-    let results = download_instance_query(sim_id, uid)
+    let mut q = download_instance_query(sim_id, uid)
         .order(id.desc())
-        .limit(limit(lim))
-        .offset(offset.unwrap_or(0))
-        .select(DownloadInstance::as_select())
-        .load(conn)?;
+        .select(DownloadInstance::as_select());
+    if !all {
+        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
+    }
+    let results = q.load(conn)?;
     Ok((count, results))
 }
 
@@ -309,6 +318,7 @@ pub fn list_download_processed_files(
     conn: &mut PgConnection,
     di_id: Option<i64>,
     pf_id: Option<i64>,
+    all: bool,
     lim: Option<i64>,
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<DownloadProcessedFile>)> {
@@ -316,12 +326,13 @@ pub fn list_download_processed_files(
     let count = download_processed_file_query(di_id, pf_id)
         .select(count_star())
         .first(conn)?;
-    let results = download_processed_file_query(di_id, pf_id)
+    let mut q = download_processed_file_query(di_id, pf_id)
         .order(id.desc())
-        .limit(limit(lim))
-        .offset(offset.unwrap_or(0))
-        .select(DownloadProcessedFile::as_select())
-        .load(conn)?;
+        .select(DownloadProcessedFile::as_select());
+    if !all {
+        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
+    }
+    let results = q.load(conn)?;
     Ok((count, results))
 }
 
@@ -385,6 +396,7 @@ pub fn list_download_uploaded_files(
     conn: &mut PgConnection,
     di_id: Option<i64>,
     uf_id: Option<i64>,
+    all: bool,
     lim: Option<i64>,
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<DownloadUploadedFile>)> {
@@ -392,12 +404,13 @@ pub fn list_download_uploaded_files(
     let count = download_uploaded_file_query(di_id, uf_id)
         .select(count_star())
         .first(conn)?;
-    let results = download_uploaded_file_query(di_id, uf_id)
+    let mut q = download_uploaded_file_query(di_id, uf_id)
         .order(id.desc())
-        .limit(limit(lim))
-        .offset(offset.unwrap_or(0))
-        .select(DownloadUploadedFile::as_select())
-        .load(conn)?;
+        .select(DownloadUploadedFile::as_select());
+    if !all {
+        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
+    }
+    let results = q.load(conn)?;
     Ok((count, results))
 }
 
@@ -462,6 +475,7 @@ pub fn list_ligands(
     conn: &mut PgConnection,
     search: Option<String>,
     sim_id: Option<i64>,
+    all: bool,
     lim: Option<i64>,
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<Ligand>)> {
@@ -469,12 +483,13 @@ pub fn list_ligands(
     let count = ligand_query(search.as_deref(), sim_id)
         .select(count_star())
         .first(conn)?;
-    let results = ligand_query(search.as_deref(), sim_id)
+    let mut q = ligand_query(search.as_deref(), sim_id)
         .order(id.desc())
-        .limit(limit(lim))
-        .offset(offset.unwrap_or(0))
-        .select(Ligand::as_select())
-        .load(conn)?;
+        .select(Ligand::as_select());
+    if !all {
+        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
+    }
+    let results = q.load(conn)?;
     Ok((count, results))
 }
 
@@ -527,6 +542,7 @@ fn pdb_query(search: Option<&str>) -> md_pdb::BoxedQuery<'static, Pg> {
 pub fn list_pdbs(
     conn: &mut PgConnection,
     search: Option<String>,
+    all: bool,
     lim: Option<i64>,
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<Pdb>)> {
@@ -534,12 +550,13 @@ pub fn list_pdbs(
     let count = pdb_query(search.as_deref())
         .select(count_star())
         .first(conn)?;
-    let results = pdb_query(search.as_deref())
+    let mut q = pdb_query(search.as_deref())
         .order(id.desc())
-        .limit(limit(lim))
-        .offset(offset.unwrap_or(0))
-        .select(Pdb::as_select())
-        .load(conn)?;
+        .select(Pdb::as_select());
+    if !all {
+        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
+    }
+    let results = q.load(conn)?;
     Ok((count, results))
 }
 
@@ -591,6 +608,7 @@ pub fn list_processed_files(
     conn: &mut PgConnection,
     search: Option<String>,
     sim_id: Option<i64>,
+    all: bool,
     lim: Option<i64>,
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<ProcessedFile>)> {
@@ -598,12 +616,13 @@ pub fn list_processed_files(
     let count = processed_file_query(search.as_deref(), sim_id)
         .select(count_star())
         .first(conn)?;
-    let results = processed_file_query(search.as_deref(), sim_id)
+    let mut q = processed_file_query(search.as_deref(), sim_id)
         .order(id.desc())
-        .limit(limit(lim))
-        .offset(offset.unwrap_or(0))
-        .select(ProcessedFile::as_select())
-        .load(conn)?;
+        .select(ProcessedFile::as_select());
+    if !all {
+        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
+    }
+    let results = q.load(conn)?;
     Ok((count, results))
 }
 
@@ -642,6 +661,78 @@ pub fn delete_processed_file(conn: &mut PgConnection, rid: i64) -> QueryResult<u
     diesel::delete(md_processed_file::table.find(rid)).execute(conn)
 }
 
+// ── md_replicate ──────────────────────────────────────────────────────────────
+
+fn replicate_query(
+    search: Option<&str>,
+    sim_id: Option<i64>,
+) -> md_replicate::BoxedQuery<'static, Pg> {
+    use crate::schema::md_replicate::dsl::*;
+    let mut q = md_replicate.into_boxed();
+    if let Some(t) = search {
+        let p = format!("%{t}%");
+        q = q.filter(trajectory_file_name.ilike(p));
+    }
+    if let Some(s) = sim_id {
+        q = q.filter(simulation_id.eq(s));
+    }
+    q
+}
+
+pub fn list_replicates(
+    conn: &mut PgConnection,
+    search: Option<String>,
+    sim_id: Option<i64>,
+    all: bool,
+    lim: Option<i64>,
+    offset: Option<i64>,
+) -> QueryResult<(i64, Vec<Replicate>)> {
+    use crate::schema::md_replicate::dsl::id;
+    let count = replicate_query(search.as_deref(), sim_id)
+        .select(count_star())
+        .first(conn)?;
+    let mut q = replicate_query(search.as_deref(), sim_id)
+        .order(id.desc())
+        .select(Replicate::as_select());
+    if !all {
+        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
+    }
+    let results = q.load(conn)?;
+    Ok((count, results))
+}
+
+pub fn get_replicate(conn: &mut PgConnection, rid: i64) -> QueryResult<Replicate> {
+    md_replicate::table
+        .find(rid)
+        .select(Replicate::as_select())
+        .first(conn)
+}
+
+pub fn insert_replicate(
+    conn: &mut PgConnection,
+    new: NewReplicate,
+) -> QueryResult<Replicate> {
+    diesel::insert_into(md_replicate::table)
+        .values(&new)
+        .returning(Replicate::as_returning())
+        .get_result(conn)
+}
+
+pub fn update_replicate(
+    conn: &mut PgConnection,
+    rid: i64,
+    cs: ReplicateUpdate,
+) -> QueryResult<Replicate> {
+    diesel::update(md_replicate::table.find(rid))
+        .set(&cs)
+        .returning(Replicate::as_returning())
+        .get_result(conn)
+}
+
+pub fn delete_replicate(conn: &mut PgConnection, rid: i64) -> QueryResult<usize> {
+    diesel::delete(md_replicate::table.find(rid)).execute(conn)
+}
+
 // ── md_pub ────────────────────────────────────────────────────────────────────
 
 fn pub_query(search: Option<&str>) -> md_pub::BoxedQuery<'static, Pg> {
@@ -662,6 +753,7 @@ fn pub_query(search: Option<&str>) -> md_pub::BoxedQuery<'static, Pg> {
 pub fn list_pubs(
     conn: &mut PgConnection,
     search: Option<String>,
+    all: bool,
     lim: Option<i64>,
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<Pub>)> {
@@ -669,12 +761,13 @@ pub fn list_pubs(
     let count = pub_query(search.as_deref())
         .select(count_star())
         .first(conn)?;
-    let results = pub_query(search.as_deref())
+    let mut q = pub_query(search.as_deref())
         .order(id.desc())
-        .limit(limit(lim))
-        .offset(offset.unwrap_or(0))
-        .select(Pub::as_select())
-        .load(conn)?;
+        .select(Pub::as_select());
+    if !all {
+        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
+    }
+    let results = q.load(conn)?;
     Ok((count, results))
 }
 
@@ -736,6 +829,7 @@ pub fn list_simulations(
     search: Option<String>,
     public_only: bool,
     active: bool,
+    all: bool,
     lim: Option<i64>,
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<Simulation>)> {
@@ -743,12 +837,13 @@ pub fn list_simulations(
     let count = simulation_query(search.as_deref(), public_only, active)
         .select(count_star())
         .first(conn)?;
-    let results = simulation_query(search.as_deref(), public_only, active)
+    let mut q = simulation_query(search.as_deref(), public_only, active)
         .order(id.desc())
-        .limit(limit(lim))
-        .offset(offset.unwrap_or(0))
-        .select(Simulation::as_select())
-        .load(conn)?;
+        .select(Simulation::as_select());
+    if !all {
+        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
+    }
+    let results = q.load(conn)?;
     Ok((count, results))
 }
 
@@ -805,6 +900,7 @@ pub fn list_simulation_pubs(
     conn: &mut PgConnection,
     sim_id: Option<i64>,
     pid: Option<i64>,
+    all: bool,
     lim: Option<i64>,
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<SimulationPub>)> {
@@ -812,12 +908,13 @@ pub fn list_simulation_pubs(
     let count = simulation_pub_query(sim_id, pid)
         .select(count_star())
         .first(conn)?;
-    let results = simulation_pub_query(sim_id, pid)
+    let mut q = simulation_pub_query(sim_id, pid)
         .order(id.desc())
-        .limit(limit(lim))
-        .offset(offset.unwrap_or(0))
-        .select(SimulationPub::as_select())
-        .load(conn)?;
+        .select(SimulationPub::as_select());
+    if !all {
+        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
+    }
+    let results = q.load(conn)?;
     Ok((count, results))
 }
 
@@ -873,6 +970,7 @@ fn replicate_group_query(
 pub fn list_replicate_groups(
     conn: &mut PgConnection,
     search: Option<String>,
+    all: bool,
     lim: Option<i64>,
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<ReplicateGroup>)> {
@@ -880,12 +978,13 @@ pub fn list_replicate_groups(
     let count = replicate_group_query(search.as_deref())
         .select(count_star())
         .first(conn)?;
-    let results = replicate_group_query(search.as_deref())
+    let mut q = replicate_group_query(search.as_deref())
         .order(id.desc())
-        .limit(limit(lim))
-        .offset(offset.unwrap_or(0))
-        .select(ReplicateGroup::as_select())
-        .load(conn)?;
+        .select(ReplicateGroup::as_select());
+    if !all {
+        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
+    }
+    let results = q.load(conn)?;
     Ok((count, results))
 }
 
@@ -945,6 +1044,7 @@ pub fn list_simulation_uniprots(
     conn: &mut PgConnection,
     sim_id: Option<i64>,
     upid: Option<i64>,
+    all: bool,
     lim: Option<i64>,
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<SimulationUniprot>)> {
@@ -952,12 +1052,13 @@ pub fn list_simulation_uniprots(
     let count = simulation_uniprot_query(sim_id, upid)
         .select(count_star())
         .first(conn)?;
-    let results = simulation_uniprot_query(sim_id, upid)
+    let mut q = simulation_uniprot_query(sim_id, upid)
         .order(id.desc())
-        .limit(limit(lim))
-        .offset(offset.unwrap_or(0))
-        .select(SimulationUniprot::as_select())
-        .load(conn)?;
+        .select(SimulationUniprot::as_select());
+    if !all {
+        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
+    }
+    let results = q.load(conn)?;
     Ok((count, results))
 }
 
@@ -1014,6 +1115,7 @@ fn software_query(search: Option<&str>) -> md_software::BoxedQuery<'static, Pg> 
 pub fn list_software(
     conn: &mut PgConnection,
     search: Option<String>,
+    all: bool,
     lim: Option<i64>,
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<Software>)> {
@@ -1021,12 +1123,13 @@ pub fn list_software(
     let count = software_query(search.as_deref())
         .select(count_star())
         .first(conn)?;
-    let results = software_query(search.as_deref())
+    let mut q = software_query(search.as_deref())
         .order(id.desc())
-        .limit(limit(lim))
-        .offset(offset.unwrap_or(0))
-        .select(Software::as_select())
-        .load(conn)?;
+        .select(Software::as_select());
+    if !all {
+        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
+    }
+    let results = q.load(conn)?;
     Ok((count, results))
 }
 
@@ -1084,6 +1187,7 @@ pub fn list_solutes(
     conn: &mut PgConnection,
     search: Option<String>,
     sim_id: Option<i64>,
+    all: bool,
     lim: Option<i64>,
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<Solute>)> {
@@ -1091,12 +1195,13 @@ pub fn list_solutes(
     let count = solute_query(search.as_deref(), sim_id)
         .select(count_star())
         .first(conn)?;
-    let results = solute_query(search.as_deref(), sim_id)
+    let mut q = solute_query(search.as_deref(), sim_id)
         .order(id.desc())
-        .limit(limit(lim))
-        .offset(offset.unwrap_or(0))
-        .select(Solute::as_select())
-        .load(conn)?;
+        .select(Solute::as_select());
+    if !all {
+        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
+    }
+    let results = q.load(conn)?;
     Ok((count, results))
 }
 
@@ -1146,6 +1251,7 @@ fn submission_event_query(
 pub fn list_submission_events(
     conn: &mut PgConnection,
     search: Option<String>,
+    all: bool,
     lim: Option<i64>,
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<SubmissionEvent>)> {
@@ -1153,12 +1259,13 @@ pub fn list_submission_events(
     let count = submission_event_query(search.as_deref())
         .select(count_star())
         .first(conn)?;
-    let results = submission_event_query(search.as_deref())
+    let mut q = submission_event_query(search.as_deref())
         .order(id.desc())
-        .limit(limit(lim))
-        .offset(offset.unwrap_or(0))
-        .select(SubmissionEvent::as_select())
-        .load(conn)?;
+        .select(SubmissionEvent::as_select());
+    if !all {
+        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
+    }
+    let results = q.load(conn)?;
     Ok((count, results))
 }
 
@@ -1222,6 +1329,7 @@ pub fn list_tickets(
     conn: &mut PgConnection,
     search: Option<String>,
     creator_id: Option<i64>,
+    all: bool,
     lim: Option<i64>,
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<Ticket>)> {
@@ -1229,12 +1337,13 @@ pub fn list_tickets(
     let count = ticket_query(search.as_deref(), creator_id)
         .select(count_star())
         .first(conn)?;
-    let results = ticket_query(search.as_deref(), creator_id)
+    let mut q = ticket_query(search.as_deref(), creator_id)
         .order(id.desc())
-        .limit(limit(lim))
-        .offset(offset.unwrap_or(0))
-        .select(Ticket::as_select())
-        .load(conn)?;
+        .select(Ticket::as_select());
+    if !all {
+        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
+    }
+    let results = q.load(conn)?;
     Ok((count, results))
 }
 
@@ -1282,6 +1391,7 @@ fn uniprot_query(search: Option<&str>) -> md_uniprot::BoxedQuery<'static, Pg> {
 pub fn list_uniprots(
     conn: &mut PgConnection,
     search: Option<String>,
+    all: bool,
     lim: Option<i64>,
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<Uniprot>)> {
@@ -1289,12 +1399,13 @@ pub fn list_uniprots(
     let count = uniprot_query(search.as_deref())
         .select(count_star())
         .first(conn)?;
-    let results = uniprot_query(search.as_deref())
+    let mut q = uniprot_query(search.as_deref())
         .order(id.desc())
-        .limit(limit(lim))
-        .offset(offset.unwrap_or(0))
-        .select(Uniprot::as_select())
-        .load(conn)?;
+        .select(Uniprot::as_select());
+    if !all {
+        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
+    }
+    let results = q.load(conn)?;
     Ok((count, results))
 }
 
@@ -1356,6 +1467,7 @@ pub fn list_upload_instances(
     sim_id: Option<i64>,
     uid: Option<i64>,
     tkt_id: Option<i64>,
+    all: bool,
     lim: Option<i64>,
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<UploadInstance>)> {
@@ -1363,12 +1475,13 @@ pub fn list_upload_instances(
     let count = upload_instance_query(sim_id, uid, tkt_id)
         .select(count_star())
         .first(conn)?;
-    let results = upload_instance_query(sim_id, uid, tkt_id)
+    let mut q = upload_instance_query(sim_id, uid, tkt_id)
         .order(id.desc())
-        .limit(limit(lim))
-        .offset(offset.unwrap_or(0))
-        .select(UploadInstance::as_select())
-        .load(conn)?;
+        .select(UploadInstance::as_select());
+    if !all {
+        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
+    }
+    let results = q.load(conn)?;
     Ok((count, results))
 }
 
@@ -1439,6 +1552,7 @@ pub fn list_upload_messages(
     upload_id: Option<i64>,
     errors_only: bool,
     warnings_only: bool,
+    all: bool,
     lim: Option<i64>,
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<UploadMessage>)> {
@@ -1447,13 +1561,14 @@ pub fn list_upload_messages(
         upload_message_query(search.as_deref(), upload_id, errors_only, warnings_only)
             .select(count_star())
             .first(conn)?;
-    let results =
+    let mut q =
         upload_message_query(search.as_deref(), upload_id, errors_only, warnings_only)
             .order(id.desc())
-            .limit(limit(lim))
-            .offset(offset.unwrap_or(0))
-            .select(UploadMessage::as_select())
-            .load(conn)?;
+            .select(UploadMessage::as_select());
+    if !all {
+        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
+    }
+    let results = q.load(conn)?;
     Ok((count, results))
 }
 
@@ -1514,6 +1629,7 @@ pub fn list_uploaded_files(
     conn: &mut PgConnection,
     search: Option<String>,
     sim_id: Option<i64>,
+    all: bool,
     lim: Option<i64>,
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<UploadedFile>)> {
@@ -1521,12 +1637,13 @@ pub fn list_uploaded_files(
     let count = uploaded_file_query(search.as_deref(), sim_id)
         .select(count_star())
         .first(conn)?;
-    let results = uploaded_file_query(search.as_deref(), sim_id)
+    let mut q = uploaded_file_query(search.as_deref(), sim_id)
         .order(id.desc())
-        .limit(limit(lim))
-        .offset(offset.unwrap_or(0))
-        .select(UploadedFile::as_select())
-        .load(conn)?;
+        .select(UploadedFile::as_select());
+    if !all {
+        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
+    }
+    let results = q.load(conn)?;
     Ok((count, results))
 }
 
@@ -1587,6 +1704,7 @@ pub fn list_users(
     conn: &mut PgConnection,
     search: Option<String>,
     active_only: bool,
+    all: bool,
     lim: Option<i64>,
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<User>)> {
@@ -1594,12 +1712,13 @@ pub fn list_users(
     let count = user_query(search.as_deref(), active_only)
         .select(count_star())
         .first(conn)?;
-    let results = user_query(search.as_deref(), active_only)
+    let mut q = user_query(search.as_deref(), active_only)
         .order(id.desc())
-        .limit(limit(lim))
-        .offset(offset.unwrap_or(0))
-        .select(User::as_select())
-        .load(conn)?;
+        .select(User::as_select());
+    if !all {
+        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
+    }
+    let results = q.load(conn)?;
     Ok((count, results))
 }
 
@@ -1654,6 +1773,7 @@ pub fn list_social_accounts(
     conn: &mut PgConnection,
     search: Option<String>,
     user_id_filter: Option<i64>,
+    all: bool,
     lim: Option<i64>,
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<SocialAccount>)> {
@@ -1661,12 +1781,13 @@ pub fn list_social_accounts(
     let count = social_account_query(search.as_deref(), user_id_filter)
         .select(count_star())
         .first(conn)?;
-    let results = social_account_query(search.as_deref(), user_id_filter)
+    let mut q = social_account_query(search.as_deref(), user_id_filter)
         .order(id.desc())
-        .limit(limit(lim))
-        .offset(offset.unwrap_or(0))
-        .select(SocialAccount::as_select())
-        .load(conn)?;
+        .select(SocialAccount::as_select());
+    if !all {
+        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
+    }
+    let results = q.load(conn)?;
     Ok((count, results))
 }
 

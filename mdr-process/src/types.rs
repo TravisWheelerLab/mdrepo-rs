@@ -88,6 +88,10 @@ pub struct ProcessArgs {
     /// Process files/create import JSON but do not import/push
     #[arg(short, long)]
     pub dry_run: bool,
+
+    /// Replace original files
+    #[arg(long)]
+    pub replace_original_files: bool,
 }
 
 // --------------------------------------------------
@@ -229,6 +233,10 @@ pub struct ProcessTrajectoryArgs<'a> {
     pub processed_dir: &'a Path,
     pub script_dir: &'a Path,
     pub uv: &'a Path,
+    /// Prefix of the `simproc` conda env, discovered once at startup.
+    /// We invoke its `bin/python` directly (and set PATH/AMBERHOME) instead of
+    /// going through `micromamba run`, which serializes on a global lock.
+    pub simproc_prefix: &'a Path,
 }
 
 // --------------------------------------------------
@@ -269,7 +277,7 @@ pub struct RmsdRmsf {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Duration {
-    pub totaltime_ns: u32,
+    pub totaltime_ns: f64,
     pub sampling_frequency_ns: f32,
 }
 
@@ -440,7 +448,7 @@ pub struct ExportSimulation {
 
     pub rmsf_values: Vec<f64>,
 
-    pub duration: u32,
+    pub duration: f64,
 
     pub sampling_frequency: f32,
 
@@ -449,6 +457,8 @@ pub struct ExportSimulation {
     pub temperature_kelvin: u32,
 
     pub fasta_sequence: String,
+
+    pub num_replicates: u32,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub water_type: Option<String>,
@@ -466,6 +476,9 @@ pub struct ExportSimulation {
 
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub processed_files: Vec<MdFile>,
+
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub replicates: Vec<String>,
 
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub ligands: Vec<metadata::Ligand>,
@@ -674,6 +687,21 @@ pub struct ImportJsonArgs<'a> {
     pub example_trajectory: &'a ProcessedTrajectory,
     pub trajectory_tarballs: &'a [ProcessedTarball],
     pub reprocess_simulation_id: Option<u64>,
+    pub replicates: &'a [String],
+    pub replace_original_files: bool,
+}
+
+// --------------------------------------------------
+#[derive(Debug)]
+pub struct RunImportArgs<'a> {
+    pub uv: &'a Path,
+    pub script_dir: &'a Path,
+    pub import_json: &'a Path,
+    pub input_dir: &'a Path,
+    pub server: &'a str,
+    pub reprocess_simulation_id: Option<u64>,
+    pub processed_dir: &'a Path,
+    pub replace_original_files: bool,
 }
 
 // --------------------------------------------------

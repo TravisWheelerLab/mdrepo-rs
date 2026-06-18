@@ -345,6 +345,40 @@ pub struct ProcessedFileUpdate {
     pub md5_hash: Option<Option<String>>,
 }
 
+// ── md_replicate ──────────────────────────────────────────────────────────────
+
+#[derive(
+    Debug,
+    Queryable,
+    Selectable,
+    Identifiable,
+    Associations,
+    Serialize,
+    Deserialize,
+    ToSchema,
+)]
+#[diesel(table_name = md_replicate)]
+#[diesel(belongs_to(Simulation))]
+pub struct Replicate {
+    pub id: i64,
+    pub trajectory_file_name: String,
+    pub simulation_id: i64,
+}
+
+#[derive(Debug, Insertable, Deserialize)]
+#[diesel(table_name = md_replicate)]
+pub struct NewReplicate {
+    pub trajectory_file_name: String,
+    pub simulation_id: i64,
+}
+
+#[derive(Debug, AsChangeset, Default, Deserialize)]
+#[diesel(table_name = md_replicate)]
+pub struct ReplicateUpdate {
+    pub trajectory_file_name: Option<String>,
+    pub simulation_id: Option<i64>,
+}
+
 // ── md_pub ────────────────────────────────────────────────────────────────────
 
 #[derive(

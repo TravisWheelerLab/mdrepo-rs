@@ -3,8 +3,8 @@ use crate::{
         BlastResult, CheckedLigand, DoiPaper, Duration, Export, ExportSimulation,
         ImportJsonArgs, ImportResult, InferredLigand, MdFile, PdbEntry, PdbResponse,
         ProcessArgs, ProcessTrajectoryArgs, ProcessedTarball, ProcessedTrajectory,
-        ProcessedTrajectoryType, PushResult, RmsdRmsf, UniprotDb, UniprotEntry,
-        UniprotResponse,
+        ProcessedTrajectoryType, PushResult, RmsdRmsf, RunImportArgs, UniprotDb,
+        UniprotEntry, UniprotResponse,
     },
     validate,
 };
@@ -23,12 +23,13 @@ use std::{
     collections::HashSet,
     env,
     fs::{self, File},
-    io::{BufReader, Write},
+    io::{BufRead, BufReader, Write},
     path::{self, Path, PathBuf},
     process::Command,
     time::Instant,
 };
 use strum::IntoEnumIterator;
+use tempfile::NamedTempFile;
 use which::which;
 
 // ── BLAST parameters ──────────────────────────────────────────────────────────
@@ -51,6 +52,17 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
     let start_time = Instant::now();
     let input_dir = path::absolute(&args.input_dir)?;
 
+    // Resolve these early so canonicalization can run before validation
+    let script_dir = args.script_dir.clone().unwrap_or(PathBuf::from(
+        env::var("SCRIPT_DIR").map_err(|e| anyhow!("SCRIPT_DIR: {e}"))?,
+    ));
+    let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
+    let meta_path = input_dir.join("mdrepo-metadata.toml");
+
+    // Canonicalize ligand SMILES before validation so non-standard notation
+    // (e.g. [N+H3]) is normalised to the form the validator accepts ([NH3+])
+    canonicalize_toml_smiles(&meta_path, &script_dir, &uv)?;
+
     // Validate
     let meta_check_opts = args.no_id.then_some(MetaCheckOptions {
         allow_no_pdb_uniprot: true,
@@ -70,9 +82,6 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
         .out_dir
         .clone()
         .map_or(input_dir.join("processed"), PathBuf::from);
-    let script_dir = args.script_dir.clone().unwrap_or(PathBuf::from(
-        env::var("SCRIPT_DIR").map_err(|e| anyhow!("SCRIPT_DIR: {e}"))?,
-    ));
     let work_dir = args.work_dir.clone().unwrap_or(PathBuf::from(
         env::var("MDREPO_WORK_DIR").map_err(|e| anyhow!("MDREPO_WORK_DIR: {e}"))?,
     ));
@@ -84,12 +93,14 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
         fs::remove_dir_all(&processed_dir)?;
     }
 
-    let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
-
-    let meta_path = input_dir.join("mdrepo-metadata.toml");
     let meta = Meta::from_file(&meta_path)?;
     let mut trajectory_file_names = meta.trajectory_file_names.clone();
     trajectory_file_names.sort();
+
+    // Resolve the simproc env prefix once (serially) so per-trajectory work can
+    // invoke its python directly rather than via `micromamba run`.
+    let simproc_prefix = find_conda_env_prefix("simproc")?;
+    debug!("Using simproc env prefix: {}", simproc_prefix.display());
 
     let mut processed_trajectories = trajectory_file_names
         .into_par_iter()
@@ -104,6 +115,7 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
                 processed_dir: &processed_dir,
                 script_dir: &script_dir,
                 uv: &uv,
+                simproc_prefix: &simproc_prefix,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -114,6 +126,11 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
             .cmp(&b.full_xtc_size)
             .then_with(|| a.trajectory_file_stem.cmp(&b.trajectory_file_stem))
     });
+
+    let replicates: Vec<_> = processed_trajectories
+        .iter()
+        .map(|val| val.trajectory_file_name.to_string())
+        .collect();
 
     let mut errors: Vec<String> = processed_trajectories
         .iter()
@@ -141,19 +158,22 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
         example_trajectory,
         trajectory_tarballs: &trajectory_tarballs,
         reprocess_simulation_id: args.reprocess_simulation_id,
+        replicates: &replicates,
+        replace_original_files: args.replace_original_files,
     })?;
     errors.extend(import_warnings);
 
     if !args.dry_run {
-        let import_result = run_import(
-            &uv,
-            &script_dir,
-            &import_json,
-            &input_dir,
-            &args.server.to_string(),
-            args.reprocess_simulation_id,
-            &processed_dir,
-        )?;
+        let import_result = run_import(RunImportArgs {
+            uv: &uv,
+            script_dir: &script_dir,
+            import_json: &import_json,
+            input_dir: &input_dir,
+            server: &args.server.to_string(),
+            reprocess_simulation_id: args.reprocess_simulation_id,
+            processed_dir: &processed_dir,
+            replace_original_files: args.replace_original_files,
+        })?;
 
         let push_res = run_push(
             &uv,
@@ -190,38 +210,34 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
 }
 
 // --------------------------------------------------
-fn run_import(
-    uv: &Path,
-    script_dir: &Path,
-    import_json: &Path,
-    input_dir: &Path,
-    server: &str,
-    reprocess_simulation_id: Option<u64>,
-    processed_dir: &Path,
-) -> Result<ImportResult> {
-    let import_script = script_dir.join("import_preprocessed.py");
-    let out_file = processed_dir.join("imported.json");
-    debug!(r#"Import "{}""#, import_json.display());
+fn run_import(args: RunImportArgs) -> Result<ImportResult> {
+    let import_script = args.script_dir.join("import_preprocessed.py");
+    let out_file = args.processed_dir.join("imported.json");
+    debug!(r#"Import "{}""#, args.import_json.display());
 
-    let mut args = vec![
+    let mut cmd_args = vec![
         "run".to_string(),
         import_script.to_string_lossy().to_string(),
         "--file".to_string(),
-        import_json.to_string_lossy().to_string(),
+        args.import_json.to_string_lossy().to_string(),
         "--data-dir".to_string(),
-        input_dir.to_string_lossy().to_string(),
+        args.input_dir.to_string_lossy().to_string(),
         "--server".to_string(),
-        server.to_string(),
+        args.server.to_string(),
         "--out-file".to_string(),
         out_file.to_string_lossy().to_string(),
     ];
 
-    if let Some(id) = reprocess_simulation_id {
-        args.extend(["--simulation-id".to_string(), id.to_string()]);
+    if let Some(id) = args.reprocess_simulation_id {
+        cmd_args.extend(["--simulation-id".to_string(), id.to_string()]);
     }
 
-    let mut cmd = Command::new(uv);
-    cmd.current_dir(script_dir).args(&args);
+    if args.replace_original_files {
+        cmd_args.extend(["--replace-original-files".to_string()]);
+    }
+
+    let mut cmd = Command::new(args.uv);
+    cmd.current_dir(args.script_dir).args(&cmd_args);
     debug!("Running {cmd:?}");
 
     let output = cmd.output()?;
@@ -332,6 +348,47 @@ pub fn make_thumbnail(
 }
 
 // --------------------------------------------------
+/// Discover the filesystem prefix of a named conda/micromamba environment.
+///
+/// We resolve this once, serially, at the start of processing so that the
+/// per-trajectory work can invoke the environment's interpreter directly
+/// instead of wrapping every call in `micromamba run`. `micromamba run`
+/// registers each process in a lock-guarded registry
+/// (`$MAMBA_ROOT_PREFIX/proc`); under heavy parallelism dozens of concurrent
+/// invocations contend on that single lock and intermittently fail with
+/// "Could not set lock (Resource temporarily unavailable)". Activating the
+/// env ourselves (PATH + AMBERHOME) sidesteps the registry entirely.
+fn find_conda_env_prefix(env_name: &str) -> Result<PathBuf> {
+    let micromamba =
+        which("micromamba").map_err(|e| anyhow!("Failed to find micromamba ({e})"))?;
+    let output = Command::new(&micromamba)
+        .args(["env", "list", "--json"])
+        .output()?;
+    if !output.status.success() {
+        bail!(
+            "micromamba env list failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let envs = parsed
+        .get("envs")
+        .and_then(|e| e.as_array())
+        .ok_or_else(|| anyhow!("Unexpected output from `micromamba env list --json`"))?;
+    for env in envs {
+        if let Some(path) = env.as_str() {
+            let prefix = PathBuf::from(path);
+            if prefix.file_name().and_then(|n| n.to_str()) == Some(env_name)
+                && prefix.join("bin").is_dir()
+            {
+                return Ok(prefix);
+            }
+        }
+    }
+    bail!("Could not find conda env '{env_name}' via `micromamba env list`");
+}
+
+// --------------------------------------------------
 pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajectory> {
     let mut errors = vec![];
     let trajectory_dir = args
@@ -358,8 +415,50 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
             args.trajectory_file_name
         );
     } else {
-        let micromamba = which("micromamba")
-            .map_err(|e| anyhow!("Failed to find micromamba ({e})"))?;
+        let mut trajectory_path = args.input_dir.join(args.trajectory_file_name);
+        let trajectory_ext = trajectory_path.extension().ok_or_else(|| {
+            anyhow!(
+                r#"Failed to get file extension for "{}""#,
+                args.trajectory_file_name
+            )
+        })?;
+
+        if trajectory_ext == "mdc" {
+            let mdcompress = which("mdcompress")
+                .map_err(|e| anyhow!("Failed to find mdcompress ({e})"))?;
+            let trajectory_stem = trajectory_path.file_stem().ok_or_else(|| {
+                anyhow!(
+                    r#"Failed to get file stem for "{}""#,
+                    args.trajectory_file_name
+                )
+            })?;
+            let xtc_path = args
+                .input_dir
+                .join(format!("{}.xtc", trajectory_stem.to_string_lossy()));
+            let mut cmd = Command::new(mdcompress);
+            cmd.arg("decompress")
+                .arg("-i")
+                .arg(&trajectory_path)
+                .arg("-o")
+                .arg(&xtc_path);
+
+            debug!("Running {cmd:?}");
+
+            let output = cmd.output()?;
+            if !output.status.success() {
+                bail!("{}", String::from_utf8_lossy(&output.stderr));
+            }
+
+            if !file_exists(&xtc_path) {
+                bail!(
+                    r#"Failed to decompress {} to {}"#,
+                    trajectory_path.to_string_lossy(),
+                    xtc_path.to_string_lossy(),
+                );
+            }
+            trajectory_path = xtc_path;
+        }
+
         debug!("Making full/minimal files");
 
         let cpp_traj = args.script_dir.join("cpptraj_gmx_traj_manipulation.py");
@@ -367,31 +466,48 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
             bail!(r#"Missing "{}""#, cpp_traj.display());
         }
 
-        let mut cmd = Command::new(micromamba);
-        cmd.args([
-            "run",
-            "-n",
-            "simproc",
-            cpp_traj.to_string_lossy().as_ref(),
-            "--traj",
-            args.input_dir
-                .join(args.trajectory_file_name)
-                .to_string_lossy()
-                .as_ref(),
-            "--coord",
-            args.input_dir
-                .join(args.structure_file_name)
-                .to_string_lossy()
-                .as_ref(),
-            "--top",
-            args.input_dir
-                .join(args.topology_file_name)
-                .to_string_lossy()
-                .as_ref(),
-            "--outdir",
-            trajectory_dir.to_string_lossy().as_ref(),
-        ]);
-        debug!("Running {cmd:?}");
+        // Invoke the simproc env's python directly rather than via
+        // `micromamba run`. The latter registers each process under a single
+        // lock-guarded registry, which intermittently fails under the heavy
+        // parallelism here. We reproduce the parts of env activation the
+        // script actually needs: its bin/ on PATH (cpptraj) and AMBERHOME.
+        let simproc_bin = args.simproc_prefix.join("bin");
+        let python = simproc_bin.join("python");
+        let path_var = env::var_os("PATH").unwrap_or_default();
+        let new_path = env::join_paths(
+            std::iter::once(simproc_bin).chain(env::split_paths(&path_var)),
+        )?;
+
+        let coord = args.input_dir.join(args.structure_file_name);
+        let top = args.input_dir.join(args.topology_file_name);
+        let script_args = [
+            cpp_traj.to_string_lossy().to_string(),
+            "--traj".into(),
+            trajectory_path.to_string_lossy().into(),
+            "--coord".into(),
+            coord.to_string_lossy().into(),
+            "--top".into(),
+            top.to_string_lossy().into(),
+            "--outdir".into(),
+            trajectory_dir.to_string_lossy().into(),
+        ];
+
+        let mut cmd = Command::new(python);
+        cmd.env("PATH", new_path)
+            .env("AMBERHOME", args.simproc_prefix)
+            .args(&script_args);
+
+        // We run python directly (above) to dodge micromamba's global lock, but
+        // log the equivalent `micromamba run` form: copy/paste it to reproduce a
+        // single replicate by hand (one manual run never contends on the lock).
+        debug!(
+            "Running (reproduce with: micromamba run -n simproc python {})",
+            script_args
+                .iter()
+                .map(|a| format!("{a:?}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
 
         let output = cmd.output()?;
         if !output.status.success() {
@@ -427,9 +543,13 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
     let sampled_xtc = trajectory_dir.join("sampled.xtc");
     let thumbnail_png = trajectory_dir.join("thumbnail.png");
     let full_xtc_size = fs::metadata(&full_xtc)?.len();
+
+    println!("check_coarse_grained");
     let is_coarse_grained = check_coarse_grained(&full_pdb, &min_pdb)?;
 
+    println!("sample_trajectory");
     sample_trajectory(&min_xtc, &min_pdb, &sampled_xtc, args.script_dir, args.uv)?;
+    println!("make_thumbnail");
     make_thumbnail(
         &thumbnail_png,
         &sampled_xtc,
@@ -469,7 +589,17 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
 
 // --------------------------------------------------
 pub fn check_coarse_grained(full_pdb: &Path, min_pdb: &Path) -> Result<bool> {
-    let structure = pdbrust::parse_pdb_file(min_pdb)?;
+    // TEMPORARY FIX TO REMOVE REMARK UNTIL PR IS ACCEPTED
+    let mut tmp = NamedTempFile::new()?;
+    for line in BufReader::new(File::open(min_pdb)?).lines() {
+        let line = line?;
+        if !line.starts_with("REMARK") {
+            writeln!(tmp, "{line}")?;
+        }
+    }
+
+    let structure = pdbrust::parse_pdb_file(tmp.path())
+        .map_err(|err| anyhow!("{}: {err}", min_pdb.display()))?;
     let protein = structure.select("protein")?;
     let total_atoms = protein.get_num_atoms();
     let unique_residues: HashSet<_> = protein
@@ -495,7 +625,15 @@ pub fn check_coarse_grained(full_pdb: &Path, min_pdb: &Path) -> Result<bool> {
 
 // --------------------------------------------------
 fn fix_alpha_carbon_name(path: &Path) -> Result<()> {
-    let structure = pdbrust::parse_pdb_file(path)?;
+    // TEMPORARY FIX TO REMOVE REMARK UNTIL PR IS ACCEPTED
+    let mut tmp = NamedTempFile::new()?;
+    for line in BufReader::new(File::open(path)?).lines() {
+        let line = line?;
+        if !line.starts_with("REMARK") {
+            writeln!(tmp, "{line}")?;
+        }
+    }
+    let structure = pdbrust::parse_pdb_file(tmp.path())?;
     let protein = structure.select("protein")?;
     let total_atoms = protein.get_num_atoms();
     let protein_serials: HashSet<i32> = protein
@@ -887,16 +1025,17 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<Vec<String>> {
         }
     }
 
-    let original_files = if args.reprocess_simulation_id.is_none() {
-        collect_original_files(
-            &args.meta,
-            args.meta_path,
-            args.input_dir,
-            args.example_trajectory,
-        )?
-    } else {
-        vec![]
-    };
+    let original_files =
+        if args.reprocess_simulation_id.is_none() || args.replace_original_files {
+            collect_original_files(
+                &args.meta,
+                args.meta_path,
+                args.input_dir,
+                args.example_trajectory,
+            )?
+        } else {
+            vec![]
+        };
 
     let processed_files = collect_processed_files(
         args.processed_dir,
@@ -943,6 +1082,7 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<Vec<String>> {
         rmsf_values: rmsd_rmsf.rmsf,
         temperature_kelvin: args.meta.temperature_kelvin,
         fasta_sequence,
+        num_replicates: args.meta.trajectory_file_names.len() as u32,
         water_type,
         water_density,
         structure_hash,
@@ -954,6 +1094,7 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<Vec<String>> {
         papers,
         is_embargoed: args.meta.is_embargoed,
         is_coarse_grained: Some(args.example_trajectory.is_coarse_grained),
+        replicates: args.replicates.to_vec(),
     };
 
     if !warnings.is_empty() {
@@ -1142,7 +1283,10 @@ fn collect_processed_files(
         ("Minimal topology", &example_trajectory.min_gro),
         ("Minimal structure", &example_trajectory.min_pdb),
         ("Minimal trajectory", &example_trajectory.min_xtc),
-        ("Sampled minimal trajectory", &example_trajectory.sampled_xtc),
+        (
+            "Sampled minimal trajectory",
+            &example_trajectory.sampled_xtc,
+        ),
         ("Preview image", &example_trajectory.thumbnail_png),
     ] {
         let filename = path
@@ -1285,6 +1429,26 @@ pub fn get_uniprot_entries(
 }
 
 // --------------------------------------------------
+fn canonicalize_toml_smiles(meta_path: &Path, script_dir: &Path, uv: &Path) -> Result<()> {
+    let script = script_dir.join("canonicalize_toml_smiles.py");
+    let mut cmd = Command::new(uv);
+    cmd.current_dir(script_dir).args([
+        "run",
+        script.to_string_lossy().as_ref(),
+        meta_path.to_string_lossy().as_ref(),
+    ]);
+    debug!("Canonicalizing SMILES in {}", meta_path.display());
+    let output = cmd.output()?;
+    if !output.status.success() {
+        bail!(
+            "canonicalize_toml_smiles failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
+}
+
+// --------------------------------------------------
 pub fn check_ligand(
     ligand: &metadata::Ligand,
     inferred_ligand: &InferredLigand,
@@ -1417,6 +1581,7 @@ pub fn get_duration(
                 }
             }
         }
+
         let (time_start, time_stop, num_frames) =
             match (time_start, time_stop, num_frames) {
                 (Some(a), Some(b), Some(c)) => (a as f64, b as f64, c as f64),
@@ -1457,9 +1622,12 @@ pub fn get_duration(
 
         let sampling_frequency_ns =
             round_dp((duration_ps / PS_PER_NS) / (num_frames - 1.), 3);
+        // Keep as f64: these dissociation trajectories are sub-nanosecond, so
+        // truncating to an integer would floor the duration to 0. The DB column
+        // (duration) is Nullable<Float8>, so a float flows through unchanged.
         let totaltime_ns = round_dp(duration_ps / PS_PER_NS, 2);
         let duration = Duration {
-            totaltime_ns: totaltime_ns as u32,
+            totaltime_ns,
             sampling_frequency_ns: sampling_frequency_ns as f32,
         };
 
@@ -1740,8 +1908,13 @@ mod tests {
         let blast_dir = tempdir().unwrap();
         let fasta = tmp.path().join("sequence.fa");
         fs::write(&fasta, b">1\nACGT").unwrap();
-        write_blast_tsv(tmp.path(), "swissprot", &[(1, "sp|P12345|PROT_HUMAN", 100.0)]);
-        let ids = blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Swissprot).unwrap();
+        write_blast_tsv(
+            tmp.path(),
+            "swissprot",
+            &[(1, "sp|P12345|PROT_HUMAN", 100.0)],
+        );
+        let ids =
+            blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Swissprot).unwrap();
         assert_eq!(ids, vec!["P12345".to_string()]);
     }
 
@@ -1751,7 +1924,11 @@ mod tests {
         let blast_dir = tempdir().unwrap();
         let fasta = tmp.path().join("sequence.fa");
         fs::write(&fasta, b">1\nACGT").unwrap();
-        write_blast_tsv(tmp.path(), "trembl", &[(1, "tr|A0A000XYZ|PROT_MOUSE", 100.0)]);
+        write_blast_tsv(
+            tmp.path(),
+            "trembl",
+            &[(1, "tr|A0A000XYZ|PROT_MOUSE", 100.0)],
+        );
         let ids = blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Trembl).unwrap();
         assert_eq!(ids, vec!["A0A000XYZ".to_string()]);
     }
@@ -1770,7 +1947,8 @@ mod tests {
                 (1, "sp|P00001|POOR_HUMAN", 95.0),
             ],
         );
-        let ids = blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Swissprot).unwrap();
+        let ids =
+            blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Swissprot).unwrap();
         assert_eq!(ids, vec!["P99999".to_string()]);
     }
 
@@ -1779,9 +1957,11 @@ mod tests {
         let tmp = tempdir().unwrap();
         let fasta = tmp.path().join("sequence.fa");
         fs::write(&fasta, b">1\nACGT").unwrap();
-        assert!(
-            blast_uniprot(&fasta, Path::new("/nonexistent/blast"), UniprotDb::Swissprot)
-                .is_err()
-        );
+        assert!(blast_uniprot(
+            &fasta,
+            Path::new("/nonexistent/blast"),
+            UniprotDb::Swissprot
+        )
+        .is_err());
     }
 }
