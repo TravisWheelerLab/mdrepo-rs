@@ -97,6 +97,11 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
     let mut trajectory_file_names = meta.trajectory_file_names.clone();
     trajectory_file_names.sort();
 
+    // Resolve the simproc env prefix once (serially) so per-trajectory work can
+    // invoke its python directly rather than via `micromamba run`.
+    let simproc_prefix = find_conda_env_prefix("simproc")?;
+    debug!("Using simproc env prefix: {}", simproc_prefix.display());
+
     let mut processed_trajectories = trajectory_file_names
         .into_par_iter()
         .enumerate()
@@ -110,6 +115,7 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
                 processed_dir: &processed_dir,
                 script_dir: &script_dir,
                 uv: &uv,
+                simproc_prefix: &simproc_prefix,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -342,6 +348,47 @@ pub fn make_thumbnail(
 }
 
 // --------------------------------------------------
+/// Discover the filesystem prefix of a named conda/micromamba environment.
+///
+/// We resolve this once, serially, at the start of processing so that the
+/// per-trajectory work can invoke the environment's interpreter directly
+/// instead of wrapping every call in `micromamba run`. `micromamba run`
+/// registers each process in a lock-guarded registry
+/// (`$MAMBA_ROOT_PREFIX/proc`); under heavy parallelism dozens of concurrent
+/// invocations contend on that single lock and intermittently fail with
+/// "Could not set lock (Resource temporarily unavailable)". Activating the
+/// env ourselves (PATH + AMBERHOME) sidesteps the registry entirely.
+fn find_conda_env_prefix(env_name: &str) -> Result<PathBuf> {
+    let micromamba =
+        which("micromamba").map_err(|e| anyhow!("Failed to find micromamba ({e})"))?;
+    let output = Command::new(&micromamba)
+        .args(["env", "list", "--json"])
+        .output()?;
+    if !output.status.success() {
+        bail!(
+            "micromamba env list failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let envs = parsed
+        .get("envs")
+        .and_then(|e| e.as_array())
+        .ok_or_else(|| anyhow!("Unexpected output from `micromamba env list --json`"))?;
+    for env in envs {
+        if let Some(path) = env.as_str() {
+            let prefix = PathBuf::from(path);
+            if prefix.file_name().and_then(|n| n.to_str()) == Some(env_name)
+                && prefix.join("bin").is_dir()
+            {
+                return Ok(prefix);
+            }
+        }
+    }
+    bail!("Could not find conda env '{env_name}' via `micromamba env list`");
+}
+
+// --------------------------------------------------
 pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajectory> {
     let mut errors = vec![];
     let trajectory_dir = args
@@ -412,8 +459,6 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
             trajectory_path = xtc_path;
         }
 
-        let micromamba = which("micromamba")
-            .map_err(|e| anyhow!("Failed to find micromamba ({e})"))?;
         debug!("Making full/minimal files");
 
         let cpp_traj = args.script_dir.join("cpptraj_gmx_traj_manipulation.py");
@@ -421,28 +466,48 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
             bail!(r#"Missing "{}""#, cpp_traj.display());
         }
 
-        let mut cmd = Command::new(micromamba);
-        cmd.args([
-            "run",
-            "-n",
-            "simproc",
-            cpp_traj.to_string_lossy().as_ref(),
-            "--traj",
-            trajectory_path.to_string_lossy().as_ref(),
-            "--coord",
-            args.input_dir
-                .join(args.structure_file_name)
-                .to_string_lossy()
-                .as_ref(),
-            "--top",
-            args.input_dir
-                .join(args.topology_file_name)
-                .to_string_lossy()
-                .as_ref(),
-            "--outdir",
-            trajectory_dir.to_string_lossy().as_ref(),
-        ]);
-        debug!("Running {cmd:?}");
+        // Invoke the simproc env's python directly rather than via
+        // `micromamba run`. The latter registers each process under a single
+        // lock-guarded registry, which intermittently fails under the heavy
+        // parallelism here. We reproduce the parts of env activation the
+        // script actually needs: its bin/ on PATH (cpptraj) and AMBERHOME.
+        let simproc_bin = args.simproc_prefix.join("bin");
+        let python = simproc_bin.join("python");
+        let path_var = env::var_os("PATH").unwrap_or_default();
+        let new_path = env::join_paths(
+            std::iter::once(simproc_bin).chain(env::split_paths(&path_var)),
+        )?;
+
+        let coord = args.input_dir.join(args.structure_file_name);
+        let top = args.input_dir.join(args.topology_file_name);
+        let script_args = [
+            cpp_traj.to_string_lossy().to_string(),
+            "--traj".into(),
+            trajectory_path.to_string_lossy().into(),
+            "--coord".into(),
+            coord.to_string_lossy().into(),
+            "--top".into(),
+            top.to_string_lossy().into(),
+            "--outdir".into(),
+            trajectory_dir.to_string_lossy().into(),
+        ];
+
+        let mut cmd = Command::new(python);
+        cmd.env("PATH", new_path)
+            .env("AMBERHOME", args.simproc_prefix)
+            .args(&script_args);
+
+        // We run python directly (above) to dodge micromamba's global lock, but
+        // log the equivalent `micromamba run` form: copy/paste it to reproduce a
+        // single replicate by hand (one manual run never contends on the lock).
+        debug!(
+            "Running (reproduce with: micromamba run -n simproc python {})",
+            script_args
+                .iter()
+                .map(|a| format!("{a:?}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
 
         let output = cmd.output()?;
         if !output.status.success() {
