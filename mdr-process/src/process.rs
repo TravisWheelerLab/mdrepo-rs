@@ -1557,9 +1557,12 @@ pub fn get_duration(
 
         let sampling_frequency_ns =
             round_dp((duration_ps / PS_PER_NS) / (num_frames - 1.), 3);
+        // Keep as f64: these dissociation trajectories are sub-nanosecond, so
+        // truncating to an integer would floor the duration to 0. The DB column
+        // (duration) is Nullable<Float8>, so a float flows through unchanged.
         let totaltime_ns = round_dp(duration_ps / PS_PER_NS, 2);
         let duration = Duration {
-            totaltime_ns: totaltime_ns as u32,
+            totaltime_ns,
             sampling_frequency_ns: sampling_frequency_ns as f32,
         };
 
