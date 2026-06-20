@@ -49,8 +49,28 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<Vec<String>> {
         irods_fetch(&irods_dir.join(filename), &data_dir.join(filename))?;
     }
 
-    for filename in &meta.trajectory_file_names {
-        irods_fetch(&irods_dir.join(filename), &data_dir.join(filename))?;
+    // When a simulation has multiple trajectories, `process` does not upload them
+    // individually: it bundles every trajectory file (including the representative
+    // one) into "trajectories.tar". Fetching each `trajectory_file_names` entry by
+    // name would therefore 404 for all but, at best, a lone representative. Instead
+    // fetch the tarball and extract it to recover every individual trajectory file
+    // the metadata references. Single-trajectory simulations have no tarball, so
+    // fetch that one file directly.
+    if meta.trajectory_file_names.len() > 1 {
+        let tar_name = "trajectories.tar";
+        let tar_local = data_dir.join(tar_name);
+        irods_fetch(&irods_dir.join(tar_name), &tar_local)?;
+        let mut cmd = Command::new("tar");
+        cmd.current_dir(data_dir).args(["-xf", tar_name]);
+        debug!("Running {cmd:?}");
+        let output = cmd.output()?;
+        if !output.status.success() {
+            bail!("{}", String::from_utf8_lossy(&output.stderr));
+        }
+    } else {
+        for filename in &meta.trajectory_file_names {
+            irods_fetch(&irods_dir.join(filename), &data_dir.join(filename))?;
+        }
     }
 
     if let Some(addl_files) = meta.additional_files {
