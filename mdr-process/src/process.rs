@@ -156,6 +156,7 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
         blast_dir: &blast_dir,
         uv: &uv,
         example_trajectory,
+        all_trajectories: &processed_trajectories,
         trajectory_tarballs: &trajectory_tarballs,
         reprocess_simulation_id: args.reprocess_simulation_id,
         replicates: &replicates,
@@ -987,6 +988,7 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<Vec<String>> {
     )?;
 
     let duration = get_duration(
+        args.all_trajectories,
         &args.example_trajectory.full_xtc,
         args.meta.integration_timestep_fs,
         args.processed_dir,
@@ -1522,7 +1524,8 @@ pub fn get_inferred_ligands(
 
 // --------------------------------------------------
 pub fn get_duration(
-    full_xtc: &Path,
+    trajectories: &[ProcessedTrajectory],
+    example_full_xtc: &Path,
     integration_timestep_fs: u32,
     processed_dir: &Path,
 ) -> Result<Duration> {
@@ -1532,103 +1535,30 @@ pub fn get_duration(
         debug!("Duration file exists");
     } else {
         debug!("Creating duration file");
-        let mut cmd = Command::new("molly");
-        cmd.args(["--info", full_xtc.to_string_lossy().as_ref()]);
-        debug!("Running {cmd:?}");
-        let output = cmd.output()?;
 
-        if !output.status.success() {
-            bail!("{}", String::from_utf8_lossy(&output.stderr));
-        }
-
-        let stdout = str::from_utf8(&output.stdout)?.to_string();
-        let mut time_start: Option<u64> = None;
-        let mut time_stop: Option<u64> = None;
-        let mut num_frames: Option<u64> = None;
-        for line in stdout.lines() {
-            if let Some(caps) = MOLLY_TIME_REGEX.captures(line) {
-                let start = caps
-                    .get(1)
-                    .ok_or_else(|| anyhow!("Missing time start in: {line}"))?
-                    .as_str();
-                let stop = caps
-                    .get(2)
-                    .ok_or_else(|| anyhow!("Missing time stop in: {line}"))?
-                    .as_str();
-
-                if let Ok(tmp) = start.parse::<u64>() {
-                    time_start = Some(tmp);
-                } else {
-                    debug!(r#"Failed to parse time_start from "{start}" ({line})"#)
-                }
-
-                if let Ok(tmp) = stop.parse::<u64>() {
-                    time_stop = Some(tmp);
-                } else if let Ok(tmp) = stop.parse::<f64>() {
-                    time_stop = format!("{}", tmp.round()).parse::<u64>().ok();
-                } else {
-                    debug!(r#"Failed to parse time_start from "{stop}" ({line})"#)
-                }
-            } else if let Some(caps) = MOLLY_NFRAMES_REGEX.captures(line) {
-                let val = caps
-                    .get(1)
-                    .ok_or_else(|| anyhow!("Missing nframes value in: {line}"))?
-                    .as_str();
-                if let Ok(tmp) = val.parse::<u64>() {
-                    num_frames = Some(tmp);
-                } else {
-                    debug!(r#"Failed to parse num_frames from "{val}" ({line})"#)
-                }
+        // totaltime_ns is the SUM of every trajectory's duration in the bundle:
+        // each entry is a set of dissociation replicas of differing length, so
+        // the total simulated time is the sum, not just the representative
+        // trajectory. sampling_frequency is a per-frame spacing (not additive),
+        // so it is taken from the representative (example) trajectory.
+        let mut total_duration_ps = 0.0;
+        let mut sampling_frequency_ns = 0.0_f32;
+        for traj in trajectories {
+            let (duration_ps, sampling_ns) =
+                measure_trajectory(&traj.full_xtc, integration_timestep_fs)?;
+            total_duration_ps += duration_ps;
+            if traj.full_xtc == example_full_xtc {
+                sampling_frequency_ns = sampling_ns;
             }
         }
 
-        let (time_start, time_stop, num_frames) =
-            match (time_start, time_stop, num_frames) {
-                (Some(a), Some(b), Some(c)) => (a as f64, b as f64, c as f64),
-                _ => bail!("Failed to parse molly output:\n{stdout}"),
-            };
-
-        if num_frames <= 1. {
-            bail!("Trajectory file has only {num_frames} frame(s)");
-        }
-
-        // time_start/time_stop are in ps from molly
-        let mut duration_ps = time_stop - time_start;
-        let sampling_ps = duration_ps / (num_frames - 1.0);
-
-        // Sanity check: compute nstxout (output steps per frame)
-        // using the integration timestep from metadata.
-        let nstxout = sampling_ps / (integration_timestep_fs as f64 / FS_PER_PS);
-
-        // A reasonable nstxout is 1e3..1e7. If it's way too large
-        // but dividing by 1000 fixes it, the XTC timestamps are
-        // inflated by 1000x (a known issue with some MD engines).
-        if nstxout > 1e7 {
-            let corrected_nstxout = nstxout / XTC_INFLATION_FACTOR;
-            if (1e3..=1e7).contains(&corrected_nstxout) {
-                debug!(
-                    "XTC timestamps appear inflated by 1000x \
-                         (nstxout={nstxout:.0}, corrected={corrected_nstxout:.0}). \
-                         Applying correction."
-                );
-                duration_ps /= XTC_INFLATION_FACTOR;
-            } else {
-                bail!(
-                    "XTC timestamps look wrong (nstxout={nstxout:.0}) \
-                         but no clean 1000x correction found"
-                );
-            }
-        }
-
-        let sampling_frequency_ns =
-            round_dp((duration_ps / PS_PER_NS) / (num_frames - 1.), 3);
         // Keep as f64: these dissociation trajectories are sub-nanosecond, so
         // truncating to an integer would floor the duration to 0. The DB column
         // (duration) is Nullable<Float8>, so a float flows through unchanged.
-        let totaltime_ns = round_dp(duration_ps / PS_PER_NS, 2);
+        let totaltime_ns = round_dp(total_duration_ps / PS_PER_NS, 2);
         let duration = Duration {
             totaltime_ns,
-            sampling_frequency_ns: sampling_frequency_ns as f32,
+            sampling_frequency_ns,
         };
 
         // Scoped to force close of fh
@@ -1647,6 +1577,107 @@ pub fn get_duration(
     let duration: Duration = serde_json::from_str(&contents)?;
 
     Ok(duration)
+}
+
+/// Measure one trajectory with `molly --info`, returning
+/// (duration_ps, sampling_frequency_ns). Includes the 1000x inflated-timestamp
+/// correction used historically.
+fn measure_trajectory(
+    full_xtc: &Path,
+    integration_timestep_fs: u32,
+) -> Result<(f64, f32)> {
+    let mut cmd = Command::new("molly");
+    cmd.args(["--info", full_xtc.to_string_lossy().as_ref()]);
+    debug!("Running {cmd:?}");
+    let output = cmd.output()?;
+
+    if !output.status.success() {
+        bail!("{}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    let stdout = str::from_utf8(&output.stdout)?.to_string();
+    let mut time_start: Option<u64> = None;
+    let mut time_stop: Option<u64> = None;
+    let mut num_frames: Option<u64> = None;
+    for line in stdout.lines() {
+        if let Some(caps) = MOLLY_TIME_REGEX.captures(line) {
+            let start = caps
+                .get(1)
+                .ok_or_else(|| anyhow!("Missing time start in: {line}"))?
+                .as_str();
+            let stop = caps
+                .get(2)
+                .ok_or_else(|| anyhow!("Missing time stop in: {line}"))?
+                .as_str();
+
+            if let Ok(tmp) = start.parse::<u64>() {
+                time_start = Some(tmp);
+            } else {
+                debug!(r#"Failed to parse time_start from "{start}" ({line})"#)
+            }
+
+            if let Ok(tmp) = stop.parse::<u64>() {
+                time_stop = Some(tmp);
+            } else if let Ok(tmp) = stop.parse::<f64>() {
+                time_stop = format!("{}", tmp.round()).parse::<u64>().ok();
+            } else {
+                debug!(r#"Failed to parse time_start from "{stop}" ({line})"#)
+            }
+        } else if let Some(caps) = MOLLY_NFRAMES_REGEX.captures(line) {
+            let val = caps
+                .get(1)
+                .ok_or_else(|| anyhow!("Missing nframes value in: {line}"))?
+                .as_str();
+            if let Ok(tmp) = val.parse::<u64>() {
+                num_frames = Some(tmp);
+            } else {
+                debug!(r#"Failed to parse num_frames from "{val}" ({line})"#)
+            }
+        }
+    }
+
+    let (time_start, time_stop, num_frames) =
+        match (time_start, time_stop, num_frames) {
+            (Some(a), Some(b), Some(c)) => (a as f64, b as f64, c as f64),
+            _ => bail!("Failed to parse molly output:\n{stdout}"),
+        };
+
+    if num_frames <= 1. {
+        bail!("Trajectory file has only {num_frames} frame(s)");
+    }
+
+    // time_start/time_stop are in ps from molly
+    let mut duration_ps = time_stop - time_start;
+    let sampling_ps = duration_ps / (num_frames - 1.0);
+
+    // Sanity check: compute nstxout (output steps per frame)
+    // using the integration timestep from metadata.
+    let nstxout = sampling_ps / (integration_timestep_fs as f64 / FS_PER_PS);
+
+    // A reasonable nstxout is 1e3..1e7. If it's way too large
+    // but dividing by 1000 fixes it, the XTC timestamps are
+    // inflated by 1000x (a known issue with some MD engines).
+    if nstxout > 1e7 {
+        let corrected_nstxout = nstxout / XTC_INFLATION_FACTOR;
+        if (1e3..=1e7).contains(&corrected_nstxout) {
+            debug!(
+                "XTC timestamps appear inflated by 1000x \
+                     (nstxout={nstxout:.0}, corrected={corrected_nstxout:.0}). \
+                     Applying correction."
+            );
+            duration_ps /= XTC_INFLATION_FACTOR;
+        } else {
+            bail!(
+                "XTC timestamps look wrong (nstxout={nstxout:.0}) \
+                     but no clean 1000x correction found"
+            );
+        }
+    }
+
+    let sampling_frequency_ns =
+        round_dp((duration_ps / PS_PER_NS) / (num_frames - 1.), 3) as f32;
+
+    Ok((duration_ps, sampling_frequency_ns))
 }
 
 // --------------------------------------------------

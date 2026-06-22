@@ -685,6 +685,7 @@ pub struct ImportJsonArgs<'a> {
     pub blast_dir: &'a Path,
     pub uv: &'a Path,
     pub example_trajectory: &'a ProcessedTrajectory,
+    pub all_trajectories: &'a [ProcessedTrajectory],
     pub trajectory_tarballs: &'a [ProcessedTarball],
     pub reprocess_simulation_id: Option<u64>,
     pub replicates: &'a [String],
