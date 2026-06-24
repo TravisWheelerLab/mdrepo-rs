@@ -119,23 +119,94 @@ path = "/pub/view/13"
 contains = ["10.48550/arXiv.2504.18367"]
 
 #
-# This will have to wait until I figure out logging in.
+# About
+#
+[[endpoints]]
+path = "/about"
+contains = ["What is MDRepo?"]
+
+#
+# FAQ
+#
+[[endpoints]]
+path = "/faq"
+contains = ["Is it safe to store my data here?"]
+
+# The following pages require a logged-in user. When running with --admin-token
+# the browser session is authenticated before these checks run.
+
 #
 # Metadata creation
 #
-#[[endpoints]]
-#host = "localhost"
-#path = "/metadata"
-#contains = ["Metadata Generator"]
+[[endpoints]]
+host = "localhost"
+path = "/metadata"
+contains = ["Metadata Generator"]
 
-#[[endpoints]]
-#host = "mdrepo.org"
-#path = "/metadata"
-#contains = ["Metadata Generator"]
+[[endpoints]]
+host = "mdrepo.org"
+path = "/metadata"
+contains = ["Metadata Generator"]
+
+#
+# User profile
+#
+[[endpoints]]
+path = "/profile"
+contains = ["Update User Profile"]
+
+#
+# My simulations
+#
+[[endpoints]]
+path = "/my-simulations"
+contains = ["Found"]
+
+#
+# Downloads
+#
+[[endpoints]]
+path = "/downloads"
+contains = ["Downloads"]
+
+#
+# Upload logs
+#
+[[endpoints]]
+path = "/upload-logs"
+contains = ["Upload History"]
+
+#
+# Upload tokens
+#
+[[endpoints]]
+path = "/upload-tokens"
+contains = ["Upload Tokens"]
+
+#
+# Admin — simulation approval
+#
+[[endpoints]]
+path = "/admin"
+contains = ["Found"]
+
+#
+# Admin — user list
+#
+[[endpoints]]
+path = "/admin/users"
+contains = ["Found"]
+
+#
+# Admin — import warnings
+#
+[[endpoints]]
+path = "/admin/import-warning"
+contains = ["Warning"]
 
 
 # --------------------------------------------------
-# API
+# API — Public (no authentication required)
 # --------------------------------------------------
 
 #
@@ -186,6 +257,36 @@ browser = false
   [[endpoints.json_checks]]
   path = "short_description"
   eq = "EHMT1 ankyrin repeat domain V786L variant"
+
+#
+# Simulation IDs only (no pagination — returns array directly)
+#
+[[endpoints]]
+path = "/api/v1/simulation_list_ids_only"
+browser = false
+
+  [[endpoints.json_checks]]
+  path = "[0].id"
+  exists = true
+
+  [[endpoints.json_checks]]
+  path = "[0].slug"
+  exists = true
+
+#
+# Random simulation (no pagination — returns array with one item)
+#
+[[endpoints]]
+path = "/api/v1/random_simulation"
+browser = false
+
+  [[endpoints.json_checks]]
+  path = "[0].id"
+  exists = true
+
+  [[endpoints.json_checks]]
+  path = "[0].slug"
+  exists = true
 
 #
 # Uniprot list
@@ -306,3 +407,29 @@ browser = false
   [[endpoints.json_checks]]
   path = "doi"
   eq = "10.48550/arXiv.2504.18367"
+
+#
+# Feature switches (no pagination — returns array directly)
+#
+[[endpoints]]
+path = "/api/v1/feature_switch"
+browser = false
+
+  [[endpoints.json_checks]]
+  path = "[0].irods_service_available"
+  exists = true
+
+  [[endpoints.json_checks]]
+  path = "[0].simulation_animation_available"
+  exists = true
+
+#
+# Import warnings
+#
+[[endpoints]]
+path = "/api/v1/import_warning_list"
+browser = false
+
+  [[endpoints.json_checks]]
+  path = "count"
+  exists = true

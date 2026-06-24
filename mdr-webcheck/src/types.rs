@@ -28,10 +28,6 @@ pub struct Cli {
     #[arg(short, long)]
     pub verbose: bool,
 
-    /// Run with a visible browser window (useful for debugging)
-    #[arg(long)]
-    pub headed: bool,
-
     /// Path to Chrome/Chromium binary (auto-detected if not set)
     #[arg(long)]
     pub chrome: Option<String>,
@@ -39,6 +35,12 @@ pub struct Cli {
     /// Only run checks whose path contains this substring (case-insensitive)
     #[arg(short, long)]
     pub filter: Option<String>,
+
+    /// Secret token for authenticating as the admin user.
+    /// For browser checks, navigates to /api/v1/admin_login first to set a session cookie.
+    /// For API checks (browser = false), appends ?admin_token=<value> to each URL.
+    #[arg(long)]
+    pub admin_token: Option<String>,
 }
 
 /// One endpoint definition from the config file.

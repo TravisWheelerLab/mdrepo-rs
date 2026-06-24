@@ -29,7 +29,7 @@ async fn run(args: Cli) -> Result<()> {
 
     // Keep only endpoints that apply to the current host and match any filter.
     let filter = args.filter.as_deref().map(str::to_lowercase);
-    let endpoints: Vec<Endpoint> = config
+    let mut endpoints: Vec<Endpoint> = config
         .endpoints
         .into_iter()
         .filter(|e| e.host.as_deref().map_or(true, |h| h == args.url))
@@ -42,6 +42,19 @@ async fn run(args: Cli) -> Result<()> {
 
     println!("Checking {} paths at {base_url} ...\n", endpoints.len());
 
+    // For API checks, bake the admin token into each path so it's sent as a query param.
+    if let Some(token) = &args.admin_token {
+        for endpoint in endpoints.iter_mut() {
+            if !endpoint.browser {
+                endpoint.path = if endpoint.path.contains('?') {
+                    format!("{}&admin_token={}", endpoint.path, token)
+                } else {
+                    format!("{}?admin_token={}", endpoint.path, token)
+                };
+            }
+        }
+    }
+
     let needs_browser = endpoints.iter().any(|e| e.browser);
     let browser_opt = if needs_browser {
         // Use a per-process directory so concurrent or crashed runs never
@@ -50,17 +63,24 @@ async fn run(args: Cli) -> Result<()> {
             .join(format!("mdr-webcheck-{}", std::process::id()));
         let mut builder = BrowserConfig::builder()
             .user_data_dir(user_data_dir);
-        if args.headed {
-            builder = builder.with_head();
-        }
-        if let Some(path) = args.chrome.clone().or_else(detect_chrome) {
-            builder = builder.chrome_executable(path);
-        }
+        let chrome_path = args.chrome.clone().or_else(detect_chrome).ok_or_else(|| {
+            anyhow::anyhow!(
+                "No ARM-compatible Chrome/Chromium found. \
+                 Install Google Chrome or specify --chrome <path>."
+            )
+        })?;
+        builder = builder.chrome_executable(chrome_path);
         let (browser, mut handler) = Browser::launch(
             builder.build().map_err(|e| anyhow::anyhow!(e))?,
         )
         .await?;
         tokio::spawn(async move { while handler.next().await.is_some() {} });
+        // Log in via the admin token so the browser session cookie is set for
+        // all subsequent browser checks.
+        if let Some(token) = &args.admin_token {
+            browser_admin_login(&browser, &base_url, token).await?;
+        }
+
         Some(browser)
     } else {
         None
@@ -101,6 +121,28 @@ async fn run(args: Cli) -> Result<()> {
         std::process::exit(1);
     }
 
+    Ok(())
+}
+
+// --------------------------------------------------
+async fn browser_admin_login(
+    browser: &Browser,
+    base_url: &str,
+    token: &str,
+) -> Result<()> {
+    let url = format!("{}/api/v1/admin_login?admin_token={}", base_url, token);
+    let page = browser.new_page(&url).await?;
+    let status = page
+        .evaluate(
+            "performance.getEntriesByType('navigation')[0]?.responseStatus ?? 0",
+        )
+        .await?
+        .into_value::<f64>()
+        .unwrap_or(0.0) as u16;
+    if status != 200 {
+        anyhow::bail!("admin login failed with HTTP {status} — check ADMIN_SECRET_KEY");
+    }
+    println!("  admin login OK (session cookie set)\n");
     Ok(())
 }
 
@@ -255,8 +297,27 @@ fn detect_chrome() -> Option<String> {
     ];
     candidates
         .iter()
-        .find(|p| std::path::Path::new(p).exists())
+        .find(|p| std::path::Path::new(p).exists() && is_arm_compatible(p))
         .map(|p| p.to_string())
+}
+
+// --------------------------------------------------
+// On macOS/aarch64, reject binaries that don't include an arm64 slice.
+// On all other platforms this is a no-op and always returns true.
+fn is_arm_compatible(path: &str) -> bool {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        std::process::Command::new("lipo")
+            .args(["-archs", path])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("arm64"))
+            .unwrap_or(false)
+    }
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    {
+        let _ = path;
+        true
+    }
 }
 
 // --------------------------------------------------
