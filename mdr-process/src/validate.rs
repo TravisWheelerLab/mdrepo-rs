@@ -123,16 +123,6 @@ pub fn validate(
     let meta_errors = meta.check(meta_check_opts);
     errors.extend(meta_errors);
 
-    //if !meta_errors.is_empty() {
-    //    bail!(
-    //        "Found {} error{} in {}:\n{}",
-    //        meta_errors.len(),
-    //        if meta_errors.len() == 1 { "" } else { "s" },
-    //        meta_path.display(),
-    //        meta_errors.join("\n")
-    //    )
-    //}
-
     let mut total_file_size = 0;
     for filename in &meta.all_filenames() {
         let metadata = dir
@@ -225,11 +215,7 @@ mod tests {
         let dir = tempdir().unwrap();
         write_minimal_dir(dir.path());
         let json = r#"{"total_filenum":5,"total_filesize":0,"status":"completed","files":[{"irods_path":"sim.xtc","size":9,"md5_hash":"abc"}]}"#;
-        fs::write(
-            dir.path().join("mdrepo-submission.completed.json"),
-            json,
-        )
-        .unwrap();
+        fs::write(dir.path().join("mdrepo-submission.completed.json"), json).unwrap();
         assert!(validate(dir.path(), None).is_err());
     }
 
@@ -238,13 +224,11 @@ mod tests {
         let dir = tempdir().unwrap();
         write_minimal_dir(dir.path());
         let json = r#"{"total_filenum":1,"total_filesize":0,"status":"completed","files":[{"irods_path":"ghost.xtc","size":0,"md5_hash":"abc123abc123abc123abc123abc12300"}]}"#;
-        fs::write(
-            dir.path().join("mdrepo-submission.completed.json"),
-            json,
-        )
-        .unwrap();
+        fs::write(dir.path().join("mdrepo-submission.completed.json"), json).unwrap();
         let errors = validate(dir.path(), None).unwrap();
-        assert!(errors.iter().any(|e| e.contains("Missing") && e.contains("ghost.xtc")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("Missing") && e.contains("ghost.xtc")));
     }
 
     #[test]
@@ -252,13 +236,11 @@ mod tests {
         let dir = tempdir().unwrap();
         write_minimal_dir(dir.path());
         let json = r#"{"total_filenum":1,"total_filesize":0,"status":"completed","files":[{"irods_path":"sim.xtc","size":9,"md5_hash":"00000000000000000000000000000000"}]}"#;
-        fs::write(
-            dir.path().join("mdrepo-submission.completed.json"),
-            json,
-        )
-        .unwrap();
+        fs::write(dir.path().join("mdrepo-submission.completed.json"), json).unwrap();
         let errors = validate(dir.path(), None).unwrap();
-        assert!(errors.iter().any(|e| e.contains("MD5") && e.contains("sim.xtc")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("MD5") && e.contains("sim.xtc")));
     }
 
     #[test]
@@ -269,13 +251,11 @@ mod tests {
         let json = format!(
             r#"{{"total_filenum":1,"total_filesize":0,"status":"completed","files":[{{"irods_path":"sim.xtc","size":9999,"md5_hash":"{xtc_md5}"}}]}}"#
         );
-        fs::write(
-            dir.path().join("mdrepo-submission.completed.json"),
-            json,
-        )
-        .unwrap();
+        fs::write(dir.path().join("mdrepo-submission.completed.json"), json).unwrap();
         let errors = validate(dir.path(), None).unwrap();
-        assert!(errors.iter().any(|e| e.contains("size") && e.contains("sim.xtc")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("size") && e.contains("sim.xtc")));
     }
 
     #[test]
@@ -291,11 +271,7 @@ mod tests {
                 {{"irods_path":"copy_b.dat","size":9,"md5_hash":"{md5}"}}
             ]}}"#
         );
-        fs::write(
-            dir.path().join("mdrepo-submission.completed.json"),
-            json,
-        )
-        .unwrap();
+        fs::write(dir.path().join("mdrepo-submission.completed.json"), json).unwrap();
         let errors = validate(dir.path(), None).unwrap();
         assert!(errors.iter().any(|e| e.contains("duplicated")));
     }
