@@ -59,9 +59,13 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
     let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
     let meta_path = input_dir.join("mdrepo-metadata.toml");
 
+    if !meta_path.is_file() {
+        bail!(format!("Missing TOML metadata"));
+    }
+
     // Canonicalize ligand SMILES before validation so non-standard notation
     // (e.g. [N+H3]) is normalised to the form the validator accepts ([NH3+])
-    canonicalize_toml_smiles(&meta_path, &script_dir, &uv)?;
+    let smiles = canonicalize_smiles(&meta_path, &script_dir, &uv)?;
 
     // Validate
     let meta_check_opts = args.no_id.then_some(MetaCheckOptions {
@@ -94,6 +98,7 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
     }
 
     let meta = Meta::from_file(&meta_path)?;
+
     let mut trajectory_file_names = meta.trajectory_file_names.clone();
     trajectory_file_names.sort();
 
@@ -374,7 +379,9 @@ fn find_conda_env_prefix(env_name: &str) -> Result<PathBuf> {
     let envs = parsed
         .get("envs")
         .and_then(|e| e.as_array())
-        .ok_or_else(|| anyhow!("Unexpected output from `micromamba env list --json`"))?;
+        .ok_or_else(|| {
+            anyhow!("Unexpected output from `micromamba env list --json`")
+        })?;
     for env in envs {
         if let Some(path) = env.as_str() {
             let prefix = PathBuf::from(path);
@@ -1429,22 +1436,25 @@ pub fn get_uniprot_entries(
 }
 
 // --------------------------------------------------
-fn canonicalize_toml_smiles(meta_path: &Path, script_dir: &Path, uv: &Path) -> Result<()> {
-    let script = script_dir.join("canonicalize_toml_smiles.py");
+fn canonicalize_smiles(meta_path: &Path, script_dir: &Path, uv: &Path) -> Result<()> {
+    let script = script_dir.join("canonicalize_smiles.py");
     let mut cmd = Command::new(uv);
     cmd.current_dir(script_dir).args([
         "run",
         script.to_string_lossy().as_ref(),
         meta_path.to_string_lossy().as_ref(),
     ]);
-    debug!("Canonicalizing SMILES in {}", meta_path.display());
+    debug!("Running {cmd:?}");
+
     let output = cmd.output()?;
     if !output.status.success() {
         bail!(
-            "canonicalize_toml_smiles failed: {}",
+            "{} failed: {}",
+            script.display(),
             String::from_utf8_lossy(&output.stderr)
         );
     }
+
     Ok(())
 }
 
