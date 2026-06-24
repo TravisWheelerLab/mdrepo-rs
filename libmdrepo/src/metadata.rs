@@ -672,7 +672,7 @@ pub fn is_valid_smiles(smiles: &str) -> std::result::Result<(), ValidationError>
     if purr::read::read(smiles, &mut writer, Some(&mut trace)).is_ok() {
         Ok(())
     } else {
-        Err(ValidationError::new("invalid SMILES"))
+        Err(ValidationError::new("invalid_smiles"))
     }
 }
 
@@ -1225,7 +1225,9 @@ mod tests {
             allow_no_pdb_uniprot: true,
         }));
         assert!(
-            !errors.iter().any(|e| e.contains("Missing PDB and Uniprot IDs")),
+            !errors
+                .iter()
+                .any(|e| e.contains("Missing PDB and Uniprot IDs")),
             "Expected no ID error with allow_no_pdb_uniprot=true, got: {errors:?}"
         );
     }
@@ -1235,7 +1237,9 @@ mod tests {
         let meta = Meta::example_minimal();
         let errors = meta.check(None);
         assert!(
-            errors.iter().any(|e| e.contains("Missing PDB and Uniprot IDs")),
+            errors
+                .iter()
+                .any(|e| e.contains("Missing PDB and Uniprot IDs")),
             "Expected missing ID error, got: {errors:?}"
         );
     }
@@ -1272,7 +1276,9 @@ mod tests {
         let meta = Meta::example_minimal();
         let errors = meta.check(None);
         assert!(
-            errors.iter().any(|e| e.contains("Missing PDB and Uniprot IDs")),
+            errors
+                .iter()
+                .any(|e| e.contains("Missing PDB and Uniprot IDs")),
             "Expected missing ID error, got: {errors:?}"
         );
         let other_errors: Vec<_> = errors
@@ -1348,9 +1354,9 @@ mod tests {
         meta.trajectory_file_names = vec!["traj.mp4".to_string()];
         let errors = meta.check(None);
         assert!(
-            errors
-                .iter()
-                .any(|e| e.starts_with("trajectory_file_names[1]:") && e.contains("mp4")),
+            errors.iter().any(
+                |e| e.starts_with("trajectory_file_names[1]:") && e.contains("mp4")
+            ),
             "Expected trajectory extension error, got: {errors:?}"
         );
     }
