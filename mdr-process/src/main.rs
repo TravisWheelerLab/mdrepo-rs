@@ -107,7 +107,7 @@ fn run(args: Cli) -> Result<()> {
                 let opts = args.no_id.then_some(MetaCheckOptions {
                     allow_no_pdb_uniprot: true,
                 });
-                match validate::validate(&dirname, opts) {
+                match validate::validate(dirname, opts) {
                     Err(e) => bail!("{e}"),
                     Ok(errors) => {
                         if errors.is_empty() {

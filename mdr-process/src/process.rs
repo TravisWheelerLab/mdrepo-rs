@@ -154,7 +154,7 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
     let import_json = &processed_dir.join("import.json");
     let import_warnings = make_import_json(ImportJsonArgs {
         meta,
-        import_json: &import_json,
+        import_json: import_json,
         processed_dir: &processed_dir,
         meta_path: &meta_path,
         input_dir: &input_dir,
@@ -173,7 +173,7 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
         let import_result = run_import(RunImportArgs {
             uv: &uv,
             script_dir: &script_dir,
-            import_json: &import_json,
+            import_json,
             input_dir: &input_dir,
             server: &args.server.to_string(),
             reprocess_simulation_id: args.reprocess_simulation_id,
@@ -326,7 +326,7 @@ pub fn make_thumbnail(
     } else {
         debug!("Creating thumbnail");
         let preview = script_dir.join("create_preview.py");
-        let mut cmd = Command::new(&uv);
+        let mut cmd = Command::new(uv);
         cmd.current_dir(script_dir).args([
             "run",
             preview.to_string_lossy().as_ref(),
@@ -530,7 +530,7 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
 
         if !missing.is_empty() {
             let error_file = &trajectory_dir.join("errors.txt");
-            let error_fh = File::create(&error_file)?;
+            let error_fh = File::create(error_file)?;
             write!(
                 &error_fh,
                 "Failed command {cmd:?}\nFailed to create {}\n{}\n{}",
@@ -667,7 +667,7 @@ fn fix_alpha_carbon_name(path: &Path) -> Result<()> {
         let backup =
             path.with_file_name(format!("{}_orig.pdb", stem.to_string_lossy()));
         fs::rename(path, backup)?;
-        fixed.to_file(&path)?;
+        fixed.to_file(path)?;
     }
 
     Ok(())
@@ -688,7 +688,7 @@ pub fn get_rmsd_rmsf(
     } else {
         debug!("Creating RMSD/RMSF file");
         let script = script_dir.join("get_rmsd_rmsf.py");
-        let mut cmd = Command::new(&uv);
+        let mut cmd = Command::new(uv);
         cmd.current_dir(script_dir).args([
             "run",
             script.to_string_lossy().as_ref(),
@@ -849,7 +849,7 @@ pub fn get_sequence(
     } else {
         debug!("Creating sequence file");
         let script = script_dir.join("get_sequence_from_pdb.py");
-        let mut cmd = Command::new(&uv);
+        let mut cmd = Command::new(uv);
         cmd.current_dir(script_dir).args([
             "run",
             script.to_string_lossy().as_ref(),
@@ -887,7 +887,7 @@ pub fn sample_trajectory(
     } else {
         debug!("Creating sampled trajectory");
         let sampler = script_dir.join("sample_trajectory.py");
-        let mut cmd = Command::new(&uv);
+        let mut cmd = Command::new(uv);
         cmd.current_dir(script_dir).args([
             "run",
             sampler.to_string_lossy().as_ref(),
@@ -1467,7 +1467,7 @@ pub fn check_ligand(
     uv: &Path,
 ) -> Result<CheckedLigand> {
     let script = script_dir.join("compare_smiles.py");
-    let mut cmd = Command::new(&uv);
+    let mut cmd = Command::new(uv);
     cmd.current_dir(script_dir).args([
         "run",
         script.to_string_lossy().as_ref(),
@@ -1499,7 +1499,7 @@ pub fn get_inferred_ligands(
     } else {
         debug!("Creating inferred ligands file");
         let mol_tools = script_dir.join("mol_id.py");
-        let mut cmd = Command::new(&uv);
+        let mut cmd = Command::new(uv);
         cmd.current_dir(script_dir).args([
             "run",
             mol_tools.to_string_lossy().as_ref(),
