@@ -154,7 +154,7 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
     let import_json = &processed_dir.join("import.json");
     let import_warnings = make_import_json(ImportJsonArgs {
         meta,
-        import_json: import_json,
+        import_json,
         processed_dir: &processed_dir,
         meta_path: &meta_path,
         input_dir: &input_dir,
