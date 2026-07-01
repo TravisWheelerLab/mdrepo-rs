@@ -65,7 +65,8 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
 
     // Canonicalize ligand SMILES before validation so non-standard notation
     // (e.g. [N+H3]) is normalised to the form the validator accepts ([NH3+])
-    let smiles = canonicalize_smiles(&meta_path, &script_dir, &uv)?;
+    // This will change the TOML in-place.
+    canonicalize_smiles(&meta_path, &script_dir, &uv)?;
 
     // Validate
     let meta_check_opts = args.no_id.then_some(MetaCheckOptions {
