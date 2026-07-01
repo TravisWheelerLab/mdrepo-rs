@@ -781,6 +781,10 @@ pub fn blast_uniprot(
             BLAST_NUM_THREADS,
             "-max_target_seqs",
             max_target_seqs,
+            "-task",
+            "blastp-fast",
+            "-comp_based_stats",
+            "0",
         ]);
         debug!("Running {cmd:?}");
 
@@ -1646,11 +1650,11 @@ fn measure_trajectory(
         }
     }
 
-    let (time_start, time_stop, num_frames) =
-        match (time_start, time_stop, num_frames) {
-            (Some(a), Some(b), Some(c)) => (a as f64, b as f64, c as f64),
-            _ => bail!("Failed to parse molly output:\n{stdout}"),
-        };
+    let (time_start, time_stop, num_frames) = match (time_start, time_stop, num_frames)
+    {
+        (Some(a), Some(b), Some(c)) => (a as f64, b as f64, c as f64),
+        _ => bail!("Failed to parse molly output:\n{stdout}"),
+    };
 
     if num_frames <= 1. {
         bail!("Trajectory file has only {num_frames} frame(s)");
