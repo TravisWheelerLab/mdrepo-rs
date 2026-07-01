@@ -32,11 +32,11 @@ async fn run(args: Cli) -> Result<()> {
     let mut endpoints: Vec<Endpoint> = config
         .endpoints
         .into_iter()
-        .filter(|e| e.host.as_deref().map_or(true, |h| h == args.url))
+        .filter(|e| e.host.as_deref().is_none_or(|h| h == args.url))
         .filter(|e| {
             filter
                 .as_deref()
-                .map_or(true, |f| e.path.to_lowercase().contains(f))
+                .is_none_or(|f| e.path.to_lowercase().contains(f))
         })
         .collect();
 
@@ -59,21 +59,19 @@ async fn run(args: Cli) -> Result<()> {
     let browser_opt = if needs_browser {
         // Use a per-process directory so concurrent or crashed runs never
         // leave a stale SingletonLock that blocks the next launch.
-        let user_data_dir = std::env::temp_dir()
-            .join(format!("mdr-webcheck-{}", std::process::id()));
-        let mut builder = BrowserConfig::builder()
-            .user_data_dir(user_data_dir);
-        let chrome_path = args.chrome.clone().or_else(detect_chrome).ok_or_else(|| {
-            anyhow::anyhow!(
-                "No ARM-compatible Chrome/Chromium found. \
+        let user_data_dir =
+            std::env::temp_dir().join(format!("mdr-webcheck-{}", std::process::id()));
+        let mut builder = BrowserConfig::builder().user_data_dir(user_data_dir);
+        let chrome_path =
+            args.chrome.clone().or_else(detect_chrome).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No ARM-compatible Chrome/Chromium found. \
                  Install Google Chrome or specify --chrome <path>."
-            )
-        })?;
+                )
+            })?;
         builder = builder.chrome_executable(chrome_path);
-        let (browser, mut handler) = Browser::launch(
-            builder.build().map_err(|e| anyhow::anyhow!(e))?,
-        )
-        .await?;
+        let (browser, mut handler) =
+            Browser::launch(builder.build().map_err(|e| anyhow::anyhow!(e))?).await?;
         tokio::spawn(async move { while handler.next().await.is_some() {} });
         // Log in via the admin token so the browser session cookie is set for
         // all subsequent browser checks.
@@ -133,9 +131,7 @@ async fn browser_admin_login(
     let url = format!("{}/api/v1/admin_login?admin_token={}", base_url, token);
     let page = browser.new_page(&url).await?;
     let status = page
-        .evaluate(
-            "performance.getEntriesByType('navigation')[0]?.responseStatus ?? 0",
-        )
+        .evaluate("performance.getEntriesByType('navigation')[0]?.responseStatus ?? 0")
         .await?
         .into_value::<f64>()
         .unwrap_or(0.0) as u16;
@@ -186,9 +182,7 @@ async fn check_browser_inner(
     let page = browser.new_page(url).await?;
 
     let actual_status = page
-        .evaluate(
-            "performance.getEntriesByType('navigation')[0]?.responseStatus ?? 0",
-        )
+        .evaluate("performance.getEntriesByType('navigation')[0]?.responseStatus ?? 0")
         .await?
         .into_value::<f64>()
         .unwrap_or(0.0) as u16;
@@ -202,7 +196,12 @@ async fn check_browser_inner(
             endpoint.expected_status
         ));
     }
-    check_content(&content, &endpoint.contains, &endpoint.not_contains, &mut failures);
+    check_content(
+        &content,
+        &endpoint.contains,
+        &endpoint.not_contains,
+        &mut failures,
+    );
 
     Ok((actual_status, failures))
 }
@@ -261,7 +260,12 @@ async fn check_http_inner(
             endpoint.expected_status
         ));
     }
-    check_content(&body, &endpoint.contains, &endpoint.not_contains, &mut failures);
+    check_content(
+        &body,
+        &endpoint.contains,
+        &endpoint.not_contains,
+        &mut failures,
+    );
     json::apply_json_checks(&body, &endpoint.json_checks, None, &mut failures);
 
     Ok((actual_status, failures))
@@ -322,9 +326,12 @@ fn is_arm_compatible(path: &str) -> bool {
 
 // --------------------------------------------------
 fn build_base_url(args: &Cli) -> String {
-    let is_local =
-        args.url.contains("localhost") || args.url.contains("127.0.0.1");
-    let scheme = if args.http || is_local { "http" } else { "https" };
+    let is_local = args.url.contains("localhost") || args.url.contains("127.0.0.1");
+    let scheme = if args.http || is_local {
+        "http"
+    } else {
+        "https"
+    };
     let host = args
         .url
         .trim_start_matches("http://")
