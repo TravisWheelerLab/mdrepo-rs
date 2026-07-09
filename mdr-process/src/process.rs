@@ -182,6 +182,7 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
             replace_original_files: args.replace_original_files,
         })?;
 
+        let simulation_id = import_result.simulation_id;
         let push_res = run_push(
             &uv,
             &script_dir,
@@ -192,6 +193,22 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
             &processed_dir,
         )?;
         debug!("{push_res:?}");
+
+        // With a good simulation ID and a known iRODS release directory, issue
+        // an iRODS ticket for the simulation's directory.
+        if simulation_id > 0 {
+            let irods_dir = format!(
+                "/iplant/home/shared/mdrepo/{}/release/MDR{simulation_id:08}",
+                args.server
+            );
+            create_irods_ticket(
+                &uv,
+                &script_dir,
+                simulation_id,
+                &irods_dir,
+                &args.server.to_string(),
+            )?;
+        }
     }
 
     debug!("Finished processing in {:?}", start_time.elapsed());
@@ -312,6 +329,40 @@ fn run_push(
 
     serde_json::from_str(&read_file(&out_file)?)
         .map_err(|e| anyhow!(r#"Failed to parse "{}": {e}"#, out_file.display()))
+}
+
+// --------------------------------------------------
+fn create_irods_ticket(
+    uv: &Path,
+    script_dir: &Path,
+    simulation_id: u32,
+    irods_dir: &str,
+    server: &str,
+) -> Result<()> {
+    let ticket_script = script_dir.join("create_irods_ticket.py");
+    debug!(r#"Create iRODS ticket for "{irods_dir}""#);
+
+    let args = vec![
+        "run".to_string(),
+        ticket_script.to_string_lossy().to_string(),
+        "--simulation-id".to_string(),
+        simulation_id.to_string(),
+        "--path".to_string(),
+        irods_dir.to_string(),
+        "--server".to_string(),
+        server.to_string(),
+    ];
+
+    let mut cmd = Command::new(uv);
+    cmd.current_dir(script_dir).args(&args);
+    debug!("Running {cmd:?}");
+
+    let output = cmd.output()?;
+    if !output.status.success() {
+        bail!("{}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    Ok(())
 }
 
 // --------------------------------------------------
@@ -558,6 +609,7 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
 
     println!("sample_trajectory");
     sample_trajectory(&min_xtc, &min_pdb, &sampled_xtc, args.script_dir, args.uv)?;
+
     println!("make_thumbnail");
     make_thumbnail(
         &thumbnail_png,
