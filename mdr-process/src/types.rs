@@ -524,6 +524,16 @@ pub struct ImportResult {
 }
 
 // --------------------------------------------------
+#[derive(Debug)]
+pub struct ProcessResult {
+    /// The imported simulation's ID. `None` on a dry run (nothing imported).
+    pub simulation_id: Option<u32>,
+
+    /// Non-fatal errors/warnings collected during processing.
+    pub errors: Vec<String>,
+}
+
+// --------------------------------------------------
 #[derive(Debug, Deserialize, Serialize)]
 pub struct PushResult {
     pub src: String,

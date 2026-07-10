@@ -45,9 +45,9 @@ fn run(args: Cli) -> Result<()> {
 
     match &args.command {
         Command::Process(args) => {
-            let errors = process::process(args)?;
-            if !errors.is_empty() {
-                info!("Errors:\n{}", errors.join("\n"));
+            let result = process::process(args)?;
+            if !result.errors.is_empty() {
+                info!("Errors:\n{}", result.errors.join("\n"));
             }
             info!("Finished");
             Ok(())

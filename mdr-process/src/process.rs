@@ -2,9 +2,9 @@ use crate::{
     types::{
         BlastResult, CheckedLigand, DoiPaper, Duration, Export, ExportSimulation,
         ImportJsonArgs, ImportResult, InferredLigand, MdFile, PdbEntry, PdbResponse,
-        ProcessArgs, ProcessTrajectoryArgs, ProcessedTarball, ProcessedTrajectory,
-        ProcessedTrajectoryType, PushResult, RmsdRmsf, RunImportArgs, UniprotDb,
-        UniprotEntry, UniprotResponse,
+        ProcessArgs, ProcessResult, ProcessTrajectoryArgs, ProcessedTarball,
+        ProcessedTrajectory, ProcessedTrajectoryType, PushResult, RmsdRmsf,
+        RunImportArgs, UniprotDb, UniprotEntry, UniprotResponse,
     },
     validate,
 };
@@ -45,7 +45,7 @@ const PS_PER_NS: f64 = 1000.0;
 const XTC_INFLATION_FACTOR: f64 = 1000.0;
 
 // --------------------------------------------------
-pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
+pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
     debug!("{args:?}");
     dotenv().ok();
 
@@ -170,6 +170,7 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
     })?;
     errors.extend(import_warnings);
 
+    let mut simulation_id: Option<u32> = None;
     if !args.dry_run {
         let import_result = run_import(RunImportArgs {
             uv: &uv,
@@ -182,7 +183,8 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
             replace_original_files: args.replace_original_files,
         })?;
 
-        let simulation_id = import_result.simulation_id;
+        let imported_id = import_result.simulation_id;
+        simulation_id = Some(imported_id);
         let push_res = run_push(
             &uv,
             &script_dir,
@@ -196,15 +198,15 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
 
         // With a good simulation ID and a known iRODS release directory, issue
         // an iRODS ticket for the simulation's directory.
-        if simulation_id > 0 {
+        if imported_id > 0 {
             let irods_dir = format!(
-                "/iplant/home/shared/mdrepo/{}/release/MDR{simulation_id:08}",
+                "/iplant/home/shared/mdrepo/{}/release/MDR{imported_id:08}",
                 args.server
             );
             create_irods_ticket(
                 &uv,
                 &script_dir,
-                simulation_id,
+                imported_id,
                 &irods_dir,
                 &args.server.to_string(),
             )?;
@@ -230,7 +232,10 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
         );
     }
 
-    Ok(errors)
+    Ok(ProcessResult {
+        simulation_id,
+        errors,
+    })
 }
 
 // --------------------------------------------------
@@ -603,14 +608,10 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
     let sampled_xtc = trajectory_dir.join("sampled.xtc");
     let thumbnail_png = trajectory_dir.join("thumbnail.png");
     let full_xtc_size = fs::metadata(&full_xtc)?.len();
-
-    println!("check_coarse_grained");
     let is_coarse_grained = check_coarse_grained(&full_pdb, &min_pdb)?;
 
-    println!("sample_trajectory");
     sample_trajectory(&min_xtc, &min_pdb, &sampled_xtc, args.script_dir, args.uv)?;
 
-    println!("make_thumbnail");
     make_thumbnail(
         &thumbnail_png,
         &sampled_xtc,
@@ -650,7 +651,7 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
 
 // --------------------------------------------------
 pub fn check_coarse_grained(full_pdb: &Path, min_pdb: &Path) -> Result<bool> {
-    // TEMPORARY FIX TO REMOVE REMARK UNTIL PR IS ACCEPTED
+    // TEMPORARY FIX TO REMOVE REMARK UNTIL KEN'S PR IS ACCEPTED BY pdbrust
     let mut tmp = NamedTempFile::new()?;
     for line in BufReader::new(File::open(min_pdb)?).lines() {
         let line = line?;

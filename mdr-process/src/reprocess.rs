@@ -82,7 +82,7 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<Vec<String>> {
         }
     }
 
-    let errors = process::process(&ProcessArgs {
+    let result = process::process(&ProcessArgs {
         input_dir: data_dir.clone(),
         script_dir: None,
         work_dir: Some(work_dir),
@@ -100,7 +100,7 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<Vec<String>> {
         fs::remove_dir_all(data_dir)?;
     }
 
-    Ok(errors)
+    Ok(result.errors)
 }
 
 // --------------------------------------------------

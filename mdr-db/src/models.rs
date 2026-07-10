@@ -469,6 +469,11 @@ pub struct Simulation {
     pub is_public: bool,
     pub fasta_sequence: Option<String>,
     pub alias: Option<String>,
+    pub is_embargoed: bool,
+    pub is_coarse_grained: bool,
+    pub num_replicates: Option<i32>,
+    pub irods_ticket: Option<String>,
+    pub superseding_simulation_id: Option<i32>,
 }
 
 #[derive(Debug, Insertable, Deserialize)]
@@ -493,6 +498,11 @@ pub struct NewSimulation {
     pub fasta_sequence: Option<String>,
     pub alias: Option<String>,
     pub pdb_id: Option<i64>,
+    pub is_embargoed: bool,
+    pub is_coarse_grained: bool,
+    pub num_replicates: Option<i32>,
+    pub irods_ticket: Option<String>,
+    pub superseding_simulation_id: Option<i32>,
 }
 
 #[derive(Debug, AsChangeset, Default, Deserialize)]
@@ -515,6 +525,11 @@ pub struct SimulationUpdate {
     pub fasta_sequence: Option<Option<String>>,
     pub alias: Option<Option<String>>,
     pub pdb_id: Option<Option<i64>>,
+    pub is_embargoed: Option<bool>,
+    pub is_coarse_grained: Option<bool>,
+    pub num_replicates: Option<Option<i32>>,
+    pub irods_ticket: Option<Option<String>>,
+    pub superseding_simulation_id: Option<Option<i32>>,
 }
 
 // ── md_simulation_pub ─────────────────────────────────────────────────────────
