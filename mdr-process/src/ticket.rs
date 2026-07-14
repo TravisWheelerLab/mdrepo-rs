@@ -131,8 +131,19 @@ pub fn process(args: &TicketArgs) -> Result<()> {
     // Resolve the DB-feedback context once, up front. If the database is
     // unreachable (or the env DSN is missing) we log and process anyway with
     // feedback disabled -- recording upload status must never block processing.
+    // This runs even for a dry run, so the ticket is still fetched and
+    // validated; only the writes below are suppressed.
     let ticket_id = args.ticket_id as i64;
     let feedback = build_feedback_ctx(&args.server, ticket_id);
+
+    // Every DB write is gated on `Some`, so withholding the context in a dry
+    // run makes the run read-only.
+    let writes = if args.dry_run {
+        info!("DRY RUN: no upload instances, messages, or ticket updates written");
+        None
+    } else {
+        feedback.as_ref()
+    };
 
     // Process every landing subdirectory in parallel. Each task opens its own
     // DB connection (a Diesel PgConnection can't be shared across threads), so
@@ -142,19 +153,13 @@ pub fn process(args: &TicketArgs) -> Result<()> {
     let results: Vec<bool> = ticket_dirs
         .into_par_iter()
         .map(|ticket_dir| {
-            process_landing(
-                &ticket_dir,
-                args,
-                script_dir,
-                &work_dir,
-                feedback.as_ref(),
-            )
+            process_landing(&ticket_dir, args, script_dir, &work_dir, writes)
         })
         .collect();
 
     // Only flip processing_complete when every landing succeeded.
     let all_ok = !results.is_empty() && results.iter().all(|&ok| ok);
-    if let Some(ctx) = feedback.as_ref() {
+    if let Some(ctx) = writes {
         if all_ok {
             mark_ticket_complete(ctx);
         } else {
