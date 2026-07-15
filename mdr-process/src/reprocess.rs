@@ -16,7 +16,7 @@ use std::{
 };
 
 // --------------------------------------------------
-pub fn reprocess(args: &ReprocessArgs) -> Result<Vec<String>> {
+pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
     dotenv().ok();
     let work_dir = args.work_dir.clone().unwrap_or(PathBuf::from(
         env::var("MDREPO_WORK_DIR").map_err(|e| anyhow!("MDREPO_WORK_DIR: {e}"))?,
@@ -82,7 +82,7 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<Vec<String>> {
         }
     }
 
-    let result = process::process(&ProcessArgs {
+    process::process(&ProcessArgs {
         input_dir: data_dir.clone(),
         script_dir: None,
         work_dir: Some(work_dir),
@@ -100,7 +100,7 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<Vec<String>> {
         fs::remove_dir_all(data_dir)?;
     }
 
-    Ok(result.errors)
+    Ok(())
 }
 
 // --------------------------------------------------

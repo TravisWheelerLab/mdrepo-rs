@@ -255,7 +255,6 @@ pub struct ProcessedTrajectory {
     pub trajectory_file_stem: String,
     pub directory_name: String,
     pub is_coarse_grained: bool,
-    pub errors: Vec<String>,
 }
 
 // --------------------------------------------------
@@ -530,7 +529,7 @@ pub struct ProcessResult {
     pub simulation_id: Option<u32>,
 
     /// Non-fatal errors/warnings collected during processing.
-    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
 }
 
 // --------------------------------------------------

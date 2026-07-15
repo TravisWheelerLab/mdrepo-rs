@@ -158,7 +158,8 @@ pub fn process(args: &TicketArgs) -> Result<()> {
         .collect();
 
     // Only flip processing_complete when every landing succeeded.
-    let all_ok = !results.is_empty() && results.iter().all(|&ok| ok);
+    let ok_count = results.iter().filter(|&&ok| ok).count();
+    let all_ok = !results.is_empty() && ok_count == results.len();
     if let Some(ctx) = writes {
         if all_ok {
             mark_ticket_complete(ctx);
@@ -175,6 +176,17 @@ pub fn process(args: &TicketArgs) -> Result<()> {
         args.ticket_id,
         start.elapsed()
     );
+
+    // Fail the whole run if any landing failed, so callers (and the exit code)
+    // see the failure rather than a false success.
+    if !all_ok {
+        bail!(
+            "Ticket {ticket_id}: {} of {} director{} failed to process",
+            results.len() - ok_count,
+            results.len(),
+            if results.len() == 1 { "y" } else { "ies" }
+        );
+    }
 
     Ok(())
 }
@@ -303,20 +315,19 @@ fn process_landing(
 
     let success = match &outcome {
         Ok(result) => {
+            // process::process returns Ok only on success (fatal errors bail),
+            // so this landing succeeded; warnings are non-fatal and are noted.
             if let Some((conn, upload_id)) = db.as_mut() {
-                if result.errors.is_empty() {
-                    log_message(
-                        conn,
-                        *upload_id,
-                        "Processing completed successfully",
-                        false,
-                        false,
-                    );
-                } else {
-                    for warning in &result.errors {
-                        log_message(conn, *upload_id, warning, false, true);
-                    }
+                for warning in &result.warnings {
+                    log_message(conn, *upload_id, warning, false, true);
                 }
+                log_message(
+                    conn,
+                    *upload_id,
+                    "Processing completed successfully",
+                    false,
+                    false,
+                );
                 update_instance_result(
                     conn,
                     *upload_id,
@@ -324,11 +335,11 @@ fn process_landing(
                     result.simulation_id,
                 );
             }
-            if !result.errors.is_empty() {
+            if !result.warnings.is_empty() {
                 info!(
-                    "Errors for {}:\n{}",
+                    "Warnings for {}:\n{}",
                     ticket_dir.display(),
-                    result.errors.join("\n")
+                    result.warnings.join("\n")
                 );
             }
             true

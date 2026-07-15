@@ -138,11 +138,6 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
         .map(|val| val.trajectory_file_name.to_string())
         .collect();
 
-    let mut errors: Vec<String> = processed_trajectories
-        .iter()
-        .flat_map(|t| t.errors.iter().cloned())
-        .collect();
-
     // The processed trajectories are returned sorted by full xtc size and filename
     let example_trajectory = processed_trajectories
         .last()
@@ -152,7 +147,7 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
         make_trajectory_tarballs(&processed_dir, &processed_trajectories)?;
 
     let import_json = &processed_dir.join("import.json");
-    let import_warnings = make_import_json(ImportJsonArgs {
+    let warnings = make_import_json(ImportJsonArgs {
         meta,
         import_json,
         processed_dir: &processed_dir,
@@ -168,7 +163,6 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
         replicates: &replicates,
         replace_original_files: args.replace_original_files,
     })?;
-    errors.extend(import_warnings);
 
     let mut simulation_id: Option<u32> = None;
     if !args.dry_run {
@@ -182,9 +176,11 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
             processed_dir: &processed_dir,
             replace_original_files: args.replace_original_files,
         })?;
+        debug!("{import_result:?}");
 
         let imported_id = import_result.simulation_id;
         simulation_id = Some(imported_id);
+
         let push_res = run_push(
             &uv,
             &script_dir,
@@ -215,26 +211,9 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
 
     debug!("Finished processing in {:?}", start_time.elapsed());
 
-    let errors_file = input_dir.join("processing_errors.txt");
-    if errors.is_empty() {
-        if errors_file.exists() {
-            fs::remove_file(&errors_file)?;
-        }
-        debug!("No errors");
-    } else {
-        let errors_fh = File::create(&errors_file)?;
-        write!(&errors_fh, "{}", errors.join("\n"))?;
-        let num_errors = errors.len();
-        debug!(
-            r#"Wrote {num_errors} error{} to "{}""#,
-            if num_errors == 1 { "" } else { "s" },
-            errors_file.display()
-        );
-    }
-
     Ok(ProcessResult {
         simulation_id,
-        errors,
+        warnings,
     })
 }
 
@@ -455,7 +434,6 @@ fn find_conda_env_prefix(env_name: &str) -> Result<PathBuf> {
 
 // --------------------------------------------------
 pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajectory> {
-    let mut errors = vec![];
     let trajectory_dir = args
         .processed_dir
         .join(format!("rep_{}", args.trajectory_num + 1));
@@ -595,7 +573,14 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr),
             )?;
-            errors.push(error_file.to_string_lossy().to_string());
+            // A missing full/minimal output is fatal: the steps below require
+            // these files, and a partial result must never be recorded as a
+            // success. The errors.txt above captures the failed command output.
+            bail!(
+                "Failed to create {} (see {})",
+                missing.join(", "),
+                error_file.display()
+            );
         }
     }
 
@@ -645,7 +630,6 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
         trajectory_file_stem,
         directory_name: trajectory_dir.to_string_lossy().to_string(),
         is_coarse_grained,
-        errors,
     })
 }
 
