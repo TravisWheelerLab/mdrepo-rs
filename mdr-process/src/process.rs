@@ -2,9 +2,9 @@ use crate::{
     types::{
         BlastResult, CheckedLigand, DoiPaper, Duration, Export, ExportSimulation,
         ImportJsonArgs, ImportResult, InferredLigand, MdFile, PdbEntry, PdbResponse,
-        ProcessArgs, ProcessTrajectoryArgs, ProcessedTarball, ProcessedTrajectory,
-        ProcessedTrajectoryType, PushResult, RmsdRmsf, RunImportArgs, UniprotDb,
-        UniprotEntry, UniprotResponse,
+        ProcessArgs, ProcessResult, ProcessTrajectoryArgs, ProcessedTarball,
+        ProcessedTrajectory, ProcessedTrajectoryType, PushResult, RmsdRmsf,
+        RunImportArgs, UniprotDb, UniprotEntry, UniprotResponse,
     },
     validate,
 };
@@ -45,7 +45,7 @@ const PS_PER_NS: f64 = 1000.0;
 const XTC_INFLATION_FACTOR: f64 = 1000.0;
 
 // --------------------------------------------------
-pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
+pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
     debug!("{args:?}");
     dotenv().ok();
 
@@ -138,11 +138,6 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
         .map(|val| val.trajectory_file_name.to_string())
         .collect();
 
-    let mut errors: Vec<String> = processed_trajectories
-        .iter()
-        .flat_map(|t| t.errors.iter().cloned())
-        .collect();
-
     // The processed trajectories are returned sorted by full xtc size and filename
     let example_trajectory = processed_trajectories
         .last()
@@ -152,7 +147,7 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
         make_trajectory_tarballs(&processed_dir, &processed_trajectories)?;
 
     let import_json = &processed_dir.join("import.json");
-    let import_warnings = make_import_json(ImportJsonArgs {
+    let warnings = make_import_json(ImportJsonArgs {
         meta,
         import_json,
         processed_dir: &processed_dir,
@@ -168,8 +163,8 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
         replicates: &replicates,
         replace_original_files: args.replace_original_files,
     })?;
-    errors.extend(import_warnings);
 
+    let mut simulation_id: Option<u32> = None;
     if !args.dry_run {
         let import_result = run_import(RunImportArgs {
             uv: &uv,
@@ -181,6 +176,10 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
             processed_dir: &processed_dir,
             replace_original_files: args.replace_original_files,
         })?;
+        debug!("{import_result:?}");
+
+        let imported_id = import_result.simulation_id;
+        simulation_id = Some(imported_id);
 
         let push_res = run_push(
             &uv,
@@ -192,28 +191,30 @@ pub fn process(args: &ProcessArgs) -> Result<Vec<String>> {
             &processed_dir,
         )?;
         debug!("{push_res:?}");
+
+        // With a good simulation ID and a known iRODS release directory, issue
+        // an iRODS ticket for the simulation's directory.
+        if imported_id > 0 {
+            let irods_dir = format!(
+                "/iplant/home/shared/mdrepo/{}/release/MDR{imported_id:08}",
+                args.server
+            );
+            create_irods_ticket(
+                &uv,
+                &script_dir,
+                imported_id,
+                &irods_dir,
+                &args.server.to_string(),
+            )?;
+        }
     }
 
     debug!("Finished processing in {:?}", start_time.elapsed());
 
-    let errors_file = input_dir.join("processing_errors.txt");
-    if errors.is_empty() {
-        if errors_file.exists() {
-            fs::remove_file(&errors_file)?;
-        }
-        debug!("No errors");
-    } else {
-        let errors_fh = File::create(&errors_file)?;
-        write!(&errors_fh, "{}", errors.join("\n"))?;
-        let num_errors = errors.len();
-        debug!(
-            r#"Wrote {num_errors} error{} to "{}""#,
-            if num_errors == 1 { "" } else { "s" },
-            errors_file.display()
-        );
-    }
-
-    Ok(errors)
+    Ok(ProcessResult {
+        simulation_id,
+        warnings,
+    })
 }
 
 // --------------------------------------------------
@@ -315,6 +316,40 @@ fn run_push(
 }
 
 // --------------------------------------------------
+fn create_irods_ticket(
+    uv: &Path,
+    script_dir: &Path,
+    simulation_id: u32,
+    irods_dir: &str,
+    server: &str,
+) -> Result<()> {
+    let ticket_script = script_dir.join("create_irods_ticket.py");
+    debug!(r#"Create iRODS ticket for "{irods_dir}""#);
+
+    let args = vec![
+        "run".to_string(),
+        ticket_script.to_string_lossy().to_string(),
+        "--simulation-id".to_string(),
+        simulation_id.to_string(),
+        "--path".to_string(),
+        irods_dir.to_string(),
+        "--server".to_string(),
+        server.to_string(),
+    ];
+
+    let mut cmd = Command::new(uv);
+    cmd.current_dir(script_dir).args(&args);
+    debug!("Running {cmd:?}");
+
+    let output = cmd.output()?;
+    if !output.status.success() {
+        bail!("{}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    Ok(())
+}
+
+// --------------------------------------------------
 pub fn make_thumbnail(
     thumbnail: &Path,
     sampled_trajectory: &Path,
@@ -399,7 +434,6 @@ fn find_conda_env_prefix(env_name: &str) -> Result<PathBuf> {
 
 // --------------------------------------------------
 pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajectory> {
-    let mut errors = vec![];
     let trajectory_dir = args
         .processed_dir
         .join(format!("rep_{}", args.trajectory_num + 1));
@@ -539,7 +573,14 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr),
             )?;
-            errors.push(error_file.to_string_lossy().to_string());
+            // A missing full/minimal output is fatal: the steps below require
+            // these files, and a partial result must never be recorded as a
+            // success. The errors.txt above captures the failed command output.
+            bail!(
+                "Failed to create {} (see {})",
+                missing.join(", "),
+                error_file.display()
+            );
         }
     }
 
@@ -552,13 +593,10 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
     let sampled_xtc = trajectory_dir.join("sampled.xtc");
     let thumbnail_png = trajectory_dir.join("thumbnail.png");
     let full_xtc_size = fs::metadata(&full_xtc)?.len();
-
-    println!("check_coarse_grained");
     let is_coarse_grained = check_coarse_grained(&full_pdb, &min_pdb)?;
 
-    println!("sample_trajectory");
     sample_trajectory(&min_xtc, &min_pdb, &sampled_xtc, args.script_dir, args.uv)?;
-    println!("make_thumbnail");
+
     make_thumbnail(
         &thumbnail_png,
         &sampled_xtc,
@@ -592,13 +630,12 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
         trajectory_file_stem,
         directory_name: trajectory_dir.to_string_lossy().to_string(),
         is_coarse_grained,
-        errors,
     })
 }
 
 // --------------------------------------------------
 pub fn check_coarse_grained(full_pdb: &Path, min_pdb: &Path) -> Result<bool> {
-    // TEMPORARY FIX TO REMOVE REMARK UNTIL PR IS ACCEPTED
+    // TEMPORARY FIX TO REMOVE REMARK UNTIL KEN'S PR IS ACCEPTED BY pdbrust
     let mut tmp = NamedTempFile::new()?;
     for line in BufReader::new(File::open(min_pdb)?).lines() {
         let line = line?;
@@ -782,6 +819,10 @@ pub fn blast_uniprot(
             BLAST_NUM_THREADS,
             "-max_target_seqs",
             max_target_seqs,
+            "-task",
+            "blastp-fast",
+            "-comp_based_stats",
+            "0",
         ]);
         debug!("Running {cmd:?}");
 
@@ -1647,11 +1688,11 @@ fn measure_trajectory(
         }
     }
 
-    let (time_start, time_stop, num_frames) =
-        match (time_start, time_stop, num_frames) {
-            (Some(a), Some(b), Some(c)) => (a as f64, b as f64, c as f64),
-            _ => bail!("Failed to parse molly output:\n{stdout}"),
-        };
+    let (time_start, time_stop, num_frames) = match (time_start, time_stop, num_frames)
+    {
+        (Some(a), Some(b), Some(c)) => (a as f64, b as f64, c as f64),
+        _ => bail!("Failed to parse molly output:\n{stdout}"),
+    };
 
     if num_frames <= 1. {
         bail!("Trajectory file has only {num_frames} frame(s)");

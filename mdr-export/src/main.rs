@@ -185,7 +185,6 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
         .into_iter()
         .map(|val| val.trajectory_file_name.to_string())
         .collect::<Vec<_>>();
-    dbg!(&replicates);
 
     if trajectory_file_names.is_empty() {
         bail!(r#""trajectory_file_names" is empty"#)

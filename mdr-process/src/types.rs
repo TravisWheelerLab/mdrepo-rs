@@ -255,7 +255,6 @@ pub struct ProcessedTrajectory {
     pub trajectory_file_stem: String,
     pub directory_name: String,
     pub is_coarse_grained: bool,
-    pub errors: Vec<String>,
 }
 
 // --------------------------------------------------
@@ -521,6 +520,16 @@ pub struct ImportResult {
     pub filename: String,
     pub simulation_id: u32,
     pub data_dir: String,
+}
+
+// --------------------------------------------------
+#[derive(Debug)]
+pub struct ProcessResult {
+    /// The imported simulation's ID. `None` on a dry run (nothing imported).
+    pub simulation_id: Option<u32>,
+
+    /// Non-fatal errors/warnings collected during processing.
+    pub warnings: Vec<String>,
 }
 
 // --------------------------------------------------

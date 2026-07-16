@@ -151,6 +151,11 @@ diesel::table! {
         is_public -> Bool,
         fasta_sequence -> Nullable<Text>,
         alias -> Nullable<Text>,
+        is_embargoed -> Bool,
+        is_coarse_grained -> Bool,
+        num_replicates -> Nullable<Int4>,
+        irods_ticket -> Nullable<Varchar>,
+        superseding_simulation_id -> Nullable<Int4>,
     }
 }
 

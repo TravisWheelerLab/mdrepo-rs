@@ -45,18 +45,12 @@ fn run(args: Cli) -> Result<()> {
 
     match &args.command {
         Command::Process(args) => {
-            let errors = process::process(args)?;
-            if !errors.is_empty() {
-                info!("Errors:\n{}", errors.join("\n"));
-            }
+            process::process(args)?;
             info!("Finished");
             Ok(())
         }
         Command::Reprocess(args) => {
-            let errors = reprocess::reprocess(args)?;
-            if !errors.is_empty() {
-                info!("Errors:\n{}", errors.join("\n"));
-            }
+            reprocess::reprocess(args)?;
             info!("Finished");
             Ok(())
         }
