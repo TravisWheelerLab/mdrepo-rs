@@ -45,6 +45,18 @@ fn run(args: Cli) -> Result<()> {
 
     match &args.command {
         Command::Process(args) => {
+            // Processing rewrites the metadata TOML in place, so verify the
+            // upload against its manifest first or there is nothing left to
+            // verify it against. `ticket` runs this itself before calling
+            // `process`; a directory that did not come from a ticket has no
+            // manifest and is checked on its metadata alone.
+            if args.input_dir.join(ticket::COMPLETED_JSON).is_file() {
+                let errors = ticket::check_manifest(&args.input_dir)?;
+                if !errors.is_empty() {
+                    bail!("Upload is incomplete or corrupt:\n{}", errors.join("\n"));
+                }
+            }
+
             process::process(args)?;
             info!("Finished");
             Ok(())
@@ -101,22 +113,40 @@ fn run(args: Cli) -> Result<()> {
                 let opts = args.no_id.then_some(MetaCheckOptions {
                     allow_no_pdb_uniprot: true,
                 });
-                match validate::validate(dirname, opts) {
-                    Err(e) => bail!("{e}"),
-                    Ok(errors) => {
-                        if errors.is_empty() {
-                            println!("OK");
-                        } else {
-                            let num_errors = errors.len();
-                            println!(
-                                "{num_errors} error{}",
-                                if num_errors == 1 { "" } else { "s" }
-                            );
-                            for error in errors {
-                                println!("{error}");
-                            }
-                        }
+
+                // Check the upload against its manifest when there is one; a
+                // directory that did not come from a ticket has none.
+                let mut errors = vec![];
+                if dirname.join(ticket::COMPLETED_JSON).is_file() {
+                    match ticket::check_manifest(dirname) {
+                        Err(e) => errors.push(e.to_string()),
+                        Ok(upload_errors) => errors.extend(upload_errors),
                     }
+                }
+
+                let meta_errors = validate::validate(dirname, opts);
+                if let Ok(ref meta_errors) = meta_errors {
+                    errors.extend(meta_errors.iter().cloned());
+                }
+
+                if errors.is_empty() && meta_errors.is_ok() {
+                    println!("OK");
+                } else {
+                    let num_errors = errors.len() + usize::from(meta_errors.is_err());
+                    println!(
+                        "{num_errors} error{}",
+                        if num_errors == 1 { "" } else { "s" }
+                    );
+                    for error in errors {
+                        println!("{error}");
+                    }
+                }
+
+                // Report the upload errors above before failing, so that an
+                // unparsable TOML cannot mask a faulty download.
+                if let Err(e) = meta_errors {
+                    println!("{e}");
+                    bail!("Metadata check failed for {}", dirname.display());
                 }
             }
             Ok(())

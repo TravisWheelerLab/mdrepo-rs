@@ -1,14 +1,13 @@
-use crate::types::SubmissionCompleteJson;
-use anyhow::{anyhow, bail, Result};
-use libmdrepo::{
-    common::{get_md5, read_file},
-    constants::MAX_FILE_SIZE_BYTES,
-    metadata::{Meta, MetaCheckOptions},
-};
+use anyhow::{bail, Result};
+use libmdrepo::metadata::{Meta, MetaCheckOptions};
 use log::debug;
-use std::{collections::HashMap, fs, path::Path};
+use std::{fs, path::Path};
 
 // --------------------------------------------------
+/// Check that a directory holds a processable simulation: the metadata parses,
+/// passes its own checks, and the files it references are present and not all
+/// empty. This says nothing about how the directory got here -- verifying an
+/// upload against its manifest is `ticket::check_manifest`.
 pub fn validate(
     dir: &Path,
     meta_check_opts: Option<MetaCheckOptions>,
@@ -36,112 +35,29 @@ pub fn validate(
         bail!(r#""{}" is empty!"#, dir.display());
     }
 
-    let mut errors = vec![];
-    let mut md5_hashes: HashMap<String, Vec<String>> = HashMap::new();
-    let completed_path = dir.join("mdrepo-submission.completed.json");
-    if completed_path.is_file() {
-        let completed: SubmissionCompleteJson =
-            serde_json::from_str(&read_file(&completed_path)?).map_err(|e| {
-                anyhow!(r#"Failed to parse "{}": {e}"#, completed_path.display())
-            })?;
-
-        if completed.total_filenum as usize != completed.files.len() {
-            bail!(
-                "Expected {} file(s) but completed JSON has {}",
-                completed.total_filenum,
-                completed.files.len()
-            );
-        }
-
-        // Ensure that some files were uploaded
-        if completed.files.is_empty() {
-            bail!(r#""{}" contains no "files"#, completed_path.display());
-        }
-
-        // Check file hashes/sizes
-        for file in &completed.files {
-            let path = dir.join(&file.irods_path);
-            if !path.exists() {
-                errors.push(format!(r#"Missing expected file "{}""#, file.irods_path));
-                continue;
-            }
-
-            let size = path.metadata()?.len();
-            let local_md5 = get_md5(&path)?;
-
-            debug!(
-                r#"Checking "{}" = expected md5 {}, size {}"#,
-                file.irods_path,
-                if file.md5_hash == local_md5 {
-                    "OK"
-                } else {
-                    "BAD"
-                },
-                if file.size == size { "OK" } else { "Bad" }
-            );
-
-            // What if the size is 0 but so is the expected size in the completed JSON?
-            //if size == 0 {
-            //    errors.push(format!(r#""{}" is empty"#, file.irods_path));
-            //}
-
-            if file.md5_hash != local_md5 {
-                errors.push(format!(
-                    r#""{}" MD5 "{}" does not match meta "{}""#,
-                    file.irods_path, local_md5, file.md5_hash
-                ));
-            }
-
-            if file.size != size {
-                errors.push(format!(
-                    r#""{}" size "{}" does not match meta "{}""#,
-                    file.irods_path, size, file.size
-                ))
-            }
-            md5_hashes
-                .entry(local_md5)
-                .or_default()
-                .push(file.irods_path.clone());
-        }
-    }
-
-    for (hash, files) in md5_hashes {
-        if files.len() > 1 {
-            errors.push(format!(
-                r#"File hash "{hash}" is duplicated: [{}]"#,
-                files.join(", ")
-            ))
-        }
-    }
-
     // Validate meta
     let meta_path = dir.join("mdrepo-metadata.toml");
     if !meta_path.is_file() {
         bail!("Missing {}", meta_path.display());
     }
     let meta = Meta::from_file(&meta_path)?;
-    let meta_errors = meta.check(meta_check_opts);
-    errors.extend(meta_errors);
+    let mut errors = meta.check(meta_check_opts);
 
+    // Cross-check the metadata's claims against the directory: every file it
+    // references must exist. A missing file is reported like any other error
+    // rather than aborting, so the caller sees the whole picture at once.
     let mut total_file_size = 0;
     for filename in &meta.all_filenames() {
-        let metadata = dir
-            .join(filename)
-            .metadata()
-            .map_err(|e| anyhow!("{filename}: {e}"))?;
-
-        total_file_size += metadata.len();
+        match dir.join(filename).metadata() {
+            Ok(metadata) => total_file_size += metadata.len(),
+            Err(e) => errors.push(format!(
+                r#"Missing file "{filename}" referenced by metadata: {e}"#
+            )),
+        }
     }
 
-    // Check min/max file size
     if total_file_size == 0 {
         errors.push("All local files are empty!".to_string());
-    }
-
-    if total_file_size > MAX_FILE_SIZE_BYTES {
-        errors.push(format!(
-            "Total file size ({total_file_size}) exceeds limit {MAX_FILE_SIZE_BYTES}"
-        ));
     }
 
     Ok(errors)
@@ -150,7 +66,6 @@ pub fn validate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libmdrepo::common::get_md5;
     use std::fs;
     use tempfile::tempdir;
 
@@ -211,68 +126,38 @@ mod tests {
     }
 
     #[test]
-    fn completed_json_wrong_filenum_bails() {
+    fn reports_file_referenced_by_metadata_but_missing() {
         let dir = tempdir().unwrap();
         write_minimal_dir(dir.path());
-        let json = r#"{"total_filenum":5,"total_filesize":0,"status":"completed","files":[{"irods_path":"sim.xtc","size":9,"md5_hash":"abc"}]}"#;
-        fs::write(dir.path().join("mdrepo-submission.completed.json"), json).unwrap();
-        assert!(validate(dir.path(), None).is_err());
-    }
-
-    #[test]
-    fn completed_json_missing_file_returns_error() {
-        let dir = tempdir().unwrap();
-        write_minimal_dir(dir.path());
-        let json = r#"{"total_filenum":1,"total_filesize":0,"status":"completed","files":[{"irods_path":"ghost.xtc","size":0,"md5_hash":"abc123abc123abc123abc123abc12300"}]}"#;
-        fs::write(dir.path().join("mdrepo-submission.completed.json"), json).unwrap();
+        fs::remove_file(dir.path().join("sim.xtc")).unwrap();
         let errors = validate(dir.path(), None).unwrap();
         assert!(errors
             .iter()
-            .any(|e| e.contains("Missing") && e.contains("ghost.xtc")));
+            .any(|e| e.contains("Missing") && e.contains("sim.xtc")));
     }
 
     #[test]
-    fn completed_json_md5_mismatch_returns_error() {
+    fn reports_all_empty_files() {
         let dir = tempdir().unwrap();
         write_minimal_dir(dir.path());
-        let json = r#"{"total_filenum":1,"total_filesize":0,"status":"completed","files":[{"irods_path":"sim.xtc","size":9,"md5_hash":"00000000000000000000000000000000"}]}"#;
-        fs::write(dir.path().join("mdrepo-submission.completed.json"), json).unwrap();
+        for name in ["sim.xtc", "sim.pdb", "sim.top"] {
+            fs::write(dir.path().join(name), b"").unwrap();
+        }
         let errors = validate(dir.path(), None).unwrap();
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("MD5") && e.contains("sim.xtc")));
+        assert!(errors.iter().any(|e| e.contains("empty")));
     }
 
+    /// Checking an upload against its manifest belongs to `ticket`, so adding
+    /// one -- even a manifest every file contradicts -- changes nothing here.
     #[test]
-    fn completed_json_size_mismatch_returns_error() {
+    fn ignores_completed_json() {
         let dir = tempdir().unwrap();
         write_minimal_dir(dir.path());
-        let xtc_md5 = get_md5(&dir.path().join("sim.xtc")).unwrap();
-        let json = format!(
-            r#"{{"total_filenum":1,"total_filesize":0,"status":"completed","files":[{{"irods_path":"sim.xtc","size":9999,"md5_hash":"{xtc_md5}"}}]}}"#
-        );
-        fs::write(dir.path().join("mdrepo-submission.completed.json"), json).unwrap();
-        let errors = validate(dir.path(), None).unwrap();
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("size") && e.contains("sim.xtc")));
-    }
+        let before = validate(dir.path(), None).unwrap();
 
-    #[test]
-    fn completed_json_duplicate_md5_returns_error() {
-        let dir = tempdir().unwrap();
-        write_minimal_dir(dir.path());
-        fs::write(dir.path().join("copy_a.dat"), b"identical").unwrap();
-        fs::write(dir.path().join("copy_b.dat"), b"identical").unwrap();
-        let md5 = get_md5(&dir.path().join("copy_a.dat")).unwrap();
-        let json = format!(
-            r#"{{"total_filenum":2,"total_filesize":0,"status":"completed","files":[
-                {{"irods_path":"copy_a.dat","size":9,"md5_hash":"{md5}"}},
-                {{"irods_path":"copy_b.dat","size":9,"md5_hash":"{md5}"}}
-            ]}}"#
-        );
+        let json = r#"{"total_filenum":1,"total_filesize":0,"status":"completed","files":[{"irods_path":"sim.xtc","size":9999,"md5_hash":"00000000000000000000000000000000"}]}"#;
         fs::write(dir.path().join("mdrepo-submission.completed.json"), json).unwrap();
-        let errors = validate(dir.path(), None).unwrap();
-        assert!(errors.iter().any(|e| e.contains("duplicated")));
+
+        assert_eq!(validate(dir.path(), None).unwrap(), before);
     }
 }
