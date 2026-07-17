@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use clap::Parser;
 use libmdrepo::metadata::{Meta, MetaCheckOptions};
 use log::info;
@@ -7,7 +7,8 @@ use mdr_process::{
     types::{Cli, Command, LogLevel},
     validate,
 };
-use std::{fs::File, io::BufWriter};
+use std::{env, fs::File, io::BufWriter, path::PathBuf};
+use which::which;
 
 // --------------------------------------------------
 fn main() {
@@ -103,6 +104,12 @@ fn run(args: Cli) -> Result<()> {
             Ok(())
         }
         Command::Validate(args) => {
+            // Canonicalize ligand SMILES exactly as processing does, so a
+            // hand-check judges the forms the validator will actually see.
+            let script_dir =
+                PathBuf::from(env::var("SCRIPT_DIR").map_err(|e| anyhow!("SCRIPT_DIR: {e}"))?);
+            let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
+
             for (dir_num, dirname) in args.dirnames.iter().enumerate() {
                 print!(
                     "{}{}: ",
@@ -124,7 +131,9 @@ fn run(args: Cli) -> Result<()> {
                     }
                 }
 
-                let meta_errors = validate::validate(dirname, opts);
+                let meta_path = dirname.join("mdrepo-metadata.toml");
+                let meta_errors = validate::load_canonical_meta(&meta_path, &script_dir, &uv)
+                    .and_then(|meta| validate::validate_meta(dirname, &meta, opts));
                 if let Ok(ref meta_errors) = meta_errors {
                     errors.extend(meta_errors.iter().cloned());
                 }

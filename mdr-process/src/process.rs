@@ -63,10 +63,12 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
         bail!(format!("Missing TOML metadata"));
     }
 
-    // Canonicalize ligand SMILES before validation so non-standard notation
-    // (e.g. [N+H3]) is normalised to the form the validator accepts ([NH3+])
-    // This will change the TOML in-place.
-    canonicalize_smiles(&meta_path, &script_dir, &uv)?;
+    // Read the metadata and canonicalize its ligand SMILES in memory: OpenBabel
+    // normalises non-standard notation (e.g. [N+H3]) to the form the validator
+    // accepts ([NH3+]) without the submitter's TOML ever being rewritten. This
+    // `meta` is reused for validation and everything downstream, so the
+    // validator and the database see identical canonical forms from one read.
+    let meta = validate::load_canonical_meta(&meta_path, &script_dir, &uv)?;
 
     // Validate
     let meta_check_opts = args.no_id.then_some(MetaCheckOptions {
@@ -74,7 +76,7 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
     });
 
     // Check input files
-    match validate::validate(&input_dir, meta_check_opts) {
+    match validate::validate_meta(&input_dir, &meta, meta_check_opts) {
         Err(e) => bail!("{e}"),
         Ok(errors) => {
             if !errors.is_empty() {
@@ -97,8 +99,6 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
         debug!("Removing processed directory");
         fs::remove_dir_all(&processed_dir)?;
     }
-
-    let meta = Meta::from_file(&meta_path)?;
 
     let mut trajectory_file_names = meta.trajectory_file_names.clone();
     trajectory_file_names.sort();
@@ -1477,29 +1477,6 @@ pub fn get_uniprot_entries(
     }
 
     Ok((entries, warnings))
-}
-
-// --------------------------------------------------
-fn canonicalize_smiles(meta_path: &Path, script_dir: &Path, uv: &Path) -> Result<()> {
-    let script = script_dir.join("canonicalize_smiles.py");
-    let mut cmd = Command::new(uv);
-    cmd.current_dir(script_dir).args([
-        "run",
-        script.to_string_lossy().as_ref(),
-        meta_path.to_string_lossy().as_ref(),
-    ]);
-    debug!("Running {cmd:?}");
-
-    let output = cmd.output()?;
-    if !output.status.success() {
-        bail!(
-            "{} failed: {}",
-            script.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    Ok(())
 }
 
 // --------------------------------------------------
