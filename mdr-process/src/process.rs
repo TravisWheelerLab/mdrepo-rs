@@ -1750,28 +1750,25 @@ pub fn get_doi(doi: &str) -> Result<metadata::Paper> {
     // numeric Paper.volume, falling back to 0 when it is absent or non-numeric.
     let volume = doi_paper.volume.and_then(|v| v.parse().ok()).unwrap_or(0);
 
-    let paper = if let Some(publisher) = doi_paper.publisher {
-        metadata::Paper {
-            title: doi_paper.title,
-            authors,
-            journal: publisher,
-            volume,
-            number: None,
-            year,
-            pages: doi_paper.page,
-            doi: Some(doi.to_string()),
-        }
-    } else {
-        metadata::Paper {
-            title: doi_paper.title,
-            authors,
-            journal: doi_paper.journal.unwrap_or("NA".to_string()),
-            volume,
-            number: None,
-            year,
-            pages: doi_paper.page,
-            doi: Some(doi.to_string()),
-        }
+    // The journal name is Crossref's `container-title` (e.g. "Scientific Data");
+    // fall back to any `journal`, then the `publisher`, then "NA". Using the
+    // publisher directly here previously mislabelled the journal as, e.g.,
+    // "Springer Science and Business Media LLC".
+    let journal = doi_paper
+        .container_title
+        .or(doi_paper.journal)
+        .or(doi_paper.publisher)
+        .unwrap_or_else(|| "NA".to_string());
+
+    let paper = metadata::Paper {
+        title: doi_paper.title,
+        authors,
+        journal,
+        volume,
+        number: None,
+        year,
+        pages: doi_paper.page,
+        doi: Some(doi.to_string()),
     };
 
     Ok(paper)

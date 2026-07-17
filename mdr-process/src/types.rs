@@ -554,6 +554,9 @@ pub struct DoiPaper {
 
     pub journal: Option<String>,
 
+    #[serde(rename = "container-title")]
+    pub container_title: Option<String>,
+
     pub volume: Option<String>,
 
     pub page: Option<String>,
@@ -735,6 +738,12 @@ mod tests {
         assert_eq!(paper.volume, Some("11".to_string()));
         assert_eq!(paper.published.unwrap().date_parts, vec![vec![2024, 11, 28]]);
         assert_eq!(paper.issued.unwrap().date_parts, vec![vec![2024, 11, 28]]);
+        // The journal is `container-title`, not the publisher.
+        assert_eq!(paper.container_title, Some("Scientific Data".to_string()));
+        assert_eq!(
+            paper.publisher,
+            Some("Springer Science and Business Media LLC".to_string())
+        );
         Ok(())
     }
 }
