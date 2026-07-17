@@ -1741,18 +1741,14 @@ pub fn get_doi(doi: &str) -> Result<metadata::Paper> {
         .collect::<Vec<String>>()
         .join(", ");
 
-    let year = if let Some(published) = doi_paper.published {
-        published.date_parts.first().copied().unwrap_or(0)
-    } else if let Some(issued) = doi_paper.issued {
-        issued
-            .date_parts
-            .first()
-            .and_then(|parts| parts.first().copied())
-            .unwrap_or(0)
-    } else {
-        0
-    };
-    let volume = doi_paper.volume.unwrap_or(0);
+    let year = doi_paper
+        .published
+        .or(doi_paper.issued)
+        .and_then(|date| date.date_parts.first().and_then(|parts| parts.first().copied()))
+        .unwrap_or(0);
+    // Crossref reports volume as a string (e.g. "11", but also "11A"); keep the
+    // numeric Paper.volume, falling back to 0 when it is absent or non-numeric.
+    let volume = doi_paper.volume.and_then(|v| v.parse().ok()).unwrap_or(0);
 
     let paper = if let Some(publisher) = doi_paper.publisher {
         metadata::Paper {

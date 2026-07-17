@@ -554,13 +554,13 @@ pub struct DoiPaper {
 
     pub journal: Option<String>,
 
-    pub volume: Option<u32>,
+    pub volume: Option<String>,
 
     pub page: Option<String>,
 
-    pub published: Option<DoiPublishedDateParts>,
+    pub published: Option<DoiDateParts>,
 
-    pub issued: Option<DoiIssuedDateParts>,
+    pub issued: Option<DoiDateParts>,
 }
 
 // --------------------------------------------------
@@ -571,17 +571,13 @@ pub struct DoiAuthor {
 }
 
 // --------------------------------------------------
+/// Crossref/DOI dates arrive as `{"date-parts": [[year, month, day]]}`: a list
+/// of date tuples (usually one), each `[year]`, `[year, month]`, or a full date.
+/// Used for both the `published` and `issued` fields, which share this shape.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct DoiIssuedDateParts {
+pub struct DoiDateParts {
     #[serde(alias = "date-parts")]
     pub date_parts: Vec<Vec<u32>>,
-}
-
-// --------------------------------------------------
-#[derive(Debug, Deserialize, Serialize)]
-pub struct DoiPublishedDateParts {
-    #[serde(alias = "date-parts")]
-    pub date_parts: Vec<u32>,
 }
 
 // --------------------------------------------------
@@ -726,6 +722,19 @@ mod tests {
         let text = fs::read_to_string("tests/inputs/doi.json")?;
         let paper: DoiPaper = serde_json::from_str(&text)?;
         assert_eq!(paper.publisher, Some("arXiv".to_string()));
+        Ok(())
+    }
+
+    // Regression: a Crossref/DOI response (10.1038/s41597-024-04140-z) where
+    // `volume` is a string ("11") and `published.date-parts` is nested
+    // ([[2024,11,28]]). Both used to fail to deserialize into DoiPaper.
+    #[test]
+    fn test_doi_paper_crossref_string_volume_and_nested_dates() -> Result<()> {
+        let text = fs::read_to_string("tests/inputs/doi-crossref.json")?;
+        let paper: DoiPaper = serde_json::from_str(&text)?;
+        assert_eq!(paper.volume, Some("11".to_string()));
+        assert_eq!(paper.published.unwrap().date_parts, vec![vec![2024, 11, 28]]);
+        assert_eq!(paper.issued.unwrap().date_parts, vec![vec![2024, 11, 28]]);
         Ok(())
     }
 }
