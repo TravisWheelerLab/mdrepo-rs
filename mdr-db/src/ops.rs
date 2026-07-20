@@ -953,16 +953,16 @@ pub fn delete_simulation_pub(conn: &mut PgConnection, rid: i64) -> QueryResult<u
     diesel::delete(md_simulation_pub::table.find(rid)).execute(conn)
 }
 
-// ── md_simulation_replicate_group ─────────────────────────────────────────────
+// ── md_replicate_group ────────────────────────────────────────────────────────
 
 fn replicate_group_query(
     search: Option<&str>,
-) -> md_simulation_replicate_group::BoxedQuery<'static, Pg> {
-    use crate::schema::md_simulation_replicate_group::dsl::*;
-    let mut q = md_simulation_replicate_group.into_boxed();
+) -> md_replicate_group::BoxedQuery<'static, Pg> {
+    use crate::schema::md_replicate_group::dsl::*;
+    let mut q = md_replicate_group.into_boxed();
     if let Some(t) = search {
         let p = format!("%{t}%");
-        q = q.filter(psf_hash.ilike(p));
+        q = q.filter(replicate_key.ilike(p.clone()).or(sample_mdrepo_id.ilike(p)));
     }
     q
 }
@@ -974,7 +974,7 @@ pub fn list_replicate_groups(
     lim: Option<i64>,
     offset: Option<i64>,
 ) -> QueryResult<(i64, Vec<ReplicateGroup>)> {
-    use crate::schema::md_simulation_replicate_group::dsl::id;
+    use crate::schema::md_replicate_group::dsl::id;
     let count = replicate_group_query(search.as_deref())
         .select(count_star())
         .first(conn)?;
@@ -992,7 +992,7 @@ pub fn get_replicate_group(
     conn: &mut PgConnection,
     rid: i64,
 ) -> QueryResult<ReplicateGroup> {
-    md_simulation_replicate_group::table
+    md_replicate_group::table
         .find(rid)
         .select(ReplicateGroup::as_select())
         .first(conn)
@@ -1002,7 +1002,7 @@ pub fn insert_replicate_group(
     conn: &mut PgConnection,
     new: NewReplicateGroup,
 ) -> QueryResult<ReplicateGroup> {
-    diesel::insert_into(md_simulation_replicate_group::table)
+    diesel::insert_into(md_replicate_group::table)
         .values(&new)
         .returning(ReplicateGroup::as_returning())
         .get_result(conn)
@@ -1013,14 +1013,14 @@ pub fn update_replicate_group(
     rid: i64,
     cs: ReplicateGroupUpdate,
 ) -> QueryResult<ReplicateGroup> {
-    diesel::update(md_simulation_replicate_group::table.find(rid))
+    diesel::update(md_replicate_group::table.find(rid))
         .set(&cs)
         .returning(ReplicateGroup::as_returning())
         .get_result(conn)
 }
 
 pub fn delete_replicate_group(conn: &mut PgConnection, rid: i64) -> QueryResult<usize> {
-    diesel::delete(md_simulation_replicate_group::table.find(rid)).execute(conn)
+    diesel::delete(md_replicate_group::table.find(rid)).execute(conn)
 }
 
 // ── md_simulation_uniprot ─────────────────────────────────────────────────────

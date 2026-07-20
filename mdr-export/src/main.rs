@@ -263,7 +263,7 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
             number: val.number,
             year: val.year as u32,
             pages: val.pages,
-            doi: Some(val.doi),
+            doi: val.doi,
         });
     }
 
@@ -283,9 +283,7 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
             .integration_timestep_fs
             .ok_or_else(|| anyhow!("simulation has no integration timestep"))?
             as u32,
-        short_description: sim
-            .short_description
-            .ok_or_else(|| anyhow!("simulation has no short description"))?,
+        short_description: sim.short_description,
         software_name: software.name,
         software_version: software.version.unwrap_or_default(),
         mdrepo_id: Some(format!("MDR{sim_id:08}")),

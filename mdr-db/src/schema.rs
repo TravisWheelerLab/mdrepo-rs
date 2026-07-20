@@ -1,5 +1,10 @@
-// Generated from the mdrepo PostgreSQL database.
-// Regenerate with: diesel print-schema > src/schema.rs
+// Curated subset of the mdrepo PostgreSQL schema — only the tables this
+// workspace uses (a plain `diesel print-schema` would also pull in the Django/
+// allauth tables and emit joinable! macros). The schema is owned by the Django
+// models in /opt/mdrepo/django; keep column types/nullability in sync with those
+// (they are authoritative — not a live DB, which may lag). To reconcile a table,
+// generate it and hand-merge:
+//   diesel print-schema --database-url "$URL" <table_name> ...
 
 diesel::table! {
     use diesel::sql_types::*;
@@ -29,8 +34,6 @@ diesel::table! {
     md_feature_switch (id) {
         id -> Int8,
         irods_service_available -> Bool,
-        simulation_animation_available -> Bool,
-        media_service -> Varchar,
     }
 }
 
@@ -108,7 +111,7 @@ diesel::table! {
         number -> Nullable<Varchar>,
         year -> Int4,
         pages -> Nullable<Varchar>,
-        doi -> Varchar,
+        doi -> Nullable<Varchar>,
     }
 }
 
@@ -146,7 +149,7 @@ diesel::table! {
         is_deprecated -> Bool,
         protonation_method -> Nullable<Text>,
         integration_timestep_fs -> Nullable<Int4>,
-        short_description -> Nullable<Text>,
+        short_description -> Text,
         pdb_id -> Nullable<Int8>,
         is_public -> Bool,
         fasta_sequence -> Nullable<Text>,
@@ -170,9 +173,12 @@ diesel::table! {
 
 diesel::table! {
     use diesel::sql_types::*;
-    md_simulation_replicate_group (id) {
+    md_replicate_group (id) {
         id -> Int8,
-        psf_hash -> Varchar,
+        replicate_key -> Varchar,
+        user_id -> Int8,
+        description -> Text,
+        sample_mdrepo_id -> Varchar,
     }
 }
 
@@ -316,7 +322,7 @@ diesel::table! {
         uid -> Varchar,
         last_login -> Timestamptz,
         date_joined -> Timestamptz,
-        extra_data -> Text,
+        extra_data -> Jsonb,
         user_id -> Int8,
     }
 }
@@ -350,7 +356,7 @@ diesel::table! {
         token_secret -> Text,
         expires_at -> Nullable<Timestamptz>,
         account_id -> Int4,
-        app_id -> Int4,
+        app_id -> Nullable<Int4>,
     }
 }
 
@@ -368,7 +374,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     md_replicate,
     md_simulation,
     md_simulation_pub,
-    md_simulation_replicate_group,
+    md_replicate_group,
     md_simulation_uniprot,
     md_software,
     md_solute,

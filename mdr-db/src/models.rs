@@ -100,24 +100,18 @@ pub struct ExternalLinkUpdate {
 pub struct FeatureSwitch {
     pub id: i64,
     pub irods_service_available: bool,
-    pub simulation_animation_available: bool,
-    pub media_service: String,
 }
 
 #[derive(Debug, Insertable, Deserialize)]
 #[diesel(table_name = md_feature_switch)]
 pub struct NewFeatureSwitch {
     pub irods_service_available: bool,
-    pub simulation_animation_available: bool,
-    pub media_service: String,
 }
 
 #[derive(Debug, AsChangeset, Default, Deserialize)]
 #[diesel(table_name = md_feature_switch)]
 pub struct FeatureSwitchUpdate {
     pub irods_service_available: Option<bool>,
-    pub simulation_animation_available: Option<bool>,
-    pub media_service: Option<String>,
 }
 
 // ── md_frontend_download_instance ────────────────────────────────────────────
@@ -394,7 +388,7 @@ pub struct Pub {
     pub number: Option<String>,
     pub year: i32,
     pub pages: Option<String>,
-    pub doi: String,
+    pub doi: Option<String>,
 }
 
 #[derive(Debug, Insertable, Deserialize)]
@@ -407,7 +401,7 @@ pub struct NewPub {
     pub number: Option<String>,
     pub year: i32,
     pub pages: Option<String>,
-    pub doi: String,
+    pub doi: Option<String>,
 }
 
 #[derive(Debug, AsChangeset, Default, Deserialize)]
@@ -420,7 +414,7 @@ pub struct PubUpdate {
     pub number: Option<Option<String>>,
     pub year: Option<i32>,
     pub pages: Option<Option<String>>,
-    pub doi: Option<String>,
+    pub doi: Option<Option<String>>,
 }
 
 // ── md_simulation ─────────────────────────────────────────────────────────────
@@ -464,7 +458,7 @@ pub struct Simulation {
     pub is_deprecated: bool,
     pub protonation_method: Option<String>,
     pub integration_timestep_fs: Option<i32>,
-    pub short_description: Option<String>,
+    pub short_description: String,
     pub pdb_id: Option<i64>,
     pub is_public: bool,
     pub fasta_sequence: Option<String>,
@@ -480,7 +474,7 @@ pub struct Simulation {
 #[diesel(table_name = md_simulation)]
 pub struct NewSimulation {
     pub description: Option<String>,
-    pub short_description: Option<String>,
+    pub short_description: String,
     pub run_commands: Option<String>,
     pub water_type: Option<String>,
     pub water_density: Option<f64>,
@@ -509,7 +503,7 @@ pub struct NewSimulation {
 #[diesel(table_name = md_simulation)]
 pub struct SimulationUpdate {
     pub description: Option<Option<String>>,
-    pub short_description: Option<Option<String>>,
+    pub short_description: Option<String>,
     pub run_commands: Option<Option<String>>,
     pub water_type: Option<Option<String>>,
     pub water_density: Option<Option<f64>>,
@@ -567,27 +561,44 @@ pub struct SimulationPubUpdate {
     pub pub_id: Option<i64>,
 }
 
-// ── md_simulation_replicate_group ─────────────────────────────────────────────
+// ── md_replicate_group ────────────────────────────────────────────────────────
 
 #[derive(
-    Debug, Queryable, Selectable, Identifiable, Serialize, Deserialize, ToSchema,
+    Debug,
+    Queryable,
+    Selectable,
+    Identifiable,
+    Associations,
+    Serialize,
+    Deserialize,
+    ToSchema,
 )]
-#[diesel(table_name = md_simulation_replicate_group)]
+#[diesel(table_name = md_replicate_group)]
+#[diesel(belongs_to(User))]
 pub struct ReplicateGroup {
     pub id: i64,
-    pub psf_hash: String,
+    pub replicate_key: String,
+    pub user_id: i64,
+    pub description: String,
+    pub sample_mdrepo_id: String,
 }
 
 #[derive(Debug, Insertable, Deserialize)]
-#[diesel(table_name = md_simulation_replicate_group)]
+#[diesel(table_name = md_replicate_group)]
 pub struct NewReplicateGroup {
-    pub psf_hash: String,
+    pub replicate_key: String,
+    pub user_id: i64,
+    pub description: String,
+    pub sample_mdrepo_id: String,
 }
 
 #[derive(Debug, AsChangeset, Default, Deserialize)]
-#[diesel(table_name = md_simulation_replicate_group)]
+#[diesel(table_name = md_replicate_group)]
 pub struct ReplicateGroupUpdate {
-    pub psf_hash: Option<String>,
+    pub replicate_key: Option<String>,
+    pub user_id: Option<i64>,
+    pub description: Option<String>,
+    pub sample_mdrepo_id: Option<String>,
 }
 
 // ── md_simulation_uniprot ─────────────────────────────────────────────────────
@@ -1037,7 +1048,7 @@ pub struct SocialAccount {
     pub uid: String,
     pub last_login: DateTime<Utc>,
     pub date_joined: DateTime<Utc>,
-    pub extra_data: String,
+    pub extra_data: serde_json::Value,
     pub user_id: i64,
 }
 
@@ -1048,7 +1059,7 @@ pub struct NewSocialAccount {
     pub uid: String,
     pub last_login: DateTime<Utc>,
     pub date_joined: DateTime<Utc>,
-    pub extra_data: String,
+    pub extra_data: serde_json::Value,
     pub user_id: i64,
 }
 
@@ -1059,7 +1070,7 @@ pub struct SocialAccountUpdate {
     pub uid: Option<String>,
     pub last_login: Option<DateTime<Utc>>,
     pub date_joined: Option<DateTime<Utc>>,
-    pub extra_data: Option<String>,
+    pub extra_data: Option<serde_json::Value>,
     pub user_id: Option<i64>,
 }
 
@@ -1153,7 +1164,7 @@ pub struct SocialToken {
     pub token_secret: String,
     pub expires_at: Option<DateTime<Utc>>,
     pub account_id: i32,
-    pub app_id: i32,
+    pub app_id: Option<i32>,
 }
 
 #[derive(Debug, Insertable, Deserialize)]
@@ -1163,7 +1174,7 @@ pub struct NewSocialToken {
     pub token_secret: String,
     pub expires_at: Option<DateTime<Utc>>,
     pub account_id: i32,
-    pub app_id: i32,
+    pub app_id: Option<i32>,
 }
 
 #[derive(Debug, AsChangeset, Default, Deserialize)]
@@ -1173,5 +1184,5 @@ pub struct SocialTokenUpdate {
     pub token_secret: Option<String>,
     pub expires_at: Option<Option<DateTime<Utc>>>,
     pub account_id: Option<i32>,
-    pub app_id: Option<i32>,
+    pub app_id: Option<Option<i32>>,
 }

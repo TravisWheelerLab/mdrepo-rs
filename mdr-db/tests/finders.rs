@@ -68,19 +68,17 @@ fn seed_user(c: &mut PgConnection, key: &str) -> i64 {
 }
 
 fn seed_orcid(c: &mut PgConnection, user_id: i64, provider: &str, orcid: &str) {
-    // Seed via raw SQL: `extra_data` is `jsonb` in the real schema, but schema.rs
-    // types it as Text, so `insert_social_account` can't write it. We only need
-    // the row to exist to exercise `find_user_id_by_orcid`.
-    use diesel::sql_types::{BigInt, Text};
-    diesel::sql_query(
-        "INSERT INTO socialaccount_socialaccount \
-         (provider, uid, last_login, date_joined, extra_data, user_id) \
-         VALUES ($1, $2, now(), now(), '{}'::jsonb, $3)",
+    ops::insert_social_account(
+        c,
+        NewSocialAccount {
+            provider: provider.into(),
+            uid: orcid.into(),
+            last_login: Utc::now(),
+            date_joined: Utc::now(),
+            extra_data: serde_json::json!({}),
+            user_id,
+        },
     )
-    .bind::<Text, _>(provider)
-    .bind::<Text, _>(orcid)
-    .bind::<BigInt, _>(user_id)
-    .execute(c)
     .expect("insert social account");
 }
 
@@ -89,7 +87,7 @@ fn seed_sim(c: &mut PgConnection) -> i64 {
         c,
         NewSimulation {
             description: None,
-            short_description: Some("test simulation".into()),
+            short_description: "test simulation".into(),
             run_commands: None,
             water_type: None,
             water_density: None,
@@ -252,7 +250,7 @@ fn find_pub_by_doi_and_metadata() {
             number: None,
             year: 2025,
             pages: None,
-            doi: "10.1000/pubtest".into(),
+            doi: Some("10.1000/pubtest".into()),
         },
     )
     .unwrap()
@@ -304,7 +302,7 @@ fn find_simulation_pub_link() {
             number: None,
             year: 2025,
             pages: None,
-            doi: "10.1000/linktest".into(),
+            doi: Some("10.1000/linktest".into()),
         },
     )
     .unwrap()
