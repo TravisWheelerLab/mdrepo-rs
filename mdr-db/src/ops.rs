@@ -1920,6 +1920,37 @@ pub fn find_simulation_pub_id(
         .optional()
 }
 
+/// Simulation id by `(alias, created_by_id)` — the first `get_simulation` upsert
+/// probe. A `None` creator matches a row whose `created_by_id IS NULL` (correct
+/// per-user alias semantics; the Python's `created_by_id = NULL` never matched).
+pub fn find_simulation_id_by_alias(
+    conn: &mut PgConnection,
+    sim_alias: &str,
+    created_by: Option<i64>,
+) -> QueryResult<Option<i64>> {
+    use crate::schema::md_simulation::dsl::*;
+    let mut q = md_simulation.filter(alias.eq(sim_alias)).into_boxed();
+    q = match created_by {
+        Some(u) => q.filter(created_by_id.eq(u)),
+        None => q.filter(created_by_id.is_null()),
+    };
+    q.select(id).first::<i64>(conn).optional()
+}
+
+/// Simulation id by its `unique_file_hash_string` — `get_simulation`'s second
+/// probe, used to recognise a re-upload of the same files.
+pub fn find_simulation_id_by_hash(
+    conn: &mut PgConnection,
+    hash: &str,
+) -> QueryResult<Option<i64>> {
+    use crate::schema::md_simulation::dsl::*;
+    md_simulation
+        .filter(unique_file_hash_string.eq(hash))
+        .select(id)
+        .first::<i64>(conn)
+        .optional()
+}
+
 // ── import: reprocess delete-cascade ──────────────────────────────────────────
 //
 // The DB has no ON DELETE CASCADE from the frontend-download link tables to the

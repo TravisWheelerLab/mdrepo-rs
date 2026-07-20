@@ -165,6 +165,30 @@ fn seed_download_instance(c: &mut PgConnection, sim_id: i64) -> i64 {
     .id
 }
 
+/// Set the alias / creator / file-hash keys the alias & hash finders look up.
+/// Done via raw SQL because `NewSimulation` doesn't (yet) carry `created_by_id`
+/// or `unique_file_hash_string` — the importer orchestration will add those.
+fn set_sim_keys(
+    c: &mut PgConnection,
+    sim_id: i64,
+    alias: Option<&str>,
+    created_by: Option<i64>,
+    hash: Option<&str>,
+) {
+    use diesel::sql_types::{BigInt, Nullable, Text};
+    diesel::sql_query(
+        "UPDATE md_simulation \
+         SET alias = $1, created_by_id = $2, unique_file_hash_string = $3 \
+         WHERE id = $4",
+    )
+    .bind::<Nullable<Text>, _>(alias)
+    .bind::<Nullable<BigInt>, _>(created_by)
+    .bind::<Nullable<Text>, _>(hash)
+    .bind::<BigInt, _>(sim_id)
+    .execute(c)
+    .expect("set simulation keys");
+}
+
 // ── finders ───────────────────────────────────────────────────────────────────
 
 #[test]
@@ -322,6 +346,53 @@ fn find_simulation_pub_link() {
         Some(link)
     );
     assert_eq!(ops::find_simulation_pub_id(&mut c, sim, p + 1).unwrap(), None);
+}
+
+#[test]
+fn find_simulation_by_alias_scoped_to_creator() {
+    let mut c = conn_or_skip!();
+    let user = seed_user(&mut c, "aliastest");
+    let owned = seed_sim(&mut c);
+    set_sim_keys(&mut c, owned, Some("owned-alias"), Some(user), None);
+    let anon = seed_sim(&mut c);
+    set_sim_keys(&mut c, anon, Some("anon-alias"), None, None);
+
+    assert_eq!(
+        ops::find_simulation_id_by_alias(&mut c, "owned-alias", Some(user)).unwrap(),
+        Some(owned)
+    );
+    // Same alias, wrong / missing creator -> no match.
+    assert_eq!(
+        ops::find_simulation_id_by_alias(&mut c, "owned-alias", None).unwrap(),
+        None
+    );
+    assert_eq!(
+        ops::find_simulation_id_by_alias(&mut c, "owned-alias", Some(user + 999_999))
+            .unwrap(),
+        None
+    );
+    // A None creator matches a NULL-created row.
+    assert_eq!(
+        ops::find_simulation_id_by_alias(&mut c, "anon-alias", None).unwrap(),
+        Some(anon)
+    );
+    assert_eq!(
+        ops::find_simulation_id_by_alias(&mut c, "absent", Some(user)).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn find_simulation_by_hash() {
+    let mut c = conn_or_skip!();
+    let sim = seed_sim(&mut c);
+    set_sim_keys(&mut c, sim, None, None, Some("hash-abc-123"));
+
+    assert_eq!(
+        ops::find_simulation_id_by_hash(&mut c, "hash-abc-123").unwrap(),
+        Some(sim)
+    );
+    assert_eq!(ops::find_simulation_id_by_hash(&mut c, "nope").unwrap(), None);
 }
 
 // ── reprocess delete-cascade ──────────────────────────────────────────────────
