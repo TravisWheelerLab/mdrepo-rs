@@ -1825,3 +1825,147 @@ pub fn update_social_account(
 pub fn delete_social_account(conn: &mut PgConnection, rid: i32) -> QueryResult<usize> {
     diesel::delete(socialaccount_socialaccount::table.find(rid)).execute(conn)
 }
+
+// ── import: natural-key finders ───────────────────────────────────────────────
+//
+// These back the DB-import port (replacing `import_preprocessed.py`). Each is a
+// pure "find" — it returns `Ok(None)` when there is no match rather than
+// inserting — so orchestration can decide find-or-create. They mirror the
+// SELECTs the script does before each `create_*`.
+
+/// User id for an ORCID, via the `orcid` social account. Mirrors the script's
+/// `get_user`: join `socialaccount_socialaccount` (provider `orcid`) to `md_user`.
+pub fn find_user_id_by_orcid(
+    conn: &mut PgConnection,
+    orcid_uid: &str,
+) -> QueryResult<Option<i64>> {
+    md_user::table
+        .inner_join(
+            socialaccount_socialaccount::table
+                .on(socialaccount_socialaccount::user_id.eq(md_user::id)),
+        )
+        .filter(socialaccount_socialaccount::provider.eq("orcid"))
+        .filter(socialaccount_socialaccount::uid.eq(orcid_uid))
+        .select(md_user::id)
+        .first::<i64>(conn)
+        .optional()
+}
+
+/// Software id by its natural key `(name, version)`. Mirrors `create_software`'s
+/// lookup. NOTE: this diverges deliberately from the Python for a NULL version —
+/// the script queries `version = %s`, which never matches when the version is
+/// None (so it always inserts a fresh row); here a None version matches an
+/// existing `version IS NULL` row, which is the correct dedup behavior.
+pub fn find_software_id_by_name_version(
+    conn: &mut PgConnection,
+    sw_name: &str,
+    sw_version: Option<&str>,
+) -> QueryResult<Option<i64>> {
+    use crate::schema::md_software::dsl::*;
+    let mut q = md_software.filter(name.eq(sw_name)).into_boxed();
+    q = match sw_version {
+        Some(v) => q.filter(version.eq(v)),
+        None => q.filter(version.is_null()),
+    };
+    q.select(id).first::<i64>(conn).optional()
+}
+
+/// Pub id by DOI — the script's preferred dedup key when a DOI is present.
+pub fn find_pub_id_by_doi(
+    conn: &mut PgConnection,
+    pub_doi: &str,
+) -> QueryResult<Option<i64>> {
+    use crate::schema::md_pub::dsl::*;
+    md_pub
+        .filter(doi.eq(pub_doi))
+        .select(id)
+        .first::<i64>(conn)
+        .optional()
+}
+
+/// Pub id by metadata — the script's dedup fallback when there is no DOI.
+pub fn find_pub_id_by_metadata(
+    conn: &mut PgConnection,
+    pub_title: &str,
+    pub_authors: &str,
+    pub_journal: &str,
+    pub_volume: i32,
+    pub_year: i32,
+) -> QueryResult<Option<i64>> {
+    use crate::schema::md_pub::dsl::*;
+    md_pub
+        .filter(title.eq(pub_title))
+        .filter(authors.eq(pub_authors))
+        .filter(journal.eq(pub_journal))
+        .filter(volume.eq(pub_volume))
+        .filter(year.eq(pub_year))
+        .select(id)
+        .first::<i64>(conn)
+        .optional()
+}
+
+/// Existing `md_simulation_pub` link id for `(simulation_id, pub_id)`, so the
+/// importer doesn't create a duplicate link (mirrors `create_paper`'s guard).
+pub fn find_simulation_pub_id(
+    conn: &mut PgConnection,
+    sim_id: i64,
+    pid: i64,
+) -> QueryResult<Option<i64>> {
+    use crate::schema::md_simulation_pub::dsl::*;
+    md_simulation_pub
+        .filter(simulation_id.eq(sim_id))
+        .filter(pub_id.eq(pid))
+        .select(id)
+        .first::<i64>(conn)
+        .optional()
+}
+
+// ── import: reprocess delete-cascade ──────────────────────────────────────────
+//
+// The DB has no ON DELETE CASCADE from the frontend-download link tables to the
+// file tables, so — like the script — we delete the link rows first, then the
+// files. Returns the number of *file* rows deleted.
+
+/// Delete a simulation's processed files and their frontend-download links.
+/// Used on the `--simulation-id` reprocess path.
+pub fn delete_processed_files_for_simulation(
+    conn: &mut PgConnection,
+    sim_id: i64,
+) -> QueryResult<usize> {
+    use crate::schema::md_frontend_download_instance_processed_files::dsl as link;
+    use crate::schema::md_processed_file::dsl as pf;
+
+    let file_ids = pf::md_processed_file
+        .filter(pf::simulation_id.eq(sim_id))
+        .select(pf::id);
+    diesel::delete(
+        link::md_frontend_download_instance_processed_files
+            .filter(link::simulationprocessedfile_id.eq_any(file_ids)),
+    )
+    .execute(conn)?;
+
+    diesel::delete(pf::md_processed_file.filter(pf::simulation_id.eq(sim_id)))
+        .execute(conn)
+}
+
+/// Delete a simulation's uploaded (original) files and their frontend-download
+/// links. Used on the `--replace-original-files` reprocess path.
+pub fn delete_uploaded_files_for_simulation(
+    conn: &mut PgConnection,
+    sim_id: i64,
+) -> QueryResult<usize> {
+    use crate::schema::md_frontend_download_instance_uploaded_files::dsl as link;
+    use crate::schema::md_uploaded_file::dsl as uf;
+
+    let file_ids = uf::md_uploaded_file
+        .filter(uf::simulation_id.eq(sim_id))
+        .select(uf::id);
+    diesel::delete(
+        link::md_frontend_download_instance_uploaded_files
+            .filter(link::simulationuploadedfile_id.eq_any(file_ids)),
+    )
+    .execute(conn)?;
+
+    diesel::delete(uf::md_uploaded_file.filter(uf::simulation_id.eq(sim_id)))
+        .execute(conn)
+}
