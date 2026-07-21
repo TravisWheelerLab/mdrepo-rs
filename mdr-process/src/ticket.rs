@@ -321,7 +321,7 @@ struct FeedbackCtx {
 
 // --------------------------------------------------
 /// The DSN env var for a given server.
-fn dsn_for(server: &Server) -> &'static str {
+pub(crate) fn dsn_for(server: &Server) -> &'static str {
     match server {
         Server::Production => "PRODUCTION_DSN",
         Server::Staging => "STAGING_DSN",

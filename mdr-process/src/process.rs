@@ -1,4 +1,6 @@
 use crate::{
+    import::{self, ImportOpts},
+    ticket::dsn_for,
     types::{
         BlastResult, CheckedLigand, DoiPaper, Duration, Export, ExportSimulation,
         ImportJsonArgs, ImportResult, InferredLigand, MdFile, PdbEntry, PdbResponse,
@@ -147,7 +149,7 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
         make_trajectory_tarballs(&processed_dir, &processed_trajectories)?;
 
     let import_json = &processed_dir.join("import.json");
-    let warnings = make_import_json(ImportJsonArgs {
+    let (simulation, warnings) = make_import_json(ImportJsonArgs {
         meta,
         import_json,
         processed_dir: &processed_dir,
@@ -166,20 +168,19 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
 
     let mut simulation_id: Option<u32> = None;
     if !args.dry_run {
-        let import_result = run_import(RunImportArgs {
-            uv: &uv,
-            script_dir: &script_dir,
-            import_json,
-            input_dir: &input_dir,
-            server: &args.server.to_string(),
+        let imported_id = run_import(RunImportArgs {
+            simulation: &simulation,
+            server: &args.server,
             reprocess_simulation_id: args.reprocess_simulation_id,
-            processed_dir: &processed_dir,
             replace_original_files: args.replace_original_files,
         })?;
-        debug!("{import_result:?}");
-
-        let imported_id = import_result.simulation_id;
         simulation_id = Some(imported_id);
+
+        let import_result = ImportResult {
+            filename: import_json.to_string_lossy().to_string(),
+            simulation_id: imported_id,
+        };
+        debug!("{import_result:?}");
 
         let push_res = run_push(
             &uv,
@@ -218,47 +219,24 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
 }
 
 // --------------------------------------------------
-fn run_import(args: RunImportArgs) -> Result<ImportResult> {
-    let import_script = args.script_dir.join("import_preprocessed.py");
-    let out_file = args.processed_dir.join("imported.json");
-    debug!(r#"Import "{}""#, args.import_json.display());
+/// Import the simulation into the database, returning its ID. Unlike the ticket
+/// feedback path, a DB failure here is fatal — the import *is* the work.
+fn run_import(args: RunImportArgs) -> Result<u32> {
+    let env_key = dsn_for(args.server);
+    let url = env::var(env_key).map_err(|e| anyhow!("{env_key}: {e}"))?;
+    let mut conn =
+        mdr_db::connect(&url).map_err(|e| anyhow!("Failed to connect: {e}"))?;
 
-    let mut cmd_args = vec![
-        "run".to_string(),
-        import_script.to_string_lossy().to_string(),
-        "--file".to_string(),
-        args.import_json.to_string_lossy().to_string(),
-        "--data-dir".to_string(),
-        args.input_dir.to_string_lossy().to_string(),
-        "--server".to_string(),
-        args.server.to_string(),
-        "--out-file".to_string(),
-        out_file.to_string_lossy().to_string(),
-    ];
+    let sim_id = import::import_simulation(
+        &mut conn,
+        args.simulation,
+        &ImportOpts {
+            reprocess_simulation_id: args.reprocess_simulation_id,
+            replace_original_files: args.replace_original_files,
+        },
+    )?;
 
-    if let Some(id) = args.reprocess_simulation_id {
-        cmd_args.extend(["--simulation-id".to_string(), id.to_string()]);
-    }
-
-    if args.replace_original_files {
-        cmd_args.extend(["--replace-original-files".to_string()]);
-    }
-
-    let mut cmd = Command::new(args.uv);
-    cmd.current_dir(args.script_dir).args(&cmd_args);
-    debug!("Running {cmd:?}");
-
-    let output = cmd.output()?;
-    if !output.status.success() {
-        bail!("{}", String::from_utf8_lossy(&output.stderr));
-    }
-
-    if !file_exists(&out_file) {
-        bail!(r#"Failed to create "{}""#, out_file.display());
-    }
-
-    serde_json::from_str(&read_file(&out_file)?)
-        .map_err(|e| anyhow!(r#"Failed to parse "{}": {e}"#, out_file.display()))
+    u32::try_from(sim_id).map_err(|e| anyhow!("Simulation ID {sim_id}: {e}"))
 }
 
 // --------------------------------------------------
@@ -1017,7 +995,11 @@ pub fn make_trajectory_tarballs(
 }
 
 // --------------------------------------------------
-pub fn make_import_json(args: ImportJsonArgs) -> Result<Vec<String>> {
+/// Build the simulation payload, write it to `import.json`, and return it along
+/// with the warnings collected on the way.
+pub fn make_import_json(
+    args: ImportJsonArgs,
+) -> Result<(ExportSimulation, Vec<String>)> {
     let structure_hash =
         get_file_hash(&args.input_dir.join(&args.meta.structure_file_name))?;
 
@@ -1159,16 +1141,13 @@ pub fn make_import_json(args: ImportJsonArgs) -> Result<Vec<String>> {
         }
     }
 
-    let export = Export {
-        simulation,
-        warnings: warnings.clone(),
-    };
+    let export = Export { simulation };
 
     debug!(r#"Writing JSON to "{}""#, args.import_json.display());
     let file = File::create(args.import_json)?;
     writeln!(&file, "{}", &serde_json::to_string_pretty(&export)?)?;
 
-    Ok(warnings)
+    Ok((export.simulation, warnings))
 }
 
 // --------------------------------------------------

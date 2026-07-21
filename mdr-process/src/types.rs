@@ -394,10 +394,11 @@ pub struct RcsbUniprotProteinName {
 }
 
 // --------------------------------------------------
+/// The `import.json` payload. Kept on disk as the audit artifact of a run and
+/// read by `push_sim_files.py`, which wants the `simulation` key.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Export {
     pub simulation: ExportSimulation,
-    pub warnings: Vec<String>,
 }
 
 // --------------------------------------------------
@@ -514,12 +515,21 @@ pub struct MdFile {
 }
 
 // --------------------------------------------------
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug)]
+pub struct RunImportArgs<'a> {
+    pub simulation: &'a ExportSimulation,
+    pub server: &'a Server,
+    pub reprocess_simulation_id: Option<u64>,
+    pub replace_original_files: bool,
+}
+
+// --------------------------------------------------
+/// What the importer hands to `push_sim_files.py`.
+#[derive(Debug)]
 pub struct ImportResult {
-    pub server: String,
+    /// The `import.json` the push script re-reads the simulation from.
     pub filename: String,
     pub simulation_id: u32,
-    pub data_dir: String,
 }
 
 // --------------------------------------------------
@@ -697,19 +707,6 @@ pub struct ImportJsonArgs<'a> {
     pub trajectory_tarballs: &'a [ProcessedTarball],
     pub reprocess_simulation_id: Option<u64>,
     pub replicates: &'a [String],
-    pub replace_original_files: bool,
-}
-
-// --------------------------------------------------
-#[derive(Debug)]
-pub struct RunImportArgs<'a> {
-    pub uv: &'a Path,
-    pub script_dir: &'a Path,
-    pub import_json: &'a Path,
-    pub input_dir: &'a Path,
-    pub server: &'a str,
-    pub reprocess_simulation_id: Option<u64>,
-    pub processed_dir: &'a Path,
     pub replace_original_files: bool,
 }
 
