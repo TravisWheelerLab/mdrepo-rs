@@ -192,22 +192,6 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
             &processed_dir,
         )?;
         debug!("{push_res:?}");
-
-        // With a good simulation ID and a known iRODS release directory, issue
-        // an iRODS ticket for the simulation's directory.
-        if imported_id > 0 {
-            let irods_dir = format!(
-                "/iplant/home/shared/mdrepo/{}/release/MDR{imported_id:08}",
-                args.server
-            );
-            create_irods_ticket(
-                &uv,
-                &script_dir,
-                imported_id,
-                &irods_dir,
-                &args.server.to_string(),
-            )?;
-        }
     }
 
     debug!("Finished processing in {:?}", start_time.elapsed());
@@ -291,40 +275,6 @@ fn run_push(
 
     serde_json::from_str(&read_file(&out_file)?)
         .map_err(|e| anyhow!(r#"Failed to parse "{}": {e}"#, out_file.display()))
-}
-
-// --------------------------------------------------
-fn create_irods_ticket(
-    uv: &Path,
-    script_dir: &Path,
-    simulation_id: u32,
-    irods_dir: &str,
-    server: &str,
-) -> Result<()> {
-    let ticket_script = script_dir.join("create_irods_ticket.py");
-    debug!(r#"Create iRODS ticket for "{irods_dir}""#);
-
-    let args = vec![
-        "run".to_string(),
-        ticket_script.to_string_lossy().to_string(),
-        "--simulation-id".to_string(),
-        simulation_id.to_string(),
-        "--path".to_string(),
-        irods_dir.to_string(),
-        "--server".to_string(),
-        server.to_string(),
-    ];
-
-    let mut cmd = Command::new(uv);
-    cmd.current_dir(script_dir).args(&args);
-    debug!("Running {cmd:?}");
-
-    let output = cmd.output()?;
-    if !output.status.success() {
-        bail!("{}", String::from_utf8_lossy(&output.stderr));
-    }
-
-    Ok(())
 }
 
 // --------------------------------------------------
@@ -1723,7 +1673,11 @@ pub fn get_doi(doi: &str) -> Result<metadata::Paper> {
     let year = doi_paper
         .published
         .or(doi_paper.issued)
-        .and_then(|date| date.date_parts.first().and_then(|parts| parts.first().copied()))
+        .and_then(|date| {
+            date.date_parts
+                .first()
+                .and_then(|parts| parts.first().copied())
+        })
         .unwrap_or(0);
     // Crossref reports volume as a string (e.g. "11", but also "11A"); keep the
     // numeric Paper.volume, falling back to 0 when it is absent or non-numeric.
