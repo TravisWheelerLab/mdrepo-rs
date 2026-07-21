@@ -93,8 +93,13 @@ fn seed_sim(c: &mut PgConnection) -> i64 {
             water_density: None,
             duration: None,
             sampling_frequency: None,
+            integration_timestep_fs: None,
             creation_date: Utc::now(),
             software_id: None,
+            created_by_id: None,
+            unique_file_hash_string: None,
+            rmsd_values: None,
+            rmsf_values: None,
             forcefield: None,
             forcefield_comments: None,
             temperature: None,
@@ -166,8 +171,6 @@ fn seed_download_instance(c: &mut PgConnection, sim_id: i64) -> i64 {
 }
 
 /// Set the alias / creator / file-hash keys the alias & hash finders look up.
-/// Done via raw SQL because `NewSimulation` doesn't (yet) carry `created_by_id`
-/// or `unique_file_hash_string` — the importer orchestration will add those.
 fn set_sim_keys(
     c: &mut PgConnection,
     sim_id: i64,
@@ -175,17 +178,16 @@ fn set_sim_keys(
     created_by: Option<i64>,
     hash: Option<&str>,
 ) {
-    use diesel::sql_types::{BigInt, Nullable, Text};
-    diesel::sql_query(
-        "UPDATE md_simulation \
-         SET alias = $1, created_by_id = $2, unique_file_hash_string = $3 \
-         WHERE id = $4",
+    ops::update_simulation(
+        c,
+        sim_id,
+        SimulationUpdate {
+            alias: Some(alias.map(String::from)),
+            created_by_id: Some(created_by),
+            unique_file_hash_string: Some(hash.map(String::from)),
+            ..Default::default()
+        },
     )
-    .bind::<Nullable<Text>, _>(alias)
-    .bind::<Nullable<BigInt>, _>(created_by)
-    .bind::<Nullable<Text>, _>(hash)
-    .bind::<BigInt, _>(sim_id)
-    .execute(c)
     .expect("set simulation keys");
 }
 
