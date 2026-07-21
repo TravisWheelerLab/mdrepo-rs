@@ -397,6 +397,193 @@ fn find_simulation_by_hash() {
     assert_eq!(ops::find_simulation_id_by_hash(&mut c, "nope").unwrap(), None);
 }
 
+#[test]
+fn find_contribution_by_orcid_email_or_name() {
+    let mut c = conn_or_skip!();
+    let sim = seed_sim(&mut c);
+    let other_sim = seed_sim(&mut c);
+    let contrib = ops::insert_contribution(
+        &mut c,
+        NewContribution {
+            email: Some("ada@example.org".into()),
+            institution: None,
+            name: Some("Ada Lovelace".into()),
+            orcid: Some("0000-0002-contribtest".into()),
+            simulation_id: Some(sim),
+            rank: 1,
+        },
+    )
+    .unwrap()
+    .id;
+
+    for key in [
+        ops::ContributionKey::Orcid("0000-0002-contribtest"),
+        ops::ContributionKey::Email("ada@example.org"),
+        ops::ContributionKey::Name("Ada Lovelace"),
+    ] {
+        assert_eq!(
+            ops::find_contribution_id(&mut c, sim, key).unwrap(),
+            Some(contrib)
+        );
+    }
+    // Contributors are scoped to their simulation.
+    assert_eq!(
+        ops::find_contribution_id(
+            &mut c,
+            other_sim,
+            ops::ContributionKey::Orcid("0000-0002-contribtest")
+        )
+        .unwrap(),
+        None
+    );
+    assert_eq!(
+        ops::find_contribution_id(&mut c, sim, ops::ContributionKey::Name("Nobody"))
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn find_sim_scoped_children_by_natural_key() {
+    let mut c = conn_or_skip!();
+    let sim = seed_sim(&mut c);
+    let other = seed_sim(&mut c);
+
+    let pf = seed_processed_file(&mut c, sim, "run.psf");
+    let uf = seed_uploaded_file(&mut c, sim, "run.dcd");
+    let rep = ops::insert_replicate(
+        &mut c,
+        NewReplicate {
+            trajectory_file_name: "rep1.xtc".into(),
+            simulation_id: sim,
+        },
+    )
+    .unwrap()
+    .id;
+    let lig = ops::insert_ligand(
+        &mut c,
+        NewLigand {
+            name: "ATP".into(),
+            smiles_string: "C1=NC2=C(C(=N1)N)N=CN2".into(),
+            simulation_id: sim,
+        },
+    )
+    .unwrap()
+    .id;
+    let sol = ops::insert_solute(
+        &mut c,
+        NewSolute {
+            name: "Na+".into(),
+            concentration: 0.15,
+            simulation_id: sim,
+        },
+    )
+    .unwrap()
+    .id;
+    let link = ops::insert_external_link(
+        &mut c,
+        NewExternalLink {
+            url: "https://example.org/sim".into(),
+            label: None,
+            simulation_id: sim,
+        },
+    )
+    .unwrap()
+    .id;
+
+    assert_eq!(
+        ops::find_processed_file_id(&mut c, sim, "run.psf").unwrap(),
+        Some(pf)
+    );
+    assert_eq!(
+        ops::find_uploaded_file_id(&mut c, sim, "run.dcd").unwrap(),
+        Some(uf)
+    );
+    assert_eq!(
+        ops::find_replicate_id(&mut c, sim, "rep1.xtc").unwrap(),
+        Some(rep)
+    );
+    assert_eq!(ops::find_ligand_id(&mut c, sim, "ATP").unwrap(), Some(lig));
+    assert_eq!(ops::find_solute_id(&mut c, sim, "Na+").unwrap(), Some(sol));
+    assert_eq!(
+        ops::find_external_link_id(&mut c, sim, "https://example.org/sim").unwrap(),
+        Some(link)
+    );
+
+    // Each is scoped to its own simulation…
+    assert_eq!(
+        ops::find_processed_file_id(&mut c, other, "run.psf").unwrap(),
+        None
+    );
+    assert_eq!(
+        ops::find_uploaded_file_id(&mut c, other, "run.dcd").unwrap(),
+        None
+    );
+    assert_eq!(ops::find_replicate_id(&mut c, other, "rep1.xtc").unwrap(), None);
+    assert_eq!(ops::find_ligand_id(&mut c, other, "ATP").unwrap(), None);
+    assert_eq!(ops::find_solute_id(&mut c, other, "Na+").unwrap(), None);
+    assert_eq!(
+        ops::find_external_link_id(&mut c, other, "https://example.org/sim").unwrap(),
+        None
+    );
+    // …and an unknown key finds nothing.
+    assert_eq!(ops::find_ligand_id(&mut c, sim, "absent").unwrap(), None);
+}
+
+#[test]
+fn find_uniprot_and_pdb_by_their_string_keys() {
+    let mut c = conn_or_skip!();
+    let sim = seed_sim(&mut c);
+    let uni = ops::insert_uniprot(
+        &mut c,
+        NewUniprot {
+            uniprot_id: "P0DTC2-unitest".into(),
+            name: "Spike".into(),
+            amino_length: 4,
+            sequence: "MFVF".into(),
+        },
+    )
+    .unwrap()
+    .id;
+    let pdb = ops::insert_pdb(
+        &mut c,
+        NewPdb {
+            pdb_id: "6vxx-test".into(),
+            classification: Some("VIRAL PROTEIN".into()),
+            title: Some("Spike".into()),
+        },
+    )
+    .unwrap()
+    .id;
+
+    assert_eq!(
+        ops::find_uniprot_id_by_accession(&mut c, "P0DTC2-unitest").unwrap(),
+        Some(uni)
+    );
+    assert_eq!(
+        ops::find_uniprot_id_by_accession(&mut c, "absent").unwrap(),
+        None
+    );
+    assert_eq!(ops::find_pdb_id_by_code(&mut c, "6vxx-test").unwrap(), Some(pdb));
+    assert_eq!(ops::find_pdb_id_by_code(&mut c, "absent").unwrap(), None);
+
+    // The simulation link is separate from the uniprot row itself.
+    assert_eq!(ops::find_simulation_uniprot_id(&mut c, sim, uni).unwrap(), None);
+    let link = ops::insert_simulation_uniprot(
+        &mut c,
+        NewSimulationUniprot {
+            simulation_id: sim,
+            uniprot_id: uni,
+        },
+    )
+    .unwrap()
+    .id;
+    assert_eq!(
+        ops::find_simulation_uniprot_id(&mut c, sim, uni).unwrap(),
+        Some(link)
+    );
+}
+
 // ── reprocess delete-cascade ──────────────────────────────────────────────────
 
 #[test]
