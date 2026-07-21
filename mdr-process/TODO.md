@@ -68,3 +68,57 @@ Decide whether that is acceptable. If it is not, the options are roughly:
 - add a simulation-scoped warnings table (i.e. reinstate something like
   `md_import_warning`, which is the thing we just removed), or
 - accept the log/`import.json` as the record and close this out.
+
+---
+
+## Task E — tests for `import.rs`  (ACTIVE)
+
+`mdr-process/src/import.rs` has **no tests of its own.** `mdr-db`'s natural-key
+finders have 11 (`mdr-db/tests/finders.rs`), but nothing exercises
+`import_simulation`, which orchestrates all ten `upsert_*` helpers, both
+delete-cascades and the transaction. Today its only coverage is the manual
+staging runs described below, which nothing re-runs.
+
+Harness to reuse (already built, see `mdr-db/tests/`): an ephemeral Dockerized
+Postgres seeded from a schema-only dump of staging
+(`mdr-db/tests/fixtures/schema.sql`), one test per `begin_test_transaction()` so
+everything rolls back, skipped when `TEST_DATABASE_URL` is unset. Run it with
+`mdr-db/tests/with-testdb.sh`. Regenerate the fixture when Django migrations
+change the schema (command in that file's header).
+
+Cases worth covering — these are exactly what was verified by hand against
+staging simulation 80 on 2026-07-21, so they are the known-good behavior:
+1. **Fresh import** writes the simulation plus every child table, with absent
+   text stored as NULL rather than `""`.
+2. **Re-import of the same payload does not duplicate child rows** — every
+   `find_*` natural-key probe must hit. This is the big one; a regression here
+   is silent and only shows up as doubled contributors/files in the UI.
+3. **Reprocess** (`reprocess_simulation_id` set) deletes and reinserts the
+   processed files, leaves uploaded files alone, and leaves the `md_simulation`
+   row otherwise unchanged (`creation_date` included).
+4. **`replace_original_files`** additionally clears and reinserts the uploaded
+   files, re-deriving `is_primary` and `local_file_path`.
+5. **Shared entities are reused, not duplicated** — an existing pub/uniprot/pdb
+   /software is found and linked, and no second row appears.
+6. **The transaction rolls back as a unit**: force a failure partway through and
+   assert no half-imported simulation survives.
+
+---
+
+## Task F — retire `import_preprocessed.py`
+
+The Rust importer replaced it in production on 2026-07-21 (`process.rs` no longer
+shells out; the deployed `mdr-process` has no reference to the script). Parity was
+confirmed against staging simulation 80 across a fresh import, a reprocess, and a
+reprocess with `--replace-original-files`.
+
+What is left is deleting `simulation-processing/python/import_preprocessed.py` and
+whatever invokes it. Before doing so:
+- Confirm nothing else still calls it — it is also still being run by hand on a
+  separate machine for imports, which is why it is still on disk.
+- The other copy, `utils/python/misato/import_preprocessed.py`, has no solute
+  rename table and looks unrelated; check before touching it.
+- Two fixes landed in the script after the port, and both die with it:
+  `c802dac` (the `is_coarse_graing` key that reset the flag on every reprocess)
+  and the still-unfixed `{"Cl": "Cl+"}` rename, which the Rust importer corrects
+  to `Cl-`. Nothing to carry over — noted so neither looks like a regression.
