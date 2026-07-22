@@ -2,11 +2,11 @@ use crate::{
     import::{self, ImportOpts},
     ticket::dsn_for,
     types::{
-        BlastResult, CheckedLigand, DoiPaper, Duration, Export, ExportSimulation,
-        ImportJsonArgs, ImportResult, InferredLigand, MdFile, PdbEntry, PdbResponse,
-        ProcessArgs, ProcessResult, ProcessTrajectoryArgs, ProcessedTarball,
-        ProcessedTrajectory, ProcessedTrajectoryType, PushResult, RmsdRmsf,
-        RunImportArgs, UniprotDb, UniprotEntry, UniprotResponse,
+        BlastResult, CheckedLigand, DoiAuthor, DoiPaper, Duration, Export,
+        ExportSimulation, ImportJsonArgs, ImportResult, InferredLigand, MdFile,
+        PdbEntry, PdbResponse, ProcessArgs, ProcessResult, ProcessTrajectoryArgs,
+        ProcessedTarball, ProcessedTrajectory, ProcessedTrajectoryType, PushResult,
+        RmsdRmsf, RunImportArgs, UniprotDb, UniprotEntry, UniprotResponse,
     },
     validate,
 };
@@ -1663,22 +1663,37 @@ pub fn get_doi(doi: &str) -> Result<metadata::Paper> {
         .json()
         .map_err(|e| anyhow!("Failed to parse DOI response ({url}): {e}"))?;
 
+    Ok(mk_paper(doi_paper, doi))
+}
+
+// --------------------------------------------------
+/// Map a Crossref/DOI record onto a `Paper`. This is the authority on how a DOI
+/// becomes a publication; `utils/python/fix_pub_metadata.py`, which backfills
+/// the rows the retired Python importer wrote, mirrors it.
+fn mk_paper(doi_paper: DoiPaper, doi: &str) -> metadata::Paper {
     let authors = doi_paper
         .author
-        .into_iter()
-        .map(|author| format!("{} {}", author.given, author.family))
+        .iter()
+        .filter_map(DoiAuthor::display_name)
         .collect::<Vec<String>>()
         .join(", ");
 
-    let year = doi_paper
-        .published
-        .or(doi_paper.issued)
-        .and_then(|date| {
-            date.date_parts
-                .first()
-                .and_then(|parts| parts.first().copied())
-        })
-        .unwrap_or(0);
+    // Crossref spreads the publication date across four fields and populates
+    // whichever ones it has; take the year from the first that carries a date.
+    let year = [
+        doi_paper.published,
+        doi_paper.issued,
+        doi_paper.published_print,
+        doi_paper.published_online,
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(|date| {
+        date.date_parts
+            .first()
+            .and_then(|parts| parts.first().copied())
+    })
+    .unwrap_or(0);
     // Crossref reports volume as a string (e.g. "11", but also "11A"); keep the
     // numeric Paper.volume, falling back to 0 when it is absent or non-numeric.
     let volume = doi_paper.volume.and_then(|v| v.parse().ok()).unwrap_or(0);
@@ -1693,18 +1708,26 @@ pub fn get_doi(doi: &str) -> Result<metadata::Paper> {
         .or(doi_paper.publisher)
         .unwrap_or_else(|| "NA".to_string());
 
-    let paper = metadata::Paper {
+    // The issue number is usually reported at the top level, but some records
+    // carry it only inside `journal-issue`.
+    let number = doi_paper
+        .issue
+        .or_else(|| doi_paper.journal_issue.and_then(|issue| issue.issue));
+
+    // Journals that number articles rather than paginating them report an
+    // `article-number` in place of a `page`.
+    let pages = doi_paper.page.or(doi_paper.article_number);
+
+    metadata::Paper {
         title: doi_paper.title,
         authors,
         journal,
         volume,
-        number: None,
+        number,
         year,
-        pages: doi_paper.page,
+        pages,
         doi: Some(doi.to_string()),
-    };
-
-    Ok(paper)
+    }
 }
 
 // --------------------------------------------------
@@ -1800,6 +1823,51 @@ mod tests {
         software_name = "GROMACS"
         software_version = "2023"
     "#;
+
+    // The record `fix_pub_metadata.py` was written for: an issue and an
+    // `article-number` where there is no `page`, both of which get_doi used to
+    // discard, leaving `md_pub.number` and `md_pub.pages` empty.
+    #[test]
+    fn test_mk_paper_crossref() -> anyhow::Result<()> {
+        let text = std::fs::read_to_string("tests/inputs/doi-crossref.json")?;
+        let doi_paper: DoiPaper = serde_json::from_str(&text)?;
+        let paper = mk_paper(doi_paper, "10.1038/s41597-024-04140-z");
+
+        assert_eq!(
+            paper.title,
+            "mdCATH: A Large-Scale MD Dataset for Data-Driven \
+             Computational Biophysics"
+        );
+        assert_eq!(paper.journal, "Scientific Data");
+        assert_eq!(paper.volume, 11);
+        assert_eq!(paper.number, Some("1".to_string()));
+        assert_eq!(paper.year, 2024);
+        assert_eq!(paper.pages, Some("1299".to_string()));
+        assert!(paper.authors.starts_with("Antonio Mirarchi, "));
+        Ok(())
+    }
+
+    // Only `published-print` carries the date here, and the sole author is a
+    // consortium. Before, the year fell back to 0 and the record did not parse.
+    #[test]
+    fn test_mk_paper_print_date_and_consortium() -> anyhow::Result<()> {
+        let text = r#"{
+            "title": "An older study",
+            "author": [{"name": "The MDRepo Consortium"}],
+            "container-title": "Journal of Simulation",
+            "journal-issue": {"issue": "4"},
+            "published-print": {"date-parts": [[1998, 3]]}
+        }"#;
+        let doi_paper: DoiPaper = serde_json::from_str(text)?;
+        let paper = mk_paper(doi_paper, "10.0000/older");
+
+        assert_eq!(paper.year, 1998);
+        assert_eq!(paper.authors, "The MDRepo Consortium");
+        assert_eq!(paper.number, Some("4".to_string()));
+        assert_eq!(paper.pages, None);
+        assert_eq!(paper.volume, 0);
+        Ok(())
+    }
 
     #[test]
     fn test_round_dp() {

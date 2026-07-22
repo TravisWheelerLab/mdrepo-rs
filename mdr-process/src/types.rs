@@ -1,6 +1,6 @@
 use clap::Parser;
 use libmdrepo::metadata::{self, Meta};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::path::{Path, PathBuf};
 
 // --------------------------------------------------
@@ -553,34 +553,193 @@ pub struct PushResult {
 // --------------------------------------------------
 #[derive(Debug, Deserialize, Serialize)]
 pub struct DoiPaper {
+    #[serde(deserialize_with = "de_text")]
     pub title: String,
 
+    #[serde(default)]
     pub author: Vec<DoiAuthor>,
 
+    #[serde(default, deserialize_with = "de_opt_text")]
     pub publisher: Option<String>,
 
     #[serde(rename = "URL")]
     pub url: Option<String>,
 
+    #[serde(default, deserialize_with = "de_opt_text")]
     pub journal: Option<String>,
 
-    #[serde(rename = "container-title")]
+    #[serde(rename = "container-title", default, deserialize_with = "de_opt_text")]
     pub container_title: Option<String>,
 
     pub volume: Option<String>,
 
+    #[serde(default, deserialize_with = "de_opt_text")]
     pub page: Option<String>,
+
+    /// Journals that number articles rather than paginating them (Scientific
+    /// Data, Nature Communications, Scientific Reports, ...) report an
+    /// `article-number` and carry no `page` at all.
+    #[serde(rename = "article-number", default, deserialize_with = "de_opt_text")]
+    pub article_number: Option<String>,
+
+    #[serde(default, deserialize_with = "de_opt_text")]
+    pub issue: Option<String>,
+
+    /// Some records report the issue only here, not at the top level.
+    #[serde(rename = "journal-issue")]
+    pub journal_issue: Option<DoiJournalIssue>,
 
     pub published: Option<DoiDateParts>,
 
     pub issued: Option<DoiDateParts>,
+
+    #[serde(rename = "published-print")]
+    pub published_print: Option<DoiDateParts>,
+
+    #[serde(rename = "published-online")]
+    pub published_online: Option<DoiDateParts>,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DoiJournalIssue {
+    #[serde(default, deserialize_with = "de_opt_text")]
+    pub issue: Option<String>,
 }
 
 // --------------------------------------------------
 #[derive(Debug, Deserialize, Serialize)]
 pub struct DoiAuthor {
-    pub family: String,
-    pub given: String,
+    #[serde(default, deserialize_with = "de_opt_text")]
+    pub family: Option<String>,
+
+    #[serde(default, deserialize_with = "de_opt_text")]
+    pub given: Option<String>,
+
+    /// Consortium and organization authors carry a single `name` and neither a
+    /// `given` nor a `family`.
+    #[serde(default, deserialize_with = "de_opt_text")]
+    pub name: Option<String>,
+}
+
+impl DoiAuthor {
+    /// "Given Family", or whichever half the record has; a consortium author
+    /// falls back to its `name`. `None` when the entry names nobody, so that
+    /// such an entry drops out of the author list rather than joining it as an
+    /// empty string.
+    pub fn display_name(&self) -> Option<String> {
+        let parts: Vec<&str> = [self.given.as_deref(), self.family.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect();
+
+        if parts.is_empty() {
+            self.name.clone()
+        } else {
+            Some(parts.join(" "))
+        }
+    }
+}
+
+// --------------------------------------------------
+/// A DOI text field arrives as either a string or a list of strings; Crossref
+/// sends `title` and `container-title` both ways.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum DoiText {
+    One(String),
+    Many(Vec<String>),
+}
+
+// --------------------------------------------------
+/// Normalize a DOI text field: take the first value of a list, undo Crossref's
+/// XML escaping ("Nature Structural &amp; Molecular Biology") and collapse the
+/// whitespace it uses to pretty-print titles that contain markup across several
+/// indented lines. Both have to be undone here or the escaped, ragged form is
+/// what lands in `md_pub`.
+fn clean_text(text: DoiText) -> Option<String> {
+    let value = match text {
+        DoiText::One(val) => Some(val),
+        DoiText::Many(vals) => vals.into_iter().next(),
+    }?;
+
+    let collapsed = unescape_entities(&value)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    (!collapsed.is_empty()).then_some(collapsed)
+}
+
+// --------------------------------------------------
+/// Replace the XML entities Crossref escapes with the characters they stand
+/// for. Anything that is not a known entity is left as written, so a bare `&`
+/// survives intact.
+fn unescape_entities(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+
+    while let Some(start) = rest.find('&') {
+        out.push_str(&rest[..start]);
+        rest = &rest[start..];
+
+        let decoded = rest
+            .find(';')
+            .and_then(|semi| Some((decode_entity(&rest[1..semi])?, semi)));
+
+        match decoded {
+            Some((ch, semi)) => {
+                out.push(ch);
+                rest = &rest[semi + 1..];
+            }
+            _ => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+
+    out.push_str(rest);
+
+    out
+}
+
+// --------------------------------------------------
+/// Decode the body of an entity -- the part between `&` and `;` -- whether it
+/// is named (`amp`) or numeric (`#39`, `#x27`).
+fn decode_entity(body: &str) -> Option<char> {
+    match body {
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        "nbsp" => Some(' '),
+        _ => {
+            let digits = body.strip_prefix('#')?;
+            let code = match digits.strip_prefix(['x', 'X']) {
+                Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                _ => digits.parse().ok()?,
+            };
+            char::from_u32(code)
+        }
+    }
+}
+
+// --------------------------------------------------
+fn de_text<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(clean_text(DoiText::deserialize(deserializer)?).unwrap_or_default())
+}
+
+// --------------------------------------------------
+fn de_opt_text<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<DoiText>::deserialize(deserializer)?.and_then(clean_text))
 }
 
 // --------------------------------------------------
@@ -713,7 +872,7 @@ pub struct ImportJsonArgs<'a> {
 // --------------------------------------------------
 #[cfg(test)]
 mod tests {
-    use super::DoiPaper;
+    use super::{DoiAuthor, DoiPaper};
     use anyhow::Result;
     use std::fs;
 
@@ -733,13 +892,97 @@ mod tests {
         let text = fs::read_to_string("tests/inputs/doi-crossref.json")?;
         let paper: DoiPaper = serde_json::from_str(&text)?;
         assert_eq!(paper.volume, Some("11".to_string()));
-        assert_eq!(paper.published.unwrap().date_parts, vec![vec![2024, 11, 28]]);
+        assert_eq!(
+            paper.published.unwrap().date_parts,
+            vec![vec![2024, 11, 28]]
+        );
         assert_eq!(paper.issued.unwrap().date_parts, vec![vec![2024, 11, 28]]);
         // The journal is `container-title`, not the publisher.
         assert_eq!(paper.container_title, Some("Scientific Data".to_string()));
         assert_eq!(
             paper.publisher,
             Some("Springer Science and Business Media LLC".to_string())
+        );
+        Ok(())
+    }
+
+    // The same record is also the article-number case: Scientific Data numbers
+    // articles instead of paginating them, so it has no `page` at all.
+    #[test]
+    fn test_doi_paper_issue_and_article_number() -> Result<()> {
+        let text = fs::read_to_string("tests/inputs/doi-crossref.json")?;
+        let paper: DoiPaper = serde_json::from_str(&text)?;
+        assert_eq!(paper.issue, Some("1".to_string()));
+        assert_eq!(paper.journal_issue.unwrap().issue, Some("1".to_string()));
+        assert_eq!(paper.page, None);
+        assert_eq!(paper.article_number, Some("1299".to_string()));
+        Ok(())
+    }
+
+    // Crossref sends `title` and `container-title` as either a string or a
+    // list, escapes markup, and pretty-prints titles that contain markup across
+    // several indented lines. All three used to reach `md_pub` as written -- or,
+    // for the list, to fail to deserialize and drop the paper entirely.
+    #[test]
+    fn test_doi_paper_list_fields_and_escapes() -> Result<()> {
+        let text = r#"{
+            "title": [
+                "Structure of the\n                 protein &amp; its ligand"
+            ],
+            "container-title": ["Nature Structural &amp; Molecular Biology"],
+            "author": []
+        }"#;
+        let paper: DoiPaper = serde_json::from_str(text)?;
+        assert_eq!(paper.title, "Structure of the protein & its ligand");
+        assert_eq!(
+            paper.container_title,
+            Some("Nature Structural & Molecular Biology".to_string())
+        );
+        Ok(())
+    }
+
+    // An empty list is as good as an absent field, and a bare `&` is not an
+    // entity: it has to survive unescaping untouched.
+    #[test]
+    fn test_doi_paper_empty_list_and_bare_ampersand() -> Result<()> {
+        let text = r#"{
+            "title": "Ligand binding in AT&T's assay (&#37; bound)",
+            "container-title": [],
+            "author": []
+        }"#;
+        let paper: DoiPaper = serde_json::from_str(text)?;
+        assert_eq!(paper.title, "Ligand binding in AT&T's assay (% bound)");
+        assert_eq!(paper.container_title, None);
+        Ok(())
+    }
+
+    // A consortium author carries a `name` and neither `given` nor `family`,
+    // and an author may carry only one of the two halves. Both used to fail to
+    // deserialize, taking the whole record with them.
+    #[test]
+    fn test_doi_author_partial_names() -> Result<()> {
+        let text = r#"{
+            "title": "A collaborative study",
+            "author": [
+                {"given": "Ada", "family": "Lovelace"},
+                {"family": "Hopper"},
+                {"given": "Grace"},
+                {"name": "The MDRepo Consortium"},
+                {"ORCID": "https://orcid.org/0000-0000-0000-0000"}
+            ]
+        }"#;
+        let paper: DoiPaper = serde_json::from_str(text)?;
+        let names: Vec<Option<String>> =
+            paper.author.iter().map(DoiAuthor::display_name).collect();
+        assert_eq!(
+            names,
+            vec![
+                Some("Ada Lovelace".to_string()),
+                Some("Hopper".to_string()),
+                Some("Grace".to_string()),
+                Some("The MDRepo Consortium".to_string()),
+                None,
+            ]
         );
         Ok(())
     }
