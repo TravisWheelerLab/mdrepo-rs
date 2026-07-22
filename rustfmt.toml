@@ -1,0 +1,12 @@
+# Pins the workspace formatting so `cargo fmt` gives the same result on every
+# machine. Without this file rustfmt falls back to ~/.rustfmt.toml, which is how
+# the tree came to be formatted at a width nothing in the repo asked for.
+max_width = 88
+
+# Follow the crates' edition rather than whatever the toolchain's newest style
+# happens to be; moving to edition 2024 reordered every `use` in the workspace.
+style_edition = "2024"
+
+# `cargo fmt` passes this from each Cargo.toml, but a bare `rustfmt` (an editor
+# hook, say) otherwise assumes 2015 and misparses edition-2024 source.
+edition = "2024"
