@@ -1,5 +1,5 @@
 use crate::types::{FileInfo, FileType, GenArgs};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use libmdrepo::{
     constants::{STRUCTURE_FILE_EXTS, TOPOLOGY_FILE_EXTS, TRAJECTORY_FILE_EXTS},
     metadata::{AdditionalFile, Contributor, Meta},

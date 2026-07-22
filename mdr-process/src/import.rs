@@ -27,9 +27,9 @@
 //!   anion; the script wrote a cation that does not exist in these systems.
 
 use crate::types::{ExportSimulation, MdFile};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use chrono::Utc;
-use diesel::{connection::Connection, PgConnection};
+use diesel::{PgConnection, connection::Connection};
 use libmdrepo::metadata;
 use log::debug;
 use mdr_db::{
@@ -592,34 +592,34 @@ fn upsert_uniprot(
 ) -> Result<i64> {
     let amino_length = uniprot.sequence.len() as i32;
 
-    let uniprot_pk =
-        match ops::find_uniprot_id_by_accession(conn, &uniprot.uniprot_id)? {
-            Some(id) => {
-                ops::update_uniprot(
-                    conn,
-                    id,
-                    UniprotUpdate {
-                        name: Some(uniprot.name.clone()),
-                        amino_length: Some(amino_length),
-                        sequence: Some(uniprot.sequence.clone()),
-                        ..Default::default()
-                    },
-                )?;
-                id
-            }
-            None => {
-                ops::insert_uniprot(
-                    conn,
-                    NewUniprot {
-                        uniprot_id: uniprot.uniprot_id.clone(),
-                        name: uniprot.name.clone(),
-                        amino_length,
-                        sequence: uniprot.sequence.clone(),
-                    },
-                )?
-                .id
-            }
-        };
+    let uniprot_pk = match ops::find_uniprot_id_by_accession(conn, &uniprot.uniprot_id)?
+    {
+        Some(id) => {
+            ops::update_uniprot(
+                conn,
+                id,
+                UniprotUpdate {
+                    name: Some(uniprot.name.clone()),
+                    amino_length: Some(amino_length),
+                    sequence: Some(uniprot.sequence.clone()),
+                    ..Default::default()
+                },
+            )?;
+            id
+        }
+        None => {
+            ops::insert_uniprot(
+                conn,
+                NewUniprot {
+                    uniprot_id: uniprot.uniprot_id.clone(),
+                    name: uniprot.name.clone(),
+                    amino_length,
+                    sequence: uniprot.sequence.clone(),
+                },
+            )?
+            .id
+        }
+    };
 
     if let Some(id) = ops::find_simulation_uniprot_id(conn, sim_id, uniprot_pk)? {
         return Ok(id);

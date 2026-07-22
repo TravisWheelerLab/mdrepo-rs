@@ -63,16 +63,19 @@ pub fn apply_json_checks(
         }
     };
 
-    let suffix = path_hint
-        .map(|p| format!(" (at {p})"))
-        .unwrap_or_default();
+    let suffix = path_hint.map(|p| format!(" (at {p})")).unwrap_or_default();
 
     for check in checks {
         apply_one(&root, check, &suffix, failures);
     }
 }
 
-fn apply_one(root: &Value, check: &JsonCheck, suffix: &str, failures: &mut Vec<String>) {
+fn apply_one(
+    root: &Value,
+    check: &JsonCheck,
+    suffix: &str,
+    failures: &mut Vec<String>,
+) {
     let resolved = resolve_path(root, &check.path);
 
     if !check.exists {

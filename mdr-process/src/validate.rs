@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use libmdrepo::metadata::{Meta, MetaCheckOptions};
 use log::debug;
 use std::{fs, path::Path, process::Command};
@@ -11,7 +11,11 @@ use std::{fs, path::Path, process::Command};
 /// so canonicalizing before `validate_meta` keeps the validator happy while the
 /// submitter's file is preserved as sent. Shells out only when the metadata
 /// actually carries ligands.
-pub fn load_canonical_meta(meta_path: &Path, script_dir: &Path, uv: &Path) -> Result<Meta> {
+pub fn load_canonical_meta(
+    meta_path: &Path,
+    script_dir: &Path,
+    uv: &Path,
+) -> Result<Meta> {
     let mut meta = Meta::from_file(meta_path)?;
 
     let smiles: Vec<String> = match meta.ligands.as_ref() {
@@ -33,7 +37,11 @@ pub fn load_canonical_meta(meta_path: &Path, script_dir: &Path, uv: &Path) -> Re
 /// returning the canonical forms in input order. One `uv` spawn covers the whole
 /// batch (the OpenBabel import alone costs ~1s). An unparsable SMILES makes the
 /// script exit non-zero, surfaced here as a submitter-facing error.
-fn canonicalize_smiles(smiles: &[String], script_dir: &Path, uv: &Path) -> Result<Vec<String>> {
+fn canonicalize_smiles(
+    smiles: &[String],
+    script_dir: &Path,
+    uv: &Path,
+) -> Result<Vec<String>> {
     let script = script_dir.join("canonicalize_smiles.py");
     let mut cmd = Command::new(uv);
     cmd.current_dir(script_dir)
@@ -160,7 +168,10 @@ mod tests {
 
     #[test]
     fn rejects_nonexistent_dir() {
-        assert!(validate_meta(Path::new("/nonexistent/path"), &minimal_meta(), None).is_err());
+        assert!(
+            validate_meta(Path::new("/nonexistent/path"), &minimal_meta(), None)
+                .is_err()
+        );
     }
 
     #[test]
@@ -205,9 +216,11 @@ mod tests {
         write_minimal_dir(dir.path());
         fs::remove_file(dir.path().join("sim.xtc")).unwrap();
         let errors = validate_meta(dir.path(), &minimal_meta(), None).unwrap();
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("Missing") && e.contains("sim.xtc")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("Missing") && e.contains("sim.xtc"))
+        );
     }
 
     #[test]

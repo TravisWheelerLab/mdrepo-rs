@@ -1,5 +1,5 @@
 use crate::{common::read_file, constants};
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use chrono::Datelike;
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow::Borrowed, collections::HashMap, ffi::OsStr, path::Path};
@@ -1002,7 +1002,7 @@ mod tests {
     const JSON_OK1: &str = "tests/inputs/metadata/ok1.json";
     const JSON_BAD1: &str = "tests/inputs/metadata/bad1.json";
 
-    use super::{is_valid_smiles, AdditionalFile, Meta, MetaCheckOptions};
+    use super::{AdditionalFile, Meta, MetaCheckOptions, is_valid_smiles};
     use anyhow::Result;
     use std::path::PathBuf;
     use validator::Validate;
@@ -1370,9 +1370,10 @@ mod tests {
         ))?;
         assert_eq!(meta.trajectory_file_names.len(), 2);
         assert!(meta.trajectory_file_names.contains(&"5aom.xtc".to_string()));
-        assert!(meta
-            .trajectory_file_names
-            .contains(&"5aom_2.xtc".to_string()));
+        assert!(
+            meta.trajectory_file_names
+                .contains(&"5aom_2.xtc".to_string())
+        );
         Ok(())
     }
 

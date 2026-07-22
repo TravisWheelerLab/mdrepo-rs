@@ -10,7 +10,7 @@ use crate::{
     },
     validate,
 };
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use dotenvy::dotenv;
 use libmdrepo::{
     common::{file_exists, get_md5, read_file},
@@ -1810,7 +1810,7 @@ mod tests {
     use super::*;
     use libmdrepo::metadata::Meta;
     use std::io::Write;
-    use tempfile::{tempdir, NamedTempFile};
+    use tempfile::{NamedTempFile, tempdir};
 
     const MINIMAL_TOML: &str = r#"
         lead_contributor_orcid = "0000-0000-0000-0000"
@@ -2011,11 +2011,13 @@ mod tests {
         let tmp = tempdir().unwrap();
         let fasta = tmp.path().join("sequence.fa");
         fs::write(&fasta, b">1\nACGT").unwrap();
-        assert!(blast_uniprot(
-            &fasta,
-            Path::new("/nonexistent/blast"),
-            UniprotDb::Swissprot
-        )
-        .is_err());
+        assert!(
+            blast_uniprot(
+                &fasta,
+                Path::new("/nonexistent/blast"),
+                UniprotDb::Swissprot
+            )
+            .is_err()
+        );
     }
 }

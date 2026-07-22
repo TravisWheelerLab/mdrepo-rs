@@ -1,4 +1,4 @@
-use lazy_regex::{lazy_regex, Lazy, Regex};
+use lazy_regex::{Lazy, Regex, lazy_regex};
 use std::collections::BTreeMap;
 
 pub const MAX_FILE_SIZE_GB: u64 = 40;

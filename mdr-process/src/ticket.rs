@@ -2,7 +2,7 @@ use crate::{
     process,
     types::{ProcessArgs, Server, SubmissionCompleteJson, TicketArgs, TicketInfo},
 };
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use chrono::Utc;
 use diesel::pg::PgConnection;
 use dotenvy::dotenv;
@@ -13,9 +13,7 @@ use libmdrepo::{
 };
 use log::{debug, info};
 use mdr_db::{
-    models::{
-        NewUploadInstance, NewUploadMessage, TicketUpdate, UploadInstanceUpdate,
-    },
+    models::{NewUploadInstance, NewUploadMessage, TicketUpdate, UploadInstanceUpdate},
     ops,
 };
 use rayon::prelude::*;
@@ -457,12 +455,7 @@ fn process_landing(
                     false,
                     false,
                 );
-                update_instance_result(
-                    conn,
-                    *upload_id,
-                    true,
-                    result.simulation_id,
-                );
+                update_instance_result(conn, *upload_id, true, result.simulation_id);
             }
             if !result.warnings.is_empty() {
                 info!(
@@ -510,8 +503,15 @@ fn ensure_upload_instance(
     orcid: &str,
     filenames: &str,
 ) -> Result<i64> {
-    let (_, existing) =
-        ops::list_upload_instances(conn, None, None, Some(ticket_id), true, None, None)?;
+    let (_, existing) = ops::list_upload_instances(
+        conn,
+        None,
+        None,
+        Some(ticket_id),
+        true,
+        None,
+        None,
+    )?;
 
     if let Some(instance) = existing
         .into_iter()
@@ -668,9 +668,11 @@ mod tests {
         let json = r#"{"total_filenum":1,"total_filesize":0,"status":"completed","files":[{"irods_path":"ghost.xtc","size":0,"md5_hash":"abc123abc123abc123abc123abc12300"}]}"#;
         fs::write(dir.path().join(COMPLETED_JSON), json).unwrap();
         let errors = check_manifest(dir.path()).unwrap();
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("Missing") && e.contains("ghost.xtc")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("Missing") && e.contains("ghost.xtc"))
+        );
     }
 
     #[test]
@@ -680,9 +682,11 @@ mod tests {
         let json = r#"{"total_filenum":1,"total_filesize":10,"status":"completed","files":[{"irods_path":"sim.xtc","size":10,"md5_hash":"00000000000000000000000000000000"}]}"#;
         fs::write(dir.path().join(COMPLETED_JSON), json).unwrap();
         let errors = check_manifest(dir.path()).unwrap();
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("MD5") && e.contains("sim.xtc")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("MD5") && e.contains("sim.xtc"))
+        );
     }
 
     #[test]
@@ -695,9 +699,11 @@ mod tests {
         );
         fs::write(dir.path().join(COMPLETED_JSON), json).unwrap();
         let errors = check_manifest(dir.path()).unwrap();
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("size") && e.contains("sim.xtc")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("size") && e.contains("sim.xtc"))
+        );
     }
 
     #[test]

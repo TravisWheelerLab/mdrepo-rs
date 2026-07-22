@@ -241,7 +241,8 @@ fn find_software_matches_null_version() {
     // None matches the NULL-version row (the deliberate improvement over the
     // Python, whose `version = NULL` never matched).
     assert_eq!(
-        ops::find_software_id_by_name_version(&mut c, "GROMACS-nulltest", None).unwrap(),
+        ops::find_software_id_by_name_version(&mut c, "GROMACS-nulltest", None)
+            .unwrap(),
         Some(versionless)
     );
     // A version query does not match the NULL-version row.
@@ -286,7 +287,10 @@ fn find_pub_by_doi_and_metadata() {
         ops::find_pub_id_by_doi(&mut c, "10.1000/pubtest").unwrap(),
         Some(p)
     );
-    assert_eq!(ops::find_pub_id_by_doi(&mut c, "10.1000/absent").unwrap(), None);
+    assert_eq!(
+        ops::find_pub_id_by_doi(&mut c, "10.1000/absent").unwrap(),
+        None
+    );
     assert_eq!(
         ops::find_pub_id_by_metadata(
             &mut c,
@@ -347,7 +351,10 @@ fn find_simulation_pub_link() {
         ops::find_simulation_pub_id(&mut c, sim, p).unwrap(),
         Some(link)
     );
-    assert_eq!(ops::find_simulation_pub_id(&mut c, sim, p + 1).unwrap(), None);
+    assert_eq!(
+        ops::find_simulation_pub_id(&mut c, sim, p + 1).unwrap(),
+        None
+    );
 }
 
 #[test]
@@ -394,7 +401,10 @@ fn find_simulation_by_hash() {
         ops::find_simulation_id_by_hash(&mut c, "hash-abc-123").unwrap(),
         Some(sim)
     );
-    assert_eq!(ops::find_simulation_id_by_hash(&mut c, "nope").unwrap(), None);
+    assert_eq!(
+        ops::find_simulation_id_by_hash(&mut c, "nope").unwrap(),
+        None
+    );
 }
 
 #[test]
@@ -519,7 +529,10 @@ fn find_sim_scoped_children_by_natural_key() {
         ops::find_uploaded_file_id(&mut c, other, "run.dcd").unwrap(),
         None
     );
-    assert_eq!(ops::find_replicate_id(&mut c, other, "rep1.xtc").unwrap(), None);
+    assert_eq!(
+        ops::find_replicate_id(&mut c, other, "rep1.xtc").unwrap(),
+        None
+    );
     assert_eq!(ops::find_ligand_id(&mut c, other, "ATP").unwrap(), None);
     assert_eq!(ops::find_solute_id(&mut c, other, "Na+").unwrap(), None);
     assert_eq!(
@@ -564,11 +577,17 @@ fn find_uniprot_and_pdb_by_their_string_keys() {
         ops::find_uniprot_id_by_accession(&mut c, "absent").unwrap(),
         None
     );
-    assert_eq!(ops::find_pdb_id_by_code(&mut c, "6vxx-test").unwrap(), Some(pdb));
+    assert_eq!(
+        ops::find_pdb_id_by_code(&mut c, "6vxx-test").unwrap(),
+        Some(pdb)
+    );
     assert_eq!(ops::find_pdb_id_by_code(&mut c, "absent").unwrap(), None);
 
     // The simulation link is separate from the uniprot row itself.
-    assert_eq!(ops::find_simulation_uniprot_id(&mut c, sim, uni).unwrap(), None);
+    assert_eq!(
+        ops::find_simulation_uniprot_id(&mut c, sim, uni).unwrap(),
+        None
+    );
     let link = ops::insert_simulation_uniprot(
         &mut c,
         NewSimulationUniprot {
@@ -606,7 +625,10 @@ fn delete_processed_files_removes_files_and_links_only_for_sim() {
 
     let n = ops::delete_processed_files_for_simulation(&mut c, sim).unwrap();
     assert_eq!(n, 1, "one processed file deleted");
-    assert!(ops::get_processed_file(&mut c, pf).is_err(), "target file gone");
+    assert!(
+        ops::get_processed_file(&mut c, pf).is_err(),
+        "target file gone"
+    );
     assert!(
         ops::get_processed_file(&mut c, other_pf).is_ok(),
         "other sim's file untouched"
@@ -637,7 +659,10 @@ fn delete_uploaded_files_removes_files_and_links_only_for_sim() {
 
     let n = ops::delete_uploaded_files_for_simulation(&mut c, sim).unwrap();
     assert_eq!(n, 1, "one uploaded file deleted");
-    assert!(ops::get_uploaded_file(&mut c, uf).is_err(), "target file gone");
+    assert!(
+        ops::get_uploaded_file(&mut c, uf).is_err(),
+        "target file gone"
+    );
     assert!(
         ops::get_uploaded_file(&mut c, other_uf).is_ok(),
         "other sim's file untouched"

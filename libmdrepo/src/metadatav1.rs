@@ -2,7 +2,7 @@ use crate::{
     common::read_file,
     metadata::{self, Meta},
 };
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use toml::value::Value as TomlValue;
@@ -546,9 +546,11 @@ mod metav1_tests {
         let meta_v1 = res?;
         let meta_v2 = meta_v1.to_v2()?;
 
-        assert!(meta_v2
-            .short_description
-            .starts_with("8 ns simulation of the 5aom PDB entry (P04637)"));
+        assert!(
+            meta_v2
+                .short_description
+                .starts_with("8 ns simulation of the 5aom PDB entry (P04637)")
+        );
 
         let contributors = meta_v2.contributors;
         assert!(contributors.is_some());
@@ -667,9 +669,6 @@ mod metav1_tests {
             Numlike::TomlVal(TomlValue::Float(f)).as_string(),
             Some(f.to_string())
         );
-        assert_eq!(
-            Numlike::TomlVal(TomlValue::Boolean(true)).as_string(),
-            None
-        );
+        assert_eq!(Numlike::TomlVal(TomlValue::Boolean(true)).as_string(), None);
     }
 }
