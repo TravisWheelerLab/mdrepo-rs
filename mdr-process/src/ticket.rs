@@ -153,10 +153,12 @@ pub fn process(args: &TicketArgs) -> Result<()> {
 
     // Process every landing subdirectory in parallel. Each task opens its own
     // DB connection (a Diesel PgConnection can't be shared across threads), so
-    // parallelism is unchanged; we only collect per-landing success to decide
-    // whether the whole ticket is complete.
+    // parallelism is unchanged; we collect each landing's outcome -- `Ok(())`
+    // for success or `Err(reason)` describing the directory and its failure --
+    // so we can both decide whether the ticket is complete and report exactly
+    // which landings failed and why.
     let start = Instant::now();
-    let results: Vec<bool> = ticket_dirs
+    let results: Vec<std::result::Result<(), String>> = ticket_dirs
         .into_par_iter()
         .map(|ticket_dir| {
             process_landing(&ticket_dir, args, script_dir, &work_dir, writes)
@@ -164,8 +166,9 @@ pub fn process(args: &TicketArgs) -> Result<()> {
         .collect();
 
     // Only flip processing_complete when every landing succeeded.
-    let ok_count = results.iter().filter(|&&ok| ok).count();
-    let all_ok = !results.is_empty() && ok_count == results.len();
+    let failures: Vec<&String> =
+        results.iter().filter_map(|r| r.as_ref().err()).collect();
+    let all_ok = !results.is_empty() && failures.is_empty();
     if let Some(ctx) = writes {
         if all_ok {
             mark_ticket_complete(ctx);
@@ -184,13 +187,19 @@ pub fn process(args: &TicketArgs) -> Result<()> {
     );
 
     // Fail the whole run if any landing failed, so callers (and the exit code)
-    // see the failure rather than a false success.
+    // see the failure rather than a false success. List each failed directory
+    // and its error so the operator can act without re-running at debug level.
     if !all_ok {
         bail!(
-            "Ticket {ticket_id}: {} of {} director{} failed to process",
-            results.len() - ok_count,
+            "Ticket {ticket_id}: {} of {} director{} failed to process:\n{}",
+            failures.len(),
             results.len(),
-            if results.len() == 1 { "y" } else { "ies" }
+            if results.len() == 1 { "y" } else { "ies" },
+            failures
+                .iter()
+                .map(|reason| format!("  - {reason}"))
+                .collect::<Vec<_>>()
+                .join("\n")
         );
     }
 
@@ -368,7 +377,7 @@ fn process_landing(
     script_dir: &Path,
     work_dir: &Path,
     feedback: Option<&FeedbackCtx>,
-) -> bool {
+) -> std::result::Result<(), String> {
     let ticket_start = Instant::now();
     debug!(r#"Processing ticket directory "{}""#, ticket_dir.display());
 
@@ -440,7 +449,7 @@ fn process_landing(
         }),
     };
 
-    let success = match &outcome {
+    let outcome = match &outcome {
         Ok(result) => {
             // process::process returns Ok only on success (fatal errors bail),
             // so this landing succeeded; warnings are non-fatal and are noted.
@@ -464,7 +473,7 @@ fn process_landing(
                     result.warnings.join("\n")
                 );
             }
-            true
+            Ok(())
         }
         Err(e) => {
             if let Some((conn, upload_id)) = db.as_mut() {
@@ -481,7 +490,15 @@ fn process_landing(
                 r#"Error processing ticket directory "{}": {e}"#,
                 ticket_dir.display()
             );
-            false
+            // Return the directory and error so the caller can report which
+            // landings failed and why without a debug-level re-run. The error
+            // may be multi-line (e.g. a manifest mismatch); indent the tail so
+            // the summary's bulleted list stays readable.
+            Err(format!(
+                "{}: {}",
+                ticket_dir.display(),
+                e.to_string().replace('\n', "\n    ")
+            ))
         }
     };
 
@@ -490,7 +507,7 @@ fn process_landing(
         ticket_dir.display(),
         ticket_start.elapsed()
     );
-    success
+    outcome
 }
 
 // --------------------------------------------------

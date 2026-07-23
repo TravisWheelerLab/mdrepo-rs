@@ -62,7 +62,7 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
     let meta_path = input_dir.join("mdrepo-metadata.toml");
 
     if !meta_path.is_file() {
-        bail!(format!("Missing TOML metadata"));
+        bail!(r#"Missing TOML metadata "{}""#, meta_path.display());
     }
 
     // Read the metadata and canonicalize its ligand SMILES in memory: OpenBabel
@@ -265,7 +265,10 @@ fn run_push(
 
     let output = cmd.output()?;
     if !output.status.success() {
-        bail!("{}", String::from_utf8_lossy(&output.stderr));
+        bail!(
+            "Command failed: {cmd:?}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     if !file_exists(&out_file) {
@@ -307,7 +310,10 @@ pub fn make_thumbnail(
         debug!("{}", str::from_utf8(&output.stdout)?);
 
         if !output.status.success() {
-            bail!("{}", String::from_utf8_lossy(&output.stderr));
+            bail!(
+                "Command failed: {cmd:?}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
 
         if !file_exists(thumbnail) {
@@ -417,7 +423,10 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
 
             let output = cmd.output()?;
             if !output.status.success() {
-                bail!("{}", String::from_utf8_lossy(&output.stderr));
+                bail!(
+                    "Command failed: {cmd:?}\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
             }
 
             if !file_exists(&xtc_path) {
@@ -482,7 +491,10 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
 
         let output = cmd.output()?;
         if !output.status.success() {
-            bail!("{}", String::from_utf8_lossy(&output.stderr));
+            bail!(
+                "Command failed: {cmd:?}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
 
         let missing: Vec<_> = full_min_files
@@ -492,22 +504,15 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
             .collect();
 
         if !missing.is_empty() {
-            let error_file = &trajectory_dir.join("errors.txt");
-            let error_fh = File::create(error_file)?;
-            write!(
-                &error_fh,
-                "Failed command {cmd:?}\nFailed to create {}\n{}\n{}",
+            // A missing full/minimal output is fatal: the steps below require
+            // these files, and a partial result must never be recorded as a
+            // success. The command exited 0 but produced nothing, so the reason
+            // (if any) is usually on stdout -- include both streams inline.
+            bail!(
+                "Command succeeded but failed to create {}: {cmd:?}\n{}\n{}",
                 missing.join(", "),
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr),
-            )?;
-            // A missing full/minimal output is fatal: the steps below require
-            // these files, and a partial result must never be recorded as a
-            // success. The errors.txt above captures the failed command output.
-            bail!(
-                "Failed to create {} (see {})",
-                missing.join(", "),
-                error_file.display()
             );
         }
     }
@@ -671,7 +676,10 @@ pub fn get_rmsd_rmsf(
         debug!("{}", str::from_utf8(&output.stdout)?);
 
         if !output.status.success() {
-            bail!("{}", String::from_utf8_lossy(&output.stderr));
+            bail!(
+                "Command failed: {cmd:?}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
 
         if !file_exists(&out_file) {
@@ -759,7 +767,10 @@ pub fn blast_uniprot(
         debug!("{}", str::from_utf8(&output.stdout)?);
 
         if !output.status.success() {
-            bail!("{}", String::from_utf8_lossy(&output.stderr));
+            bail!(
+                "Command failed: {cmd:?}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
     }
 
@@ -833,7 +844,10 @@ pub fn get_sequence(
         debug!("{}", str::from_utf8(&output.stdout)?);
 
         if !output.status.success() {
-            bail!("{}", String::from_utf8_lossy(&output.stderr));
+            bail!(
+                "Command failed: {cmd:?}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
 
         if !file_exists(&sequence_file) {
@@ -874,7 +888,10 @@ pub fn sample_trajectory(
         debug!("{}", str::from_utf8(&output.stdout)?);
 
         if !output.status.success() {
-            bail!("{}", String::from_utf8_lossy(&output.stderr));
+            bail!(
+                "Command failed: {cmd:?}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
 
         if !file_exists(out_file) {
@@ -930,7 +947,10 @@ pub fn make_trajectory_tarballs(
 
             let output = cmd.output()?;
             if !output.status.success() {
-                bail!("{}", String::from_utf8_lossy(&output.stderr));
+                bail!(
+                    "Command failed: {cmd:?}\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
             }
             fs::remove_dir_all(&tar_dir)?;
 
@@ -1215,7 +1235,10 @@ fn collect_original_files(
             debug!("Running {cmd:?}");
             let output = cmd.output()?;
             if !output.status.success() {
-                bail!("{}", String::from_utf8_lossy(&output.stderr));
+                bail!(
+                    "Command failed: {cmd:?}\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
             }
         }
         files.push(MdFile {
@@ -1427,7 +1450,10 @@ pub fn check_ligand(
 
     let output = cmd.output()?;
     if !output.status.success() {
-        bail!("{}", String::from_utf8_lossy(&output.stderr));
+        bail!(
+            "Command failed: {cmd:?}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     let stdout = str::from_utf8(&output.stdout)?;
@@ -1550,7 +1576,10 @@ fn measure_trajectory(
     let output = cmd.output()?;
 
     if !output.status.success() {
-        bail!("{}", String::from_utf8_lossy(&output.stderr));
+        bail!(
+            "Command failed: {cmd:?}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     let stdout = str::from_utf8(&output.stdout)?.to_string();
@@ -1597,11 +1626,17 @@ fn measure_trajectory(
     let (time_start, time_stop, num_frames) = match (time_start, time_stop, num_frames)
     {
         (Some(a), Some(b), Some(c)) => (a as f64, b as f64, c as f64),
-        _ => bail!("Failed to parse molly output:\n{stdout}"),
+        _ => bail!(
+            "Failed to parse molly output for \"{}\":\n{stdout}",
+            full_xtc.display()
+        ),
     };
 
     if num_frames <= 1. {
-        bail!("Trajectory file has only {num_frames} frame(s)");
+        bail!(
+            "Trajectory file \"{}\" has only {num_frames} frame(s)",
+            full_xtc.display()
+        );
     }
 
     // time_start/time_stop are in ps from molly
