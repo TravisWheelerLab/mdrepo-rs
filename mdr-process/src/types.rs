@@ -92,6 +92,12 @@ pub struct ProcessArgs {
     /// Replace original files
     #[arg(long)]
     pub replace_original_files: bool,
+
+    /// The upload ticket this landing belongs to, recorded on the imported
+    /// simulation so the ticket view can count its simulations. Set by the
+    /// ticket flow; `None` for direct/reprocess runs that have no ticket.
+    #[arg(skip)]
+    pub ticket_id: Option<i64>,
 }
 
 // --------------------------------------------------
@@ -521,6 +527,7 @@ pub struct RunImportArgs<'a> {
     pub server: &'a Server,
     pub reprocess_simulation_id: Option<u64>,
     pub replace_original_files: bool,
+    pub ticket_id: Option<i64>,
 }
 
 // --------------------------------------------------

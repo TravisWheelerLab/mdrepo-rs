@@ -93,6 +93,7 @@ pub fn reprocess(args: &ReprocessArgs) -> Result<()> {
         no_id: true, // If it had no PDB/Uniprots before, let it stand
         dry_run: args.dry_run,
         replace_original_files: false,
+        ticket_id: None,
     })?;
 
     if !args.dry_run && !args.preserve {

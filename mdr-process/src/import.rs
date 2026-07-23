@@ -55,6 +55,11 @@ pub struct ImportOpts {
 
     /// Also delete the previous *uploaded* (original) files.
     pub replace_original_files: bool,
+
+    /// The upload ticket this simulation belongs to, stored on the row so the
+    /// ticket view can count its simulations. `None` for runs with no ticket
+    /// (e.g. a direct reprocess), which then leaves any existing link intact.
+    pub ticket_id: Option<i64>,
 }
 
 // --------------------------------------------------
@@ -185,6 +190,9 @@ fn upsert_simulation(
                 is_deprecated: Some(is_deprecated),
                 is_embargoed: Some(sim.is_embargoed.unwrap_or(false)),
                 is_coarse_grained: Some(sim.is_coarse_grained.unwrap_or(false)),
+                // Only overwrite the ticket link when this run has one; a
+                // ticket-less reprocess leaves the existing value untouched.
+                md_repo_ticket_id: opts.ticket_id.map(Some),
                 ..Default::default()
             },
         )?;
@@ -224,6 +232,7 @@ fn upsert_simulation(
             pdb_id: None,
             irods_ticket: None,
             superseding_simulation_id: None,
+            md_repo_ticket_id: opts.ticket_id,
         },
     )?;
 

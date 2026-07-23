@@ -502,6 +502,7 @@ pub struct NewSimulation {
     pub num_replicates: Option<i32>,
     pub irods_ticket: Option<String>,
     pub superseding_simulation_id: Option<i32>,
+    pub md_repo_ticket_id: Option<i64>,
 }
 
 #[derive(Debug, AsChangeset, Default, Deserialize)]
@@ -535,6 +536,7 @@ pub struct SimulationUpdate {
     pub num_replicates: Option<Option<i32>>,
     pub irods_ticket: Option<Option<String>>,
     pub superseding_simulation_id: Option<Option<i32>>,
+    pub md_repo_ticket_id: Option<Option<i64>>,
 }
 
 // ── md_simulation_pub ─────────────────────────────────────────────────────────

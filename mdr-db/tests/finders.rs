@@ -115,6 +115,7 @@ fn seed_sim(c: &mut PgConnection) -> i64 {
             num_replicates: None,
             irods_ticket: None,
             superseding_simulation_id: None,
+            md_repo_ticket_id: None,
         },
     )
     .expect("insert simulation")

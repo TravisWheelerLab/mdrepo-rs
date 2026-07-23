@@ -173,6 +173,7 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
             server: &args.server,
             reprocess_simulation_id: args.reprocess_simulation_id,
             replace_original_files: args.replace_original_files,
+            ticket_id: args.ticket_id,
         })?;
         simulation_id = Some(imported_id);
 
@@ -217,6 +218,7 @@ fn run_import(args: RunImportArgs) -> Result<u32> {
         &ImportOpts {
             reprocess_simulation_id: args.reprocess_simulation_id,
             replace_original_files: args.replace_original_files,
+            ticket_id: args.ticket_id,
         },
     )?;
 
