@@ -3,6 +3,10 @@ use libmdrepo::metadata::{self, Meta};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Default `-num_threads` passed to each `blastp` search. Overridable per run
+/// via `--blast-num-threads` on the process and ticket subcommands.
+pub const DEFAULT_BLAST_NUM_THREADS: usize = 2;
+
 // --------------------------------------------------
 #[derive(Parser, Debug)]
 #[command(arg_required_else_help = true, version, about)]
@@ -93,6 +97,10 @@ pub struct ProcessArgs {
     #[arg(long)]
     pub replace_original_files: bool,
 
+    /// Threads for each `blastp` search (`-num_threads`)
+    #[arg(long, value_name = "N", default_value_t = DEFAULT_BLAST_NUM_THREADS)]
+    pub blast_num_threads: usize,
+
     /// The upload ticket this landing belongs to, recorded on the imported
     /// simulation so the ticket view can count its simulations. Set by the
     /// ticket flow; `None` for direct/reprocess runs that have no ticket.
@@ -136,6 +144,10 @@ pub struct TicketArgs {
     /// Skip file download
     #[arg(long)]
     pub skip_download: bool,
+
+    /// Threads for each `blastp` search (`-num_threads`)
+    #[arg(long, value_name = "N", default_value_t = DEFAULT_BLAST_NUM_THREADS)]
+    pub blast_num_threads: usize,
 }
 
 // --------------------------------------------------
@@ -169,6 +181,10 @@ pub struct ReprocessArgs {
     /// Process files/create import JSON but do not import/push
     #[arg(short, long)]
     pub dry_run: bool,
+
+    /// Threads for each `blastp` search (`-num_threads`)
+    #[arg(long, value_name = "N", default_value_t = DEFAULT_BLAST_NUM_THREADS)]
+    pub blast_num_threads: usize,
 }
 
 // --------------------------------------------------
@@ -874,6 +890,7 @@ pub struct ImportJsonArgs<'a> {
     pub reprocess_simulation_id: Option<u64>,
     pub replicates: &'a [String],
     pub replace_original_files: bool,
+    pub blast_num_threads: usize,
 }
 
 // --------------------------------------------------

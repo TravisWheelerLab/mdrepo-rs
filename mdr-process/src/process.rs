@@ -36,7 +36,6 @@ use which::which;
 
 // ── BLAST parameters ──────────────────────────────────────────────────────────
 const BLAST_EVALUE: &str = "1e-5";
-const BLAST_NUM_THREADS: &str = "2"; // 16 -> or make variable
 const BLAST_MAX_TARGET_SEQS_SWISSPROT: &str = "20";
 const BLAST_MAX_TARGET_SEQS_TREMBL: &str = "100";
 const BLAST_MIN_PIDENT: f64 = 100.0;
@@ -164,6 +163,7 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
         reprocess_simulation_id: args.reprocess_simulation_id,
         replicates: &replicates,
         replace_original_files: args.replace_original_files,
+        blast_num_threads: args.blast_num_threads,
     })?;
 
     let mut simulation_id: Option<u32> = None;
@@ -700,6 +700,7 @@ pub fn blast_uniprot(
     fasta_sequence: &Path,
     blast_dir: &Path,
     uniprot_db: UniprotDb,
+    num_threads: usize,
 ) -> Result<Vec<String>> {
     if !blast_dir.is_dir() {
         bail!(r#"Invalid BLAST dir "{}""#, blast_dir.display());
@@ -742,6 +743,8 @@ pub fn blast_uniprot(
             ),
         };
 
+        // blastp takes -num_threads as a string arg; render it once here.
+        let num_threads = num_threads.to_string();
         cmd.args([
             "-query",
             fasta_sequence.to_string_lossy().as_ref(),
@@ -754,7 +757,7 @@ pub fn blast_uniprot(
             "-evalue",
             BLAST_EVALUE,
             "-num_threads",
-            BLAST_NUM_THREADS,
+            num_threads.as_str(),
             "-max_target_seqs",
             max_target_seqs,
             "-task",
@@ -1010,6 +1013,7 @@ pub fn make_import_json(
         args.meta.uniprot_ids.clone(),
         &fasta_sequence_file,
         args.blast_dir,
+        args.blast_num_threads,
     )?;
 
     let (ligands, ligand_warnings) = resolve_ligands(
@@ -1340,6 +1344,7 @@ pub fn get_uniprot_entries(
     given_uniprot_ids: Option<Vec<String>>,
     fasta_sequence_file: &Path,
     blast_dir: &Path,
+    blast_num_threads: usize,
 ) -> Result<(Vec<UniprotEntry>, Vec<String>)> {
     let mut uniprot_ids: Vec<String> = given_uniprot_ids
         .unwrap_or_default()
@@ -1350,13 +1355,21 @@ pub fn get_uniprot_entries(
 
     if uniprot_ids.is_empty() {
         // There are no given Uniprot IDs, so search
-        let swissprot_ids =
-            blast_uniprot(fasta_sequence_file, blast_dir, UniprotDb::Swissprot)?;
+        let swissprot_ids = blast_uniprot(
+            fasta_sequence_file,
+            blast_dir,
+            UniprotDb::Swissprot,
+            blast_num_threads,
+        )?;
 
         if swissprot_ids.is_empty() {
             // Second-tier hits from Trembl
-            let trembl_ids =
-                blast_uniprot(fasta_sequence_file, blast_dir, UniprotDb::Trembl)?;
+            let trembl_ids = blast_uniprot(
+                fasta_sequence_file,
+                blast_dir,
+                UniprotDb::Trembl,
+                blast_num_threads,
+            )?;
 
             if let Some(first) = trembl_ids.first() {
                 uniprot_ids.push(first.clone());
@@ -1373,8 +1386,12 @@ pub fn get_uniprot_entries(
         uniprot_ids.dedup();
 
         // Check if the given IDs are found in Swissprot/Trembl
-        let swissprot_ids =
-            blast_uniprot(fasta_sequence_file, blast_dir, UniprotDb::Swissprot)?;
+        let swissprot_ids = blast_uniprot(
+            fasta_sequence_file,
+            blast_dir,
+            UniprotDb::Swissprot,
+            blast_num_threads,
+        )?;
 
         let not_in_swissprot: Vec<_> = uniprot_ids
             .iter()
@@ -1382,8 +1399,12 @@ pub fn get_uniprot_entries(
             .collect();
 
         if !not_in_swissprot.is_empty() {
-            let isoform_ids =
-                blast_uniprot(fasta_sequence_file, blast_dir, UniprotDb::Isoform)?;
+            let isoform_ids = blast_uniprot(
+                fasta_sequence_file,
+                blast_dir,
+                UniprotDb::Isoform,
+                blast_num_threads,
+            )?;
 
             let mut found_in_isoform: Vec<(String, String)> = vec![];
             for uniprot_id in &not_in_swissprot {
@@ -1403,8 +1424,12 @@ pub fn get_uniprot_entries(
 
             // If we still haven't found all the Uniprot IDs, look in Trembl
             if swissprot_ids.len() + found_in_isoform.len() < uniprot_ids.len() {
-                let trembl_ids =
-                    blast_uniprot(fasta_sequence_file, blast_dir, UniprotDb::Trembl)?;
+                let trembl_ids = blast_uniprot(
+                    fasta_sequence_file,
+                    blast_dir,
+                    UniprotDb::Trembl,
+                    blast_num_threads,
+                )?;
 
                 let not_in_trembl: Vec<_> = not_in_swissprot
                     .iter()
@@ -2005,7 +2030,7 @@ mod tests {
             &[(1, "sp|P12345|PROT_HUMAN", 100.0)],
         );
         let ids =
-            blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Swissprot).unwrap();
+            blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Swissprot, 2).unwrap();
         assert_eq!(ids, vec!["P12345".to_string()]);
     }
 
@@ -2020,7 +2045,8 @@ mod tests {
             "trembl",
             &[(1, "tr|A0A000XYZ|PROT_MOUSE", 100.0)],
         );
-        let ids = blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Trembl).unwrap();
+        let ids =
+            blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Trembl, 2).unwrap();
         assert_eq!(ids, vec!["A0A000XYZ".to_string()]);
     }
 
@@ -2039,7 +2065,7 @@ mod tests {
             ],
         );
         let ids =
-            blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Swissprot).unwrap();
+            blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Swissprot, 2).unwrap();
         assert_eq!(ids, vec!["P99999".to_string()]);
     }
 
@@ -2052,7 +2078,8 @@ mod tests {
             blast_uniprot(
                 &fasta,
                 Path::new("/nonexistent/blast"),
-                UniprotDb::Swissprot
+                UniprotDb::Swissprot,
+                2
             )
             .is_err()
         );
