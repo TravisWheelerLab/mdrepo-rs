@@ -546,9 +546,11 @@ impl Meta {
             }),
             ligands: Some(vec![Ligand {
                 name: "Foropafant".to_string(),
-                smiles:
+                smiles: Some(
                     "CC(C)C1=CC(=C(C(=C1)C(C)C)C2=CSC(=N2)N(CCN(C)C)CC3=CN=CC=C3)C(C)C"
                         .to_string(),
+                ),
+                inchi: None,
             }]),
             solutes: Some(vec![
                 Solute {
@@ -646,6 +648,7 @@ impl Summary {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Validate)]
+#[serde(deny_unknown_fields)]
 pub struct ExternalLink {
     #[validate(url)]
     pub url: String,
@@ -656,6 +659,7 @@ pub struct ExternalLink {
 }
 
 #[derive(Debug, Deserialize, Serialize, Validate)]
+#[serde(deny_unknown_fields)]
 pub struct AdditionalFile {
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
     pub file_name: String,
@@ -669,6 +673,7 @@ pub struct AdditionalFile {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Validate)]
+#[serde(deny_unknown_fields)]
 pub struct Contributor {
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
     pub name: String,
@@ -687,6 +692,7 @@ pub struct Contributor {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Validate)]
+#[serde(deny_unknown_fields)]
 pub struct Paper {
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
     pub title: String,
@@ -716,15 +722,59 @@ pub struct Paper {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Validate)]
+#[serde(deny_unknown_fields)]
+#[validate(schema(
+    function = "ligand_declares_identity",
+    skip_on_field_errors = false
+))]
 pub struct Ligand {
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
     pub name: String,
 
+    /// A ligand must carry a structure, but either notation will do. SMILES has
+    /// no canonical form -- every toolkit canonicalizes differently -- while
+    /// standard InChI has one reference implementation, so accepting both lets a
+    /// submitter send what their tooling already produces and lets us store the
+    /// canonical form regardless. At LEAST one is required -- declaring both is
+    /// allowed and is checked for agreement on the ingest path, which is where
+    /// OpenBabel is available. See `ligand_declares_identity`. Neither value is
+    /// ever rewritten in the submitter's own file.
     #[validate(custom(function = "is_valid_smiles"))]
-    pub smiles: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub smiles: Option<String>,
+
+    #[validate(custom(function = "is_valid_inchi"))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inchi: Option<String>,
+}
+
+impl Ligand {
+    /// The notation this ligand was declared with, for messages. Validation
+    /// guarantees at least one is present, so the fallback is unreachable in
+    /// practice and is a label rather than a panic.
+    pub fn identity(&self) -> &str {
+        self.smiles
+            .as_deref()
+            .or(self.inchi.as_deref())
+            .unwrap_or("<no structure declared>")
+    }
+
+    /// Which notations the submitter actually supplied, recorded before
+    /// anything is derived from one to fill the other -- afterwards both are
+    /// present and the distinction is gone. Stored as `md_ligand`
+    /// `declared_identity`.
+    pub fn declared_identity(&self) -> Option<&'static str> {
+        match (self.smiles.is_some(), self.inchi.is_some()) {
+            (true, true) => Some("both"),
+            (true, false) => Some("smiles"),
+            (false, true) => Some("inchi"),
+            (false, false) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Validate)]
+#[serde(deny_unknown_fields)]
 pub struct Solute {
     #[validate(custom(function = "validate_solute_name"))]
     pub name: String,
@@ -739,6 +789,7 @@ pub struct Solute {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Validate)]
+#[serde(deny_unknown_fields)]
 pub struct Water {
     #[validate(custom(function = "validate_water_model"))]
     pub model: String,
@@ -829,7 +880,7 @@ fn handle_validation_error_kind(
         ValidationErrorsKind::List(tree) => {
             for (num, validation_errors) in tree {
                 for (sub_fld, err_kind) in validation_errors.errors() {
-                    let fld = format!("{field}[{}].{sub_fld}", num + 1);
+                    let fld = join_field(&format!("{field}[{}]", num + 1), sub_fld);
                     messages.extend(handle_validation_error_kind(&fld, err_kind));
                 }
             }
@@ -837,12 +888,25 @@ fn handle_validation_error_kind(
         // Struct(Box<ValidationErrors>)
         ValidationErrorsKind::Struct(validation_errors) => {
             for (sub_fld, err_kind) in validation_errors.errors() {
-                let fld = format!("{field}.{sub_fld}");
+                let fld = join_field(field, sub_fld);
                 messages.extend(handle_validation_error_kind(&fld, err_kind));
             }
         }
     };
     messages
+}
+
+// --------------------------------------------------
+/// `validator` files a struct-level (`schema`) error under the synthetic field
+/// name `__all__`, which is about the struct rather than any one of its fields.
+/// Appending it would read as a field called `__all__`, so the parent path is
+/// used unchanged.
+fn join_field(parent: &str, sub: &str) -> String {
+    if sub == "__all__" {
+        parent.to_string()
+    } else {
+        format!("{parent}.{sub}")
+    }
 }
 
 // --------------------------------------------------
@@ -893,7 +957,59 @@ fn format_validation_error(err: &ValidationError) -> String {
         _ => err.message.as_deref().unwrap_or("invalid").to_string(),
     };
 
-    format!("value {given} {message}")
+    if given.is_empty() {
+        // No `value` param: a struct-level rule, which is about the whole
+        // table rather than one field, so there is no value to quote.
+        message
+    } else {
+        format!("value {given} {message}")
+    }
+}
+
+// --------------------------------------------------
+/// A ligand must be identifiable. Only the *presence* of a notation is checked
+/// here: whether a declared SMILES and InChI agree with each other is a
+/// different question, it needs OpenBabel, and it therefore lives on the ingest
+/// path (`mdr-process`'s `load_canonical_meta`) rather than in this pure check.
+/// So `mdr-meta check` reports a missing or malformed value and says nothing
+/// about agreement -- that split is deliberate, not an oversight.
+pub fn ligand_declares_identity(
+    ligand: &Ligand,
+) -> std::result::Result<(), ValidationError> {
+    if ligand.smiles.is_none() && ligand.inchi.is_none() {
+        return Err(ValidationError::new("no_ligand_structure")
+            .with_message(Borrowed("must declare either smiles or inchi")));
+    }
+    Ok(())
+}
+
+// --------------------------------------------------
+/// A standard InChI, checked by its prefix and layer shape rather than by
+/// round-tripping it. `InChI=1S/` is the standard form; a non-standard InChI
+/// (`InChI=1/`) is refused because two of them are not comparable, which is the
+/// whole reason for preferring InChI over SMILES here.
+pub fn is_valid_inchi(inchi: &str) -> std::result::Result<(), ValidationError> {
+    let invalid = |msg: &'static str| {
+        ValidationError::new("invalid_inchi").with_message(Borrowed(msg))
+    };
+
+    let Some(rest) = inchi.strip_prefix("InChI=1S/") else {
+        return Err(if inchi.starts_with("InChI=1/") {
+            invalid("must be a STANDARD InChI (InChI=1S/), not InChI=1/")
+        } else {
+            invalid(r#"must begin with "InChI=1S/""#)
+        });
+    };
+
+    // The formula layer is the only one guaranteed present, so an InChI with
+    // nothing after the prefix carries no structure at all.
+    if rest.split('/').next().unwrap_or_default().is_empty() {
+        return Err(invalid("has no formula layer"));
+    }
+    if inchi.chars().any(char::is_whitespace) {
+        return Err(invalid("must not contain whitespace"));
+    }
+    Ok(())
 }
 
 // --------------------------------------------------
@@ -1338,9 +1454,18 @@ mod tests {
     const TOML_BAD1: &str = "tests/inputs/metadata/bad1.toml";
     const JSON_OK1: &str = "tests/inputs/metadata/ok1.json";
     const JSON_BAD1: &str = "tests/inputs/metadata/bad1.json";
+    const TOML_MINIMAL: &str = "tests/inputs/metadata/minimal.toml";
+
+    /// The minimal valid document plus one appended table, read from the
+    /// fixture rather than inlined so it cannot drift from it.
+    fn minimal_plus(table: &str) -> String {
+        let base = std::fs::read_to_string(TOML_MINIMAL).expect("minimal.toml");
+        format!("{base}\n{table}\n")
+    }
 
     use super::{
-        AdditionalFile, DateTime, Meta, MetaCheckOptions, Summary, Utc, is_valid_smiles,
+        AdditionalFile, DateTime, Ligand, Meta, MetaCheckOptions, Summary, Utc,
+        is_valid_inchi, is_valid_smiles,
     };
     use anyhow::Result;
     use std::path::PathBuf;
@@ -1387,7 +1512,11 @@ mod tests {
         assert_eq!(ligands.len(), 2);
         let ligand = ligands.first().expect("ligand should exist");
         assert_eq!(ligand.name, "FY8".to_string());
-        assert_eq!(ligand.smiles, "Oc1ccc(Cl)cc1NC(=O)C2CCNCC2".to_string());
+        assert_eq!(
+            ligand.smiles.as_deref(),
+            Some("Oc1ccc(Cl)cc1NC(=O)C2CCNCC2")
+        );
+        assert_eq!(ligand.inchi, None);
 
         let solutes = meta.solutes.as_ref().expect("solutes should be Some");
         assert_eq!(solutes.len(), 2);
@@ -1632,6 +1761,170 @@ mod tests {
                 .any(|e| e.contains("Missing PDB and Uniprot IDs")),
             "Expected missing ID error, got: {errors:?}"
         );
+    }
+
+    // --- is_valid_inchi ---
+
+    #[test]
+    fn test_is_valid_inchi_standard() {
+        // 10gs's declared ligand, from collection 5.
+        assert!(
+            is_valid_inchi(
+                "InChI=1S/C23H27N3O6S/c24-17(22(29)30)11-12-19(27)25-18(14-33-13-15-7-3-1-4-8-15)21(28)26-20(23(31)32)16-9-5-2-6-10-16"
+            )
+            .is_ok()
+        );
+        assert!(is_valid_inchi("InChI=1S/CH4/h1H4").is_ok());
+    }
+
+    #[test]
+    fn test_is_valid_inchi_rejects_nonstandard() {
+        // A non-standard InChI is refused rather than tolerated: two of them are
+        // not comparable, which is the entire reason for preferring InChI here.
+        let err = is_valid_inchi("InChI=1/CH4/h1H4").unwrap_err();
+        assert!(
+            err.message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("STANDARD"),
+            "message was {:?}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_is_valid_inchi_rejects_junk() {
+        // A bare SMILES in the inchi field is the mistake worth catching.
+        assert!(is_valid_inchi("CC(C)C1=CC(=C1)C(C)C").is_err());
+        assert!(is_valid_inchi("").is_err());
+        assert!(is_valid_inchi("InChI=1S/").is_err(), "no formula layer");
+        assert!(is_valid_inchi("InChI=1S/CH4 /h1H4").is_err(), "whitespace");
+    }
+
+    // --- ligand_declares_identity ---
+
+    #[test]
+    fn test_ligand_accepts_either_notation_alone() {
+        for (smiles, inchi) in [
+            (Some("CC".to_string()), None),
+            (None, Some("InChI=1S/C2H6/c1-2/h1-2H3".to_string())),
+            (
+                Some("CC".to_string()),
+                Some("InChI=1S/C2H6/c1-2/h1-2H3".to_string()),
+            ),
+        ] {
+            let ligand = Ligand {
+                name: "ethane".to_string(),
+                smiles,
+                inchi,
+            };
+            assert!(ligand.validate().is_ok(), "rejected {ligand:?}");
+        }
+    }
+
+    #[test]
+    fn test_ligand_with_neither_notation_is_rejected() {
+        let ligand = Ligand {
+            name: "mystery".to_string(),
+            smiles: None,
+            inchi: None,
+        };
+        let err = ligand.validate().unwrap_err();
+        assert!(err.errors().contains_key("__all__"));
+    }
+
+    #[test]
+    fn test_ligand_missing_structure_names_itself_in_meta_check() {
+        // The whole point of the struct-level rule is the message a submitter
+        // sees, and `__all__` must not leak into it as though it were a field.
+        let mut meta = Meta::example();
+        meta.ligands = Some(vec![Ligand {
+            name: "mystery".to_string(),
+            smiles: None,
+            inchi: None,
+        }]);
+        let messages = meta.check(None);
+        assert!(
+            messages
+                .iter()
+                .any(|m| m == "ligands[1]: must declare either smiles or inchi"),
+            "got {messages:?}"
+        );
+    }
+
+    #[test]
+    fn test_ligand_declared_identity_labels() {
+        let with = |smiles: Option<&str>, inchi: Option<&str>| Ligand {
+            name: "x".to_string(),
+            smiles: smiles.map(String::from),
+            inchi: inchi.map(String::from),
+        };
+        assert_eq!(with(Some("CC"), None).declared_identity(), Some("smiles"));
+        assert_eq!(
+            with(None, Some("InChI=1S/C2H6/c1-2/h1-2H3")).declared_identity(),
+            Some("inchi")
+        );
+        assert_eq!(
+            with(Some("CC"), Some("InChI=1S/C2H6/c1-2/h1-2H3")).declared_identity(),
+            Some("both")
+        );
+        assert_eq!(with(None, None).declared_identity(), None);
+    }
+
+    // --- deny_unknown_fields on the nested tables ---
+
+    #[test]
+    fn test_ligand_accepts_an_inchi_key() {
+        // Before this change the key parsed and was silently discarded.
+        let meta = Meta::from_toml(&minimal_plus(
+            "[[ligands]]\nname = \"ethane\"\ninchi = \"InChI=1S/C2H6/c1-2/h1-2H3\"",
+        ))
+        .expect("inchi-only ligand should parse");
+        let messages = meta.check(Some(MetaCheckOptions {
+            allow_no_pdb_uniprot: true,
+        }));
+        let ligands = meta.ligands.expect("ligands");
+        assert_eq!(
+            ligands[0].inchi.as_deref(),
+            Some("InChI=1S/C2H6/c1-2/h1-2H3")
+        );
+        assert_eq!(ligands[0].smiles, None);
+        assert!(
+            !messages.iter().any(|m| m.contains("ligand")),
+            "got {messages:?}"
+        );
+    }
+
+    #[test]
+    fn test_stray_ligand_key_is_now_rejected() {
+        // `inchii` used to validate clean while the value disappeared. This is
+        // the typo class `deny_unknown_fields` exists to catch.
+        let res = Meta::from_toml(&minimal_plus(
+            "[[ligands]]\nname = \"ethane\"\nsmiles = \"CC\"\ninchii = \"InChI=1S/C2H6\"",
+        ));
+        let err = res.unwrap_err().to_string();
+        assert!(
+            err.contains("inchii"),
+            "message did not name the key: {err}"
+        );
+    }
+
+    #[test]
+    fn test_stray_key_rejected_in_every_nested_table() {
+        for table in [
+            "[[contributors]]\nname = \"A\"\nnope = 1",
+            "[[solutes]]\nname = \"NaCl\"\nconcentration_mol_liter = 0.1\nnope = 1",
+            "[water]\nmodel = \"TIP3P\"\ndensity_kg_m3 = 1000.0\nnope = 1",
+            "[[external_links]]\nurl = \"https://example.com\"\nnope = 1",
+            "[[additional_files]]\nfile_name = \"a\"\nfile_type = \"b\"\nnope = 1",
+        ] {
+            let res = Meta::from_toml(&minimal_plus(table));
+            assert!(res.is_err(), "accepted a stray key in: {table}");
+            assert!(
+                res.unwrap_err().to_string().contains("nope"),
+                "did not name the key in: {table}"
+            );
+        }
     }
 
     // --- is_valid_smiles ---

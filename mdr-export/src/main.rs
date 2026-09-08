@@ -282,7 +282,9 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
             .into_iter()
             .map(|val| metadata::Ligand {
                 name: val.name,
-                smiles: val.smiles_string,
+                smiles: Some(val.smiles_string),
+                // TODO: map val.inchi once md_ligand carries the column.
+                inchi: None,
             })
             .collect::<Vec<_>>()
     });

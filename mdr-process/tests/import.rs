@@ -182,7 +182,8 @@ fn import_new_simulation_creates_all_related_rows() {
         replicates: vec!["traj1.xtc".into()],
         ligands: vec![metadata::Ligand {
             name: "TestLigand".into(),
-            smiles: "CC".into(),
+            smiles: Some("CC".into()),
+            inchi: None,
         }],
         solutes: vec![metadata::Solute {
             name: "Na+".into(),
@@ -302,7 +303,8 @@ fn import_same_alias_twice_is_idempotent_not_duplicated() {
         }],
         ligands: vec![metadata::Ligand {
             name: "IdempotentLigand".into(),
-            smiles: "CC".into(),
+            smiles: Some("CC".into()),
+            inchi: None,
         }],
         collections: vec!["ATLAS-idempotent".into()],
         ..base_sim("idempotent", orcid)

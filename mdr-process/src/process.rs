@@ -1252,7 +1252,7 @@ fn resolve_ligands(
                 if !found_match {
                     warnings.push(format!(
                         "Unable to verify ligand [{ligand_num}] ({})",
-                        given_ligand.smiles
+                        given_ligand.identity()
                     ));
                 }
             }
@@ -1265,7 +1265,10 @@ fn resolve_ligands(
                 .unwrap_or(ligand.name.iupac_name.unwrap_or("NA".to_string()));
             ligands.push(metadata::Ligand {
                 name,
-                smiles: ligand.structure.smiles,
+                // mol_id.py reports a SMILES and an InChIKey but no InChI, so
+                // there is nothing to put here; resolution derives it.
+                smiles: Some(ligand.structure.smiles),
+                inchi: None,
             });
         }
     }
@@ -1562,12 +1565,23 @@ pub fn check_ligand(
     script_dir: &Path,
     uv: &Path,
 ) -> Result<CheckedLigand> {
+    // Comparison is SMILES-to-SMILES because the inference produces a SMILES.
+    // `load_canonical_meta` resolves every ligand to both notations before this
+    // runs, so a `None` here means resolution was skipped, not that the
+    // submitter omitted it.
+    let smiles = ligand.smiles.as_deref().ok_or_else(|| {
+        anyhow!(
+            r#"Ligand "{}" has no SMILES to compare; it was not resolved"#,
+            ligand.name
+        )
+    })?;
+
     let script = script_dir.join("compare_smiles.py");
     let mut cmd = Command::new(uv);
     cmd.current_dir(script_dir).args([
         "run",
         script.to_string_lossy().as_ref(),
-        &ligand.smiles,
+        smiles,
         &inferred_ligand.structure.smiles,
     ]);
     debug!("Running {cmd:?}");

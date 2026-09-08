@@ -239,7 +239,9 @@ impl MetaV1 {
             .flat_map(|vals| vals.iter())
             .map(|v| metadata::Ligand {
                 name: v.name.clone(),
-                smiles: v.smiles.clone(),
+                // v1 had no inchi; nothing to carry forward.
+                smiles: Some(v.smiles.clone()),
+                inchi: None,
             })
             .collect();
 
@@ -345,6 +347,7 @@ impl MetaV1 {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Initial {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub short_description: Option<String>,
@@ -370,6 +373,7 @@ pub struct Initial {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AdditionalFile {
     #[serde(alias = "additional_file_type")]
     pub file_type: String,
@@ -382,6 +386,7 @@ pub struct AdditionalFile {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Contributor {
     pub name: String,
 
@@ -396,6 +401,7 @@ pub struct Contributor {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Forcefield {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub forcefield: Option<String>,
@@ -405,6 +411,7 @@ pub struct Forcefield {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Permission {
     user_orcid: String,
     can_edit: bool,
@@ -412,16 +419,19 @@ pub struct Permission {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Protonation {
     pub protonation_method: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Timestep {
     pub integration_time_step: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct Paper {
     pub title: String,
 
@@ -443,17 +453,20 @@ pub struct Paper {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Temperature {
     pub temperature: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Ligand {
     pub name: String,
     pub smiles: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RequiredFile {
     pub trajectory_file_name: String,
     pub structure_file_name: String,
@@ -461,6 +474,7 @@ pub struct RequiredFile {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Software {
     pub name: String,
 
@@ -469,6 +483,7 @@ pub struct Software {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Replicates {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_replicates: Option<u32>,
@@ -478,6 +493,7 @@ pub struct Replicates {
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Protein {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub molecule_id_type: Option<MoleculeType>,
@@ -493,6 +509,7 @@ pub struct Protein {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Solvent {
     pub name: String,
 
@@ -505,6 +522,7 @@ pub struct Solvent {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Water {
     pub is_present: Option<bool>,
 
@@ -592,7 +610,10 @@ mod metav1_tests {
         let ligands = meta_v2.ligands.as_ref().expect("ligands");
         assert_eq!(ligands.len(), 1);
         assert_eq!(ligands[0].name, "FY8");
-        assert_eq!(ligands[0].smiles, "Oc1ccc(Cl)cc1NC(=O)C2CCNCC2");
+        assert_eq!(
+            ligands[0].smiles.as_deref(),
+            Some("Oc1ccc(Cl)cc1NC(=O)C2CCNCC2")
+        );
 
         let links = meta_v2.external_links.as_ref().expect("external_links");
         assert_eq!(links.len(), 1);

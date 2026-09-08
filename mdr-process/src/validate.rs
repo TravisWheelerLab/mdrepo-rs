@@ -18,16 +18,30 @@ pub fn load_canonical_meta(
 ) -> Result<Meta> {
     let mut meta = Meta::from_file(meta_path)?;
 
-    let smiles: Vec<String> = match meta.ligands.as_ref() {
-        Some(ligands) if !ligands.is_empty() => {
-            ligands.iter().map(|l| l.smiles.clone()).collect()
-        }
+    // Only the ligands that declared a SMILES are sent, and results come back
+    // BY POSITION, so carry each one's index rather than trusting the two lists
+    // to line up -- a ligand declaring only an InChI is skipped here, and
+    // without the index its neighbour would collect its canonical form.
+    // Deriving the missing notation is resolution's job, not this function's.
+    let declared: Vec<(usize, String)> = match meta.ligands.as_ref() {
+        Some(ligands) if !ligands.is_empty() => ligands
+            .iter()
+            .enumerate()
+            .filter_map(|(num, l)| l.smiles.clone().map(|smi| (num, smi)))
+            .collect(),
         _ => return Ok(meta),
     };
 
+    if declared.is_empty() {
+        return Ok(meta);
+    }
+
+    let smiles: Vec<String> = declared.iter().map(|(_, smi)| smi.clone()).collect();
     let canonical = canonicalize_smiles(&smiles, script_dir, uv)?;
-    for (ligand, canon) in meta.ligands.as_mut().unwrap().iter_mut().zip(canonical) {
-        ligand.smiles = canon;
+
+    let ligands = meta.ligands.as_mut().unwrap();
+    for ((num, _), canon) in declared.iter().zip(canonical) {
+        ligands[*num].smiles = Some(canon);
     }
     Ok(meta)
 }

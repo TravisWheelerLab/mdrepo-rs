@@ -487,12 +487,24 @@ fn upsert_ligand(
     sim_id: i64,
     ligand: &metadata::Ligand,
 ) -> Result<i64> {
+    // `md_ligand.smiles_string` is NOT NULL, and `load_canonical_meta` resolves
+    // every ligand to both notations before import, so a `None` here means
+    // resolution did not run rather than that the submitter omitted a value.
+    // An error, not an `expect`: a broken invariant should name itself and stop
+    // the simulation, not abort the process.
+    let smiles = ligand.smiles.clone().ok_or_else(|| {
+        anyhow!(
+            r#"Ligand "{}" reached import with no SMILES; it was not resolved"#,
+            ligand.name
+        )
+    })?;
+
     if let Some(id) = ops::find_ligand_id(conn, sim_id, &ligand.name)? {
         ops::update_ligand(
             conn,
             id,
             LigandUpdate {
-                smiles_string: Some(ligand.smiles.clone()),
+                smiles_string: Some(smiles),
                 ..Default::default()
             },
         )?;
@@ -503,7 +515,7 @@ fn upsert_ligand(
         conn,
         NewLigand {
             name: ligand.name.clone(),
-            smiles_string: ligand.smiles.clone(),
+            smiles_string: smiles,
             simulation_id: sim_id,
         },
     )?
