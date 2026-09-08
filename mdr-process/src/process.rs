@@ -14,6 +14,7 @@ use anyhow::{Result, anyhow, bail};
 use dotenvy::dotenv;
 use libmdrepo::{
     common::{file_exists, get_md5, read_file},
+    constants,
     metadata::{self, Meta, MetaCheckOptions},
 };
 use log::debug;
@@ -1672,7 +1673,10 @@ pub fn get_duration(
         let mut total_duration_ps = 0.0;
         let mut sampling_frequency_ns = 0.0_f32;
         for traj in trajectories {
-            let (measured_ps, measured_ns, num_frames) =
+            // The second element is measure_trajectory's own sampling figure,
+            // rounded to 3 dp in ns. Too coarse for a floor whose whole range
+            // of interest is 1 to 10 ps, so the spacing is recomputed below.
+            let (measured_ps, _measured_ns, num_frames) =
                 measure_trajectory(&traj.full_xtc, integration_timestep_fs)?;
 
             // What was measured is only trustworthy if the source had a time
@@ -1682,7 +1686,12 @@ pub fn get_duration(
             // exactly how MDR00048669 came to record 0.001 ns/frame and a
             // 5.61 ns duration, both a clean factor of ten too small, and sit
             // in the public record for a year looking authoritative.
-            let (duration_ps, sampling_ns) = match traj.source_has_time_axis {
+            //
+            // What comes out of the match is the frame spacing in ps, whatever
+            // established it. Duration and sampling frequency are both derived
+            // from it afterwards, so the floor has one number to check rather
+            // than two.
+            let spacing_ps = match traj.source_has_time_axis {
                 Some(false) => {
                     let declared = declared_sampling_ps.ok_or_else(|| {
                         anyhow!(
@@ -1699,22 +1708,34 @@ pub fn get_duration(
                         )
                     })?;
 
-                    // Spacing between frames, so the span is one interval
-                    // fewer than the frame count.
-                    let derived_ps = declared * (num_frames - 1.);
                     debug!(
                         "{}: no source time axis; using declared \
                          {declared} ps/frame over {num_frames} frames",
                         traj.trajectory_file_name
                     );
-                    (derived_ps, round_dp(declared / PS_PER_NS, 3) as f32)
+                    declared
                 }
                 // True, or unknown. Unknown keeps today's behaviour on
                 // purpose: it means the report could not be read, not that
                 // the axis is absent, and failing on that would condemn
                 // directories over a parsing gap.
-                _ => (measured_ps, measured_ns),
+                //
+                // measure_trajectory returns a DURATION, so divide back out to
+                // the spacing the floor is expressed in.
+                _ => measured_ps / (num_frames - 1.),
             };
+
+            let spacing_ps = resolve_sampling_ps(
+                spacing_ps,
+                declared_sampling_ps,
+                traj.source_has_time_axis,
+                &traj.trajectory_file_name,
+            )?;
+
+            // Spacing between frames, so the span is one interval fewer than
+            // the frame count.
+            let duration_ps = spacing_ps * (num_frames - 1.);
+            let sampling_ns = round_dp(spacing_ps / PS_PER_NS, 3) as f32;
 
             total_duration_ps += duration_ps;
             if traj.full_xtc == example_full_xtc {
@@ -1747,6 +1768,104 @@ pub fn get_duration(
     let duration: Duration = serde_json::from_str(&contents)?;
 
     Ok(duration)
+}
+
+// --------------------------------------------------
+/// Reconcile a frame spacing against the sampling floor. Returns the spacing to
+/// use, in ps.
+///
+/// Four outcomes, in the order they are tested:
+///
+/// 1. Below `SAMPLING_FREQUENCY_PS_MIN` -- refused outright, whatever produced
+///    it. 1 ps is the absolute minimum spacing MDRepo will record, and the five
+///    prod simulations that violate it all record exactly 0.
+/// 2. The source had no time axis, so `spacing_ps` IS the declaration. There is
+///    no measurement to corroborate it against; it stands, as it has since
+///    2026-08-11.
+/// 3. At or above `SAMPLING_FLOOR_PS` -- the measurement stands on its own and
+///    any declaration is ignored, which is the path essentially every
+///    simulation takes.
+/// 4. Below the floor and measured -- the submitter must declare the same
+///    value. A spacing this small is not by itself wrong, but neither is it
+///    self-evidently right: a trajectory carrying no usable timing is stamped
+///    with a converter's default of 1 ps per frame and the fabrication is
+///    indistinguishable from the real thing. Requiring agreement means two
+///    independent sources say it, which is the most that can be had.
+fn resolve_sampling_ps(
+    spacing_ps: f64,
+    declared_ps: Option<f64>,
+    source_had_time_axis: Option<bool>,
+    trajectory_file_name: &str,
+) -> Result<f64> {
+    if spacing_ps < constants::SAMPLING_FREQUENCY_PS_MIN {
+        bail!(
+            "{trajectory_file_name}: the frame spacing works out to \
+             {spacing_ps} ps, below the {} ps minimum. No simulation here \
+             records frames closer together than that, and a value this small \
+             is a fabricated or corrupt time axis rather than a real sampling \
+             rate. It cannot be declared around: correct the trajectory's \
+             timing, or re-upload with a file that carries it.",
+            constants::SAMPLING_FREQUENCY_PS_MIN
+        )
+    }
+
+    // The declared path. Nothing measured it, so there is nothing to compare
+    // it with -- see get_duration's Some(false) arm, which produced this value
+    // from `sampling_frequency_ps` in the first place.
+    if source_had_time_axis == Some(false) {
+        return Ok(spacing_ps);
+    }
+
+    if spacing_ps >= constants::SAMPLING_FLOOR_PS {
+        if let Some(declared) = declared_ps {
+            debug!(
+                "{trajectory_file_name}: measured {spacing_ps} ps/frame is at \
+                 or above the {} ps floor, so the declared \
+                 sampling_frequency_ps of {declared} ps is not consulted",
+                constants::SAMPLING_FLOOR_PS
+            );
+        }
+        return Ok(spacing_ps);
+    }
+
+    let Some(declared) = declared_ps else {
+        bail!(
+            "{trajectory_file_name}: the frame spacing measures {spacing_ps} \
+             ps, below the {} ps minimum for a value derived from the \
+             trajectory. A spacing this small is usually fabricated -- a file \
+             carrying no time axis of its own is stamped with a converter's \
+             default of 1 ps per frame, which reads exactly like a real \
+             measurement -- so it is not recorded on the trajectory's word \
+             alone. If this simulation genuinely did save frames that close \
+             together, declare it: add `sampling_frequency_ps = {spacing_ps}` \
+             to mdrepo-metadata.toml and re-run.",
+            constants::SAMPLING_FLOOR_PS
+        )
+    };
+
+    if (spacing_ps - declared).abs()
+        > constants::SAMPLING_AGREEMENT_TOLERANCE * declared
+    {
+        bail!(
+            "{trajectory_file_name}: mdrepo-metadata.toml declares \
+             `sampling_frequency_ps = {declared}`, but the trajectory measures \
+             {spacing_ps} ps per frame. Below the {} ps floor the declaration \
+             has to corroborate the file rather than overrule it, so the two \
+             must agree. If the trajectory's own timing is the part that is \
+             wrong -- a converter can write a placeholder time axis that \
+             cannot be recovered from -- then the file needs correcting; the \
+             declaration cannot stand in for it.",
+            constants::SAMPLING_FLOOR_PS
+        )
+    }
+
+    debug!(
+        "{trajectory_file_name}: measured {spacing_ps} ps/frame is below the \
+         {} ps floor and agrees with the declared {declared} ps; using the \
+         declared value",
+        constants::SAMPLING_FLOOR_PS
+    );
+    Ok(declared)
 }
 
 /// How many significant digits a frame-time gap keeps before it is counted.
@@ -1898,9 +2017,18 @@ fn measure_trajectory(
     // using the integration timestep from metadata.
     let nstxout = sampling_ps / (integration_timestep_fs as f64 / FS_PER_PS);
 
-    // A reasonable nstxout is 1e3..1e7. If it's way too large
-    // but dividing by 1000 fixes it, the XTC timestamps are
-    // inflated by 1000x (a known issue with some MD engines).
+    // Only the UPPER bound is a check, and deliberately so. If nstxout is way
+    // too large but dividing by 1000 fixes it, the XTC timestamps are inflated
+    // by 1000x (a known issue with some MD engines).
+    //
+    // The 1e3 below only confirms that correction landed somewhere sensible.
+    // It is NOT a floor on nstxout and must not become one: real data sits
+    // under it, since the Dissociation Dynamic Database saved every 1 ps on a
+    // 2 fs timestep, which is 500 steps per frame for all 7,197 of its
+    // members. A lower bound here would fail them before get_duration ever saw
+    // the metadata, and this function cannot see the declaration that
+    // authorises them. Implausibly fine sampling is caught by
+    // resolve_sampling_ps instead, in ps, where the declaration is in scope.
     if nstxout > 1e7 {
         let corrected_nstxout = nstxout / XTC_INFLATION_FACTOR;
         if (1e3..=1e7).contains(&corrected_nstxout) {
@@ -2191,6 +2319,109 @@ mod tests {
     // four concatenated segments, whose last one ends at 30000 ps. molly --info
     // reports `time: 0-30000 ps`, so the old span-based reading called this
     // 30000 ps -- 0.6% of the truth.
+    #[test]
+    // A spacing at or above the floor is returned untouched, which is the path
+    // essentially every simulation takes. Asserted so the floor cannot start
+    // rewriting values it is supposed to leave alone.
+    #[test]
+    fn spacing_above_the_floor_is_returned_unchanged() {
+        assert_eq!(
+            resolve_sampling_ps(100., None, Some(true), "t.xtc").unwrap(),
+            100.
+        );
+        assert_eq!(resolve_sampling_ps(10., None, None, "t.xtc").unwrap(), 10.);
+        // A declaration that is not needed is ignored, not an error. The only
+        // 73 simulations in prod that declare this field all say 100 ps and
+        // all measure 100 ps, so this is the path they take.
+        assert_eq!(
+            resolve_sampling_ps(100., Some(100.), Some(true), "t.xtc").unwrap(),
+            100.
+        );
+        // ...and it is still ignored when it disagrees, because above the
+        // floor the measurement stands on its own.
+        assert_eq!(
+            resolve_sampling_ps(800., Some(1.), Some(true), "t.xtc").unwrap(),
+            800.
+        );
+    }
+
+    // 1 ps is absolute. The five simulations that violate it in prod -- 231,
+    // 4437, 20610, 20614, 20615 -- all record exactly 0, and nothing
+    // legitimate sits between 0 and 1 ps.
+    #[test]
+    fn below_one_ps_is_refused_from_every_source() {
+        // Measured, undeclared.
+        assert!(resolve_sampling_ps(0., None, Some(true), "t.xtc").is_err());
+        // Measured, and declared to match -- agreement does not buy it in.
+        assert!(resolve_sampling_ps(0.5, Some(0.5), Some(true), "t.xtc").is_err());
+        // Declared on a trajectory with no time axis, where the declaration is
+        // normally taken on trust. The floor is checked before that trust is
+        // extended, so this route is closed too.
+        let err = resolve_sampling_ps(0.001, Some(0.001), Some(false), "t.nc")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("cannot be declared around"), "{err}");
+    }
+
+    // The case the floor exists for: a DCD with no usable header is stamped
+    // with cpptraj's default 1 ps/frame, and that fabricated value used to be
+    // measured back off the converted file as though it were real. 73 rows in
+    // prod carried it. Note the marker is `unknown` for a DCD, not `false`.
+    #[test]
+    fn fabricated_one_ps_is_refused_without_a_declaration() {
+        let err = resolve_sampling_ps(1., None, None, "E279Q-1v4t.dcd")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("E279Q-1v4t.dcd"), "{err}");
+        assert!(err.contains("sampling_frequency_ps"), "{err}");
+    }
+
+    // ...and the reason it cannot simply be rejected: the same 1 ps, declared,
+    // is the real sampling rate of all 7,197 members of the Dissociation
+    // Dynamic Database. Same number, opposite verdict, and only the
+    // declaration separates them.
+    #[test]
+    fn declared_one_ps_is_honoured_when_the_trajectory_agrees() {
+        assert_eq!(
+            resolve_sampling_ps(1., Some(1.), Some(true), "Pro_lig1.xtc").unwrap(),
+            1.
+        );
+        // The declared value becomes the stored one, so a measured 1.0000004
+        // is recorded as a clean 1 rather than propagating float noise.
+        assert_eq!(
+            resolve_sampling_ps(1.0000004, Some(1.), Some(true), "Pro_lig1.xtc")
+                .unwrap(),
+            1.
+        );
+    }
+
+    // Below the floor the declaration corroborates the file rather than
+    // overruling it, because a declared number is the one thing a fabricated
+    // axis can also supply.
+    #[test]
+    fn declaration_that_contradicts_the_trajectory_is_refused() {
+        let err = resolve_sampling_ps(1., Some(9.), Some(true), "t.xtc")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("declares"), "{err}");
+        assert!(err.contains("measures"), "{err}");
+
+        // Just inside and just outside the 1% tolerance.
+        assert!(resolve_sampling_ps(2.01, Some(2.), Some(true), "t.xtc").is_ok());
+        assert!(resolve_sampling_ps(2.03, Some(2.), Some(true), "t.xtc").is_err());
+    }
+
+    // The no-time-axis path keeps working as it has since 2026-08-11: the
+    // declaration is the value and nothing corroborates it, because there is
+    // nothing to corroborate it with.
+    #[test]
+    fn declared_path_needs_no_corroboration_below_the_floor() {
+        assert_eq!(
+            resolve_sampling_ps(4., Some(4.), Some(false), "t.mdcrd").unwrap(),
+            4.
+        );
+    }
+
     #[test]
     fn modal_gap_survives_a_clock_that_restarts_mid_file() {
         let mut times = Vec::new();

@@ -33,14 +33,22 @@ pub struct Meta {
 
     /// Simulated time between consecutive saved frames, in picoseconds --
     /// the output frequency (AMBER's `ntwx`, GROMACS's `nstxout`) times the
-    /// integration timestep. Optional, and a fallback rather than an
-    /// authority: a trajectory that carries its own time axis is ground
-    /// truth and this is ignored. It exists for the trajectories that
-    /// cannot say it themselves -- an AMBER NetCDF written without a `time`
-    /// variable, or an ASCII mdcrd, which stores no timing at all. Absent
-    /// both, conversion to XTC stamps cpptraj's default 1 ps/frame onto the
-    /// output and every duration and sampling frequency downstream inherits
-    /// that silently.
+    /// integration timestep. Optional, and read on two occasions.
+    ///
+    /// It began as a fallback for the trajectories that cannot state their own
+    /// spacing -- an AMBER NetCDF written without a `time` variable, or an
+    /// ASCII mdcrd, which stores no timing at all. Absent both, conversion to
+    /// XTC stamps cpptraj's default 1 ps/frame onto the output and every
+    /// duration and sampling frequency downstream inherits that silently.
+    /// There the declaration substitutes for a measurement that does not
+    /// exist, and nothing can check it.
+    ///
+    /// Since 2026-09-08 it is also read when a spacing WAS measured and comes
+    /// out below `SAMPLING_FLOOR_PS`. There it corroborates rather than
+    /// substitutes: it is required, and it must agree with what the trajectory
+    /// reports. So "a trajectory with its own time axis is ground truth and
+    /// this is ignored" holds at or above the floor, and below it the two have
+    /// to say the same thing.
     #[validate(range(
         min = constants::SAMPLING_FREQUENCY_PS_MIN,
         max = constants::SAMPLING_FREQUENCY_PS_MAX
@@ -209,6 +217,13 @@ impl Meta {
         // likely a value entered in the wrong unit. Both fields must have
         // passed their own range checks first, so one bad number is reported
         // once rather than twice.
+        //
+        // Subsumed as of 2026-09-08 and kept anyway: SAMPLING_FREQUENCY_PS_MIN
+        // is now 1 ps and TIMESTEP_FS_MAX is 20 fs (0.02 ps), so a value that
+        // passes its own range check can no longer be shorter than a timestep
+        // and this can no longer fire. It stays because it guards a real
+        // physical fact rather than the current constants, and it becomes live
+        // again the moment either bound moves.
         if let Some(sampling_ps) = self.sampling_frequency_ps
             && (constants::SAMPLING_FREQUENCY_PS_MIN
                 ..=constants::SAMPLING_FREQUENCY_PS_MAX)
@@ -1016,6 +1031,53 @@ mod proptest_tests {
             let errors = meta.check(None);
             let has_error = errors.iter().any(|e| e.starts_with("integration_timestep_fs:"));
             prop_assert!(has_error, "Expected timestep error for timestep={timestep}");
+        }
+
+        // --- Range: sampling_frequency_ps ---
+        //
+        // The floor moved from 0.001 ps to 1 ps on 2026-09-08, when 1 ps
+        // became the absolute minimum spacing MDRepo will record. Worth a test
+        // because nothing covered this range before and the bound is now
+        // load-bearing: it is what stops a sub-picosecond declaration being
+        // used to authorise a sub-picosecond measurement.
+
+        #[test]
+        fn valid_sampling_frequency_no_error(sampling in 1.0f64..=100_000.0f64) {
+            let mut meta = base_meta();
+            meta.sampling_frequency_ps = Some(sampling);
+            let errors = meta.check(None);
+            let has_error = errors
+                .iter()
+                .any(|e| e.starts_with("sampling_frequency_ps:"));
+            prop_assert!(!has_error, "Unexpected sampling error for {sampling}: {errors:?}");
+        }
+
+        #[test]
+        fn out_of_range_sampling_frequency_produces_error(sampling in prop_oneof![
+            0.0f64..1.0f64,
+            100_000.001f64..1e9f64,
+        ]) {
+            let mut meta = base_meta();
+            meta.sampling_frequency_ps = Some(sampling);
+            let errors = meta.check(None);
+            let has_error = errors
+                .iter()
+                .any(|e| e.starts_with("sampling_frequency_ps:"));
+            prop_assert!(has_error, "Expected sampling error for {sampling}");
+        }
+
+        // Absent is not an error: the field is optional and only 73 of the
+        // 97,809 released simulations declare it at all.
+        #[test]
+        fn absent_sampling_frequency_no_error(timestep in 1u32..=20u32) {
+            let mut meta = base_meta();
+            meta.integration_timestep_fs = timestep;
+            meta.sampling_frequency_ps = None;
+            let errors = meta.check(None);
+            let has_error = errors
+                .iter()
+                .any(|e| e.starts_with("sampling_frequency_ps:"));
+            prop_assert!(!has_error, "Unexpected sampling error when unset: {errors:?}");
         }
 
         // --- Choice: Water model ---

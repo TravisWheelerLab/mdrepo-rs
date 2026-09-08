@@ -23,12 +23,37 @@ pub const TEMP_K_MAX: u32 = 700;
 pub const TIMESTEP_FS_MIN: u32 = 1;
 pub const TIMESTEP_FS_MAX: u32 = 20;
 // Frame spacing, not integration timestep: the simulated time between saved
-// frames. The floor is one femtosecond (saving every step of the finest
-// timestep anyone declares) and the ceiling 100 ns per frame, well past any
-// real sampling rate. These bounds only catch nonsense; they cannot catch a
-// unit error, since a value entered in ns or fs still lands inside them.
-pub const SAMPLING_FREQUENCY_PS_MIN: f64 = 0.001;
+// frames. The ceiling is 100 ns per frame, well past any real sampling rate.
+// These bounds only catch nonsense; they cannot catch a unit error, since a
+// value entered in ns or fs still lands inside them.
+//
+// The floor was 0.001 ps (one femtosecond, saving every step of the finest
+// timestep anyone declares) until 2026-09-08, when 1 ps became the absolute
+// minimum spacing MDRepo will record from any source. Nothing in prod moved:
+// only 73 simulations declare this field at all and every one of them says
+// 100 ps.
+pub const SAMPLING_FREQUENCY_PS_MIN: f64 = 1.;
 pub const SAMPLING_FREQUENCY_PS_MAX: f64 = 100_000.;
+// Below this, a spacing derived from the trajectory is not trusted on its own
+// and needs the submitter to declare the same value in sampling_frequency_ps.
+//
+// The floor's target is a FABRICATED time axis, not a small number. A DCD or a
+// solvent-stripped NetCDF carrying no usable timing gets stamped with a
+// converter's default of 1 ps per frame, and that is then measured back off the
+// converted file as though it had been observed. But genuine 1 ps sampling
+// exists here in quantity: of the 7,202 simulations below 10 ps, 7,197 are the
+// Dissociation Dynamic Database, whose paper says coordinates were saved every
+// 1.0 ps. Only five are actually wrong and all five record exactly 0.
+//
+// No computation separates those two cases. `spacing / timestep` does not: the
+// DDD's real 1 ps over a 2 fs timestep is 500 steps and the fabricated 1 ps
+// over 4 fs is 250, both clean whole numbers. Only the submitter can say.
+pub const SAMPLING_FLOOR_PS: f64 = 10.;
+// How close a measured spacing must sit to the declared one for the
+// declaration to be honoured below the floor. The declaration lowers the bar;
+// it does not replace the evidence, because a declared number is the one thing
+// a fabricated axis can also supply.
+pub const SAMPLING_AGREEMENT_TOLERANCE: f64 = 0.01;
 pub const VALID_WATER_MODEL: &[&str] = &[
     "AMOEBA",
     "BF",
