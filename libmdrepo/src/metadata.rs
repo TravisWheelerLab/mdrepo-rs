@@ -2184,6 +2184,41 @@ mod tests {
         );
     }
 
+    /// GROMACS names the first release of a series with no patch component, so
+    /// a bare year is a real version for every series it ships. 2025 was
+    /// entered as "2025.0" and the bare form was therefore refused -- which is
+    /// the whole of why simulation 20615 sits among the invalid released
+    /// TOMLs, and it is our defect, not the submitter's.
+    ///
+    /// The loop is over every series rather than 2025 alone: the same omission
+    /// in 2027 would be just as silent, and this is the test that would catch
+    /// it. 2016 through 2024 already pass and are included so the rule is
+    /// stated once rather than asserted for the one year that broke.
+    #[test]
+    fn gromacs_accepts_a_bare_year_for_every_series_it_ships() {
+        let bare_year_valid = |version: &str| {
+            let mut meta = Meta::example_minimal();
+            meta.pdb_id = Some("5aom".to_string());
+            meta.software_name = "GROMACS".to_string();
+            meta.software_version = version.to_string();
+            !meta
+                .check(None)
+                .iter()
+                .any(|e| e.starts_with("software_version:"))
+        };
+
+        for year in [
+            "2016", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025",
+            "2026",
+        ] {
+            assert!(bare_year_valid(year), "GROMACS {year} must be accepted");
+        }
+
+        // Still a real check: a year GROMACS has never shipped is refused.
+        assert!(!bare_year_valid("2017"));
+        assert!(!bare_year_valid("2030"));
+    }
+
     #[test]
     fn meta_check_valid_software_version() {
         let mut meta = Meta::example_minimal();
