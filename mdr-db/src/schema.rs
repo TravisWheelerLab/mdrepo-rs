@@ -81,7 +81,11 @@ diesel::table! {
     md_ligand (id) {
         id -> Int8,
         name -> Text,
-        smiles_string -> Text,
+        smiles -> Text,
+        inchi -> Nullable<Text>,
+        inchikey -> Nullable<Text>,
+        declared_identity -> Nullable<Text>,
+        identity_software -> Nullable<Text>,
         simulation_id -> Int8,
     }
 }

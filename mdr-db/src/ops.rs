@@ -560,7 +560,7 @@ fn ligand_query(
     let mut q = md_ligand.into_boxed();
     if let Some(t) = search {
         let p = format!("%{t}%");
-        q = q.filter(name.ilike(p.clone()).or(smiles_string.ilike(p)));
+        q = q.filter(name.ilike(p.clone()).or(smiles.ilike(p)));
     }
     if let Some(s) = sim_id {
         q = q.filter(simulation_id.eq(s));
@@ -2468,8 +2468,7 @@ pub fn delete_replicates_for_simulation(
 ) -> QueryResult<usize> {
     use crate::schema::md_replicate::dsl as r;
 
-    diesel::delete(r::md_replicate.filter(r::simulation_id.eq(sim_id)))
-        .execute(conn)
+    diesel::delete(r::md_replicate.filter(r::simulation_id.eq(sim_id))).execute(conn)
 }
 
 /// Delete a simulation's `md_simulation_uniprot` links. Used on the reprocess

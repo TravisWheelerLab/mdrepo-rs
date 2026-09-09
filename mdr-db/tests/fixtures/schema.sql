@@ -1148,7 +1148,11 @@ CREATE TABLE public.md_frontend_download_instance_uploaded_files (
 CREATE TABLE public.md_ligand (
     id bigint NOT NULL,
     name text NOT NULL,
-    smiles_string text NOT NULL,
+    smiles text NOT NULL,
+    inchi text,
+    inchikey text,
+    declared_identity text,
+    identity_software text,
     simulation_id bigint NOT NULL
 );
 
@@ -2759,7 +2763,7 @@ CREATE INDEX md_ligand_name_00833f_idx ON public.md_ligand USING btree (name);
 -- Name: md_ligand_smiles__1898ae_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX md_ligand_smiles__1898ae_idx ON public.md_ligand USING btree (smiles_string);
+CREATE INDEX md_ligand_inchikey_idx ON public.md_ligand USING btree (inchikey);
 
 
 --

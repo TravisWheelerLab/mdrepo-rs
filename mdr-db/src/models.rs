@@ -278,7 +278,11 @@ pub struct DownloadUploadedFileUpdate {
 pub struct Ligand {
     pub id: i64,
     pub name: String,
-    pub smiles_string: String,
+    pub smiles: String,
+    pub inchi: Option<String>,
+    pub inchikey: Option<String>,
+    pub declared_identity: Option<String>,
+    pub identity_software: Option<String>,
     pub simulation_id: i64,
 }
 
@@ -286,7 +290,11 @@ pub struct Ligand {
 #[diesel(table_name = md_ligand)]
 pub struct NewLigand {
     pub name: String,
-    pub smiles_string: String,
+    pub smiles: String,
+    pub inchi: Option<String>,
+    pub inchikey: Option<String>,
+    pub declared_identity: Option<String>,
+    pub identity_software: Option<String>,
     pub simulation_id: i64,
 }
 
@@ -294,7 +302,11 @@ pub struct NewLigand {
 #[diesel(table_name = md_ligand)]
 pub struct LigandUpdate {
     pub name: Option<String>,
-    pub smiles_string: Option<String>,
+    pub smiles: Option<String>,
+    pub inchi: Option<String>,
+    pub inchikey: Option<String>,
+    pub declared_identity: Option<String>,
+    pub identity_software: Option<String>,
     pub simulation_id: Option<i64>,
 }
 

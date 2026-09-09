@@ -544,7 +544,11 @@ fn find_sim_scoped_children_by_natural_key() {
         &mut c,
         NewLigand {
             name: "ATP".into(),
-            smiles_string: "C1=NC2=C(C(=N1)N)N=CN2".into(),
+            smiles: "C1=NC2=C(C(=N1)N)N=CN2".into(),
+            inchi: None,
+            inchikey: None,
+            declared_identity: Some("smiles".into()),
+            identity_software: None,
             simulation_id: sim,
         },
     )
@@ -985,7 +989,10 @@ fn delete_uniprots_removes_links_but_keeps_the_accession() {
         ops::get_uniprot(&mut c, acc).is_ok(),
         "accession kept, only the link was cleared"
     );
-    assert!(ops::get_uniprot(&mut c, other_acc).is_ok(), "other accession kept");
+    assert!(
+        ops::get_uniprot(&mut c, other_acc).is_ok(),
+        "other accession kept"
+    );
 }
 
 // ── get_visible_simulation_ids ────────────────────────────────────────────────
