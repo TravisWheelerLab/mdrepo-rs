@@ -4,6 +4,80 @@ Notable user-facing changes to `mdr-meta`. Each entry here becomes the
 GitHub release note for that version (see `.github/workflows/release.yml`)
 -- write it before tagging, not after.
 
+## 0.3.24
+
+### New: `ligands.inchi`, and `ligands.smiles` becomes optional
+
+A ligand may now be declared by a standard InChI instead of, or as well
+as, a SMILES:
+
+```toml
+[[ligands]]
+name = "acetaldehyde"
+inchi = "InChI=1S/C2H4O/c1-2-3/h2H,1H3"
+```
+
+- **At least one of `smiles` and `inchi` is required**, and either alone
+  is enough. Declaring neither is an error naming the ligand.
+- The InChI must be a **standard** InChI, beginning `InChI=1S/`. The
+  non-standard `InChI=1/` form is refused: two non-standard InChIs are
+  not comparable, and comparability is the reason for accepting the
+  notation at all.
+- Declaring both is allowed. They are checked against each other on the
+  ingest path, where a pair describing two different molecules is
+  refused rather than reconciled.
+- Neither value is ever rewritten in your file.
+- Nothing changes for metadata that declares `smiles` and no `inchi`,
+  which is every released bundle today.
+
+### Behaviour change: an unknown key under `[[ligands]]` is now an error
+
+A misspelled or stray key inside a `[[ligands]]` table used to be
+accepted and silently discarded, so `inchii = "..."` validated clean and
+the value simply vanished. It is now a parse failure naming the line.
+
+```
+Failed to parse input: TOML parse error at line 66, column 1
+   |
+66 | inchii = "InChI=1S/C2H4O/c1-2-3/h2H,1H3"
+   | ^^^^^^
+```
+
+Every other table already behaved this way; `[[ligands]]` was the
+exception, because the attribute that enforces it sits on the top-level
+document and serde does not cascade it into nested structs.
+
+**Checked before release** against all 97,809 released metadata files:
+the same 30 that failed under 0.3.23 fail under 0.3.24, for byte-identical
+reasons, and nothing new fails. No published bundle has been carrying a
+stray ligand key.
+
+### Behaviour change: `sampling_frequency_ps` has a floor of 1 ps
+
+The accepted range was `0.001-100000` and is now `1-100000`. A
+declaration below 1 ps is refused outright, from any source.
+
+This lands in the same release as the InChI work and is otherwise
+unrelated to it. It is the validator half of a rule the processing
+pipeline already enforces: a trajectory carrying no usable timing is
+stamped by the conversion with a default of 1 ps per frame, which is
+indistinguishable from a genuine 1 ps, so a spacing that small is not
+recorded on the trajectory's word alone.
+
+Below 10 ps the processing pipeline additionally *requires* the
+declaration and checks it against the trajectory, agreeing to within 1%.
+`check` does not measure trajectories and so cannot apply that half; it
+enforces the floor only.
+
+**Checked before release**: only 73 released simulations declare the
+field at all, every one of them at 100 ps, so no published metadata
+changes verdict.
+
+### Unchanged
+
+- Every other field, every subcommand, and `check`'s exit codes
+  (`0`/`1`/`2`, see the 0.3.17 notes below) are untouched.
+
 ## 0.3.23
 
 ### Behaviour change: a wildcard in a filename is now an error
