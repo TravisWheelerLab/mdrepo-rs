@@ -1566,9 +1566,10 @@ pub fn check_ligand(
     uv: &Path,
 ) -> Result<CheckedLigand> {
     // Comparison is SMILES-to-SMILES because the inference produces a SMILES.
-    // `load_canonical_meta` resolves every ligand to both notations before this
-    // runs, so a `None` here means resolution was skipped, not that the
-    // submitter omitted it.
+    //
+    // A `None` here means the submitter declared only an `inchi`. Nothing
+    // derives the missing notation -- see the note in import.rs's
+    // upsert_ligand -- so this refuses rather than comparing nothing.
     let smiles = ligand.smiles.as_deref().ok_or_else(|| {
         anyhow!(
             r#"Ligand "{}" has no SMILES to compare; it was not resolved"#,
@@ -2036,13 +2037,19 @@ fn measure_trajectory(
     // by 1000x (a known issue with some MD engines).
     //
     // The 1e3 below only confirms that correction landed somewhere sensible.
-    // It is NOT a floor on nstxout and must not become one: real data sits
-    // under it, since the Dissociation Dynamic Database saved every 1 ps on a
-    // 2 fs timestep, which is 500 steps per frame for all 7,197 of its
-    // members. A lower bound here would fail them before get_duration ever saw
-    // the metadata, and this function cannot see the declaration that
-    // authorises them. Implausibly fine sampling is caught by
-    // resolve_sampling_ps instead, in ps, where the declaration is in scope.
+    // It is NOT a floor on nstxout and must not become one: the Dissociation
+    // Dynamic Database saved every 1 ps on a 1 fs timestep, which is 1,000
+    // steps per frame -- sitting exactly ON 1e3, with no margin either way.
+    //
+    // That timestep read 2 fs / 500 steps until 2026-09-09 and was wrong;
+    // measured, all 15,525 files in the 2026-09-08 delivery and all 6,664
+    // imported originals declare 1 fs. So the original claim that real data
+    // sits UNDER this bound does not hold -- it sits on it, and an inclusive
+    // lower bound would admit the DDD rather than reject it. The bound still
+    // must not be added: a margin of zero is no margin, one rounding either way
+    // decides it, and this function cannot see the declaration that authorises
+    // the value. Implausibly fine sampling is caught by resolve_sampling_ps
+    // instead, in ps, where the declaration is in scope.
     if nstxout > 1e7 {
         let corrected_nstxout = nstxout / XTC_INFLATION_FACTOR;
         if (1e3..=1e7).contains(&corrected_nstxout) {
@@ -2328,12 +2335,6 @@ mod tests {
         assert_eq!(200. * modal_gap_ps(&times).unwrap(), 2_000_000.);
     }
 
-    // The bug this function exists for. Shape taken from BioEmu ONE-cath1
-    // cath1_1b43A02/run006_protein.cmprsd.xtc: 501 frames 10000 ps apart in
-    // four concatenated segments, whose last one ends at 30000 ps. molly --info
-    // reports `time: 0-30000 ps`, so the old span-based reading called this
-    // 30000 ps -- 0.6% of the truth.
-    #[test]
     // A spacing at or above the floor is returned untouched, which is the path
     // essentially every simulation takes. Asserted so the floor cannot start
     // rewriting values it is supposed to leave alone.
@@ -2388,6 +2389,24 @@ mod tests {
             .to_string();
         assert!(err.contains("E279Q-1v4t.dcd"), "{err}");
         assert!(err.contains("sampling_frequency_ps"), "{err}");
+        // The message hands the operator the exact line to add, so the measured
+        // value has to appear in it and not just the field name.
+        assert!(err.contains("sampling_frequency_ps = 1"), "{err}");
+
+        // The same refusal is what every remaining DDD import would hit today:
+        // measured 2026-09-09, zero of the 15,525 delivered metadata files and
+        // zero of the 6,664 imported originals declare the field at all. That
+        // is why simulation-processing 5bb97c6, which injects it, has to deploy
+        // with the floor or before it -- never after.
+        assert!(resolve_sampling_ps(1., None, None, "Pro_lig1.mdc").is_err());
+
+        // Every bail names its trajectory. In a bundle of 50 Pro_lig*.mdc
+        // replicas an unnamed error is unactionable, and the sub-minimum gate's
+        // prefix was untested.
+        let sub_minimum = resolve_sampling_ps(4.9e-5, None, None, "converted.dcd")
+            .unwrap_err()
+            .to_string();
+        assert!(sub_minimum.starts_with("converted.dcd:"), "{sub_minimum}");
     }
 
     // ...and the reason it cannot simply be rejected: the same 1 ps, declared,
@@ -2436,6 +2455,541 @@ mod tests {
         );
     }
 
+    // --- either notation alone: accepted by validation, refused by the
+    // --- pipeline. Both halves asserted, because the gap is the finding.
+
+    fn inchi_only_ligand() -> libmdrepo::metadata::Ligand {
+        libmdrepo::metadata::Ligand {
+            name: "ethanol".to_string(),
+            smiles: None,
+            inchi: Some("InChI=1S/C2H6O/c1-2-3/h3H,2H2,1H3".to_string()),
+        }
+    }
+
+    /// Half one: `mdr-meta check` is happy with an InChI-only ligand. This is
+    /// what `cba350b` set out to do and it works.
+    #[test]
+    fn an_inchi_only_ligand_satisfies_validation() {
+        let ligand = inchi_only_ligand();
+
+        assert!(validator::Validate::validate(&ligand).is_ok());
+        assert_eq!(ligand.declared_identity(), Some("inchi"));
+        assert_eq!(ligand.identity(), "InChI=1S/C2H6O/c1-2-3/h3H,2H2,1H3");
+    }
+
+    /// Half two: the pipeline then refuses it, because nothing ever derives the
+    /// SMILES that `md_ligand` and the comparison both require.
+    ///
+    /// The refusal is correct -- comparing against a molecule you do not have
+    /// would be worse -- but it means "either notation is accepted" is true at
+    /// the metadata layer and false end to end. Asserted so the sentence in the
+    /// docs cannot quietly become wrong in the other direction either.
+    ///
+    /// Its sibling is `upsert_ligand` in import.rs, which fails the same ligand
+    /// with "reached import with no SMILES". That one needs a database, so it
+    /// is not asserted here.
+    #[test]
+    fn an_inchi_only_ligand_cannot_be_compared_today() {
+        let inferred: InferredLigand = serde_json::from_str(
+            r#"{
+                "structure": {
+                    "smiles": "CCO", "formula": "C2H6O", "num_atoms": 9,
+                    "num_heavy_atoms": 3, "charge": 0,
+                    "inchikey": "LFQSCWFLJHTTHZ-UHFFFAOYSA-N", "resname": "LIG"
+                },
+                "name": {"smiles_input": "CCO"}
+            }"#,
+        )
+        .expect("the shape mol_id.py writes into inferred_ligands.json");
+
+        // The SMILES is extracted before anything is spawned, so a `uv` that
+        // cannot exist proves the refusal happens first.
+        let err = check_ligand(
+            &inchi_only_ligand(),
+            &inferred,
+            Path::new("."),
+            Path::new("/nonexistent/uv"),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("ethanol"), "{err}");
+        assert!(err.contains("has no SMILES to compare"), "{err}");
+    }
+
+    /// What slice 2 has to make true: an InChI-only ligand reaches the
+    /// comparison with a SMILES derived from its InChI.
+    ///
+    /// Ignored because the resolver does not exist. Written now because the
+    /// contract is decided and this is cheaper to read than a design document
+    /// -- and because `cargo test` lists ignored tests by name, so it stays
+    /// visible. When the resolver lands, delete the attribute.
+    #[test]
+    #[ignore = "slice 2: no step derives SMILES from a declared InChI yet"]
+    fn an_inchi_only_ligand_should_be_resolved_before_the_pipeline_sees_it() {
+        let resolved = inchi_only_ligand();
+
+        assert_eq!(
+            resolved.smiles.as_deref(),
+            Some("CCO"),
+            "resolution must fill the missing notation, not refuse the ligand"
+        );
+        assert_eq!(resolved.declared_identity(), Some("inchi"));
+    }
+
+    // The next representable f64 either side of a positive finite value. Both
+    // bounds below are `>=` or `<=`, and the only way to prove an inclusive
+    // bound is inclusive is to stand one bit outside it.
+    fn one_ulp_below(x: f64) -> f64 {
+        f64::from_bits(x.to_bits() - 1)
+    }
+
+    fn one_ulp_above(x: f64) -> f64 {
+        f64::from_bits(x.to_bits() + 1)
+    }
+
+    // Exactly 10 ps is ABOVE the floor, so it keeps its measurement. One bit
+    // below, the declaration becomes mandatory. Nothing in the six original
+    // tests distinguishes `>=` from `>` here, and getting that wrong would push
+    // every exactly-10-ps trajectory into the corroboration branch and fail the
+    // ones that declare nothing.
+    #[test]
+    fn the_ten_ps_floor_is_inclusive_and_one_ulp_below_it_is_not() {
+        let below = one_ulp_below(constants::SAMPLING_FLOOR_PS);
+
+        assert_eq!(
+            resolve_sampling_ps(
+                constants::SAMPLING_FLOOR_PS,
+                None,
+                Some(true),
+                "t.xtc"
+            )
+            .unwrap(),
+            10.
+        );
+        assert!(resolve_sampling_ps(below, None, Some(true), "t.xtc").is_err());
+
+        // And once it is below, the declared value is what comes back -- not
+        // the measurement that was one bit short of standing on its own.
+        assert_eq!(
+            resolve_sampling_ps(below, Some(10.), Some(true), "t.xtc").unwrap(),
+            10.
+        );
+    }
+
+    // Exactly 1 ps is accepted; one bit below it is refused from every source,
+    // including the declared path, because that gate is tested before anything
+    // else. Turning `<` into `<=` here would reject the entire DDD.
+    #[test]
+    fn the_one_ps_minimum_is_inclusive_and_one_ulp_below_it_is_not() {
+        let min = constants::SAMPLING_FREQUENCY_PS_MIN;
+        let below = one_ulp_below(min);
+
+        assert_eq!(
+            resolve_sampling_ps(min, Some(min), Some(true), "t.xtc").unwrap(),
+            1.
+        );
+
+        for axis in [Some(true), Some(false), None] {
+            assert!(
+                resolve_sampling_ps(below, None, axis, "t.xtc").is_err(),
+                "{axis:?} with no declaration"
+            );
+            assert!(
+                resolve_sampling_ps(below, Some(below), axis, "t.xtc").is_err(),
+                "{axis:?} declaring the same sub-minimum value"
+            );
+        }
+    }
+
+    // The agreement window is `|spacing - declared| <= 0.01 * declared`, so the
+    // edge is inclusive and the denominator is the DECLARATION, not the
+    // measurement and not their mean. The original test probes 2.01 and 2.03,
+    // neither of which lands on the edge -- and with `declared = 2.` none can,
+    // since `2.02 - 2.0` is 0.020000000000000018 in f64.
+    //
+    // 6.25 is the value that works: `0.01 * 6.25` is exactly 0.0625, and
+    // 6.3125 and 6.1875 sit exactly one tolerance either side. Two other
+    // obvious candidates do not work and are worth naming so they are not
+    // tried again -- `4.04 - 4.0` is 0.040000000000000036, which is over the
+    // line rather than on it, and `declared = 100.` can never reach this gate
+    // at all because any spacing within 1% of 100 clears the 10 ps floor.
+    #[test]
+    fn the_one_percent_tolerance_edge_is_inclusive() {
+        let declared = 6.25;
+        let hi = 6.3125;
+        let lo = 6.1875;
+
+        // State the arithmetic, so that changing SAMPLING_AGREEMENT_TOLERANCE
+        // breaks this loudly instead of quietly demoting it to an interior case.
+        assert_eq!(
+            hi - declared,
+            constants::SAMPLING_AGREEMENT_TOLERANCE * declared
+        );
+        assert_eq!(
+            declared - lo,
+            constants::SAMPLING_AGREEMENT_TOLERANCE * declared
+        );
+
+        assert_eq!(
+            resolve_sampling_ps(hi, Some(declared), Some(true), "t.xtc").unwrap(),
+            declared
+        );
+        assert_eq!(
+            resolve_sampling_ps(lo, Some(declared), Some(true), "t.xtc").unwrap(),
+            declared
+        );
+
+        assert!(
+            resolve_sampling_ps(one_ulp_above(hi), Some(declared), Some(true), "t.xtc")
+                .is_err()
+        );
+        assert!(
+            resolve_sampling_ps(one_ulp_below(lo), Some(declared), Some(true), "t.xtc")
+                .is_err()
+        );
+    }
+
+    // Not a bug, and not something to "fix" -- but the first submitter to
+    // declare 1.00 against a measured 1.01 will say it is one percent, and it
+    // is refused, because `1.01 - 1.0` is 0.010000000000000009 in binary
+    // floating point. The tolerance is an f64 comparison, not a decimal one.
+    // If that is ever judged too harsh, this is the test to delete on purpose.
+    #[test]
+    fn a_nominal_one_percent_disagreement_can_still_be_refused() {
+        assert!(
+            resolve_sampling_ps(1.01, Some(1.), Some(true), "Pro_lig1.mdc").is_err()
+        );
+        assert_eq!(
+            resolve_sampling_ps(
+                one_ulp_below(1.01),
+                Some(1.),
+                Some(true),
+                "Pro_lig1.mdc"
+            )
+            .unwrap(),
+            1.
+        );
+    }
+
+    // Below the floor an agreeing pair resolves to the DECLARATION, so
+    // measurement noise never reaches the published record. The original test
+    // shows this with 1.0000004, where the two are indistinguishable by eye;
+    // these differ visibly and still come back as the declared value.
+    #[test]
+    fn the_declaration_not_the_measurement_is_what_is_returned() {
+        for spacing in [4.02, 3.98] {
+            let got =
+                resolve_sampling_ps(spacing, Some(4.), Some(true), "t.xtc").unwrap();
+            assert_eq!(got.to_bits(), 4.0f64.to_bits(), "spacing {spacing}");
+        }
+    }
+
+    // A non-positive declaration always bails, because the right-hand side of
+    // the tolerance test goes non-positive with it. The outcome is right and
+    // the mechanism is accidental, so it is written down here: replacing
+    // `TOLERANCE * declared` with `TOLERANCE * declared.abs()` reads like a
+    // tidy-up and would start accepting a negative declaration. The real guard
+    // is Meta::check's range validation in libmdrepo/src/metadata.rs.
+    #[test]
+    fn a_nonpositive_declaration_authorises_nothing() {
+        for declared in [0., -1., -1e6, f64::NEG_INFINITY] {
+            assert!(
+                resolve_sampling_ps(2., Some(declared), Some(true), "t.xtc").is_err(),
+                "declared {declared}"
+            );
+        }
+    }
+
+    // The no-time-axis gate returns before the floor and the agreement rule
+    // are reached, whatever it is handed. The second case matters most: this
+    // function does NOT require a declaration on that path -- get_duration
+    // does, before it ever calls here -- so moving this gate below the
+    // corroboration branch would start failing trajectories that are fine.
+    #[test]
+    fn gate_two_short_circuits_before_any_corroboration() {
+        assert_eq!(
+            resolve_sampling_ps(5., Some(999.), Some(false), "t.mdcrd").unwrap(),
+            5.
+        );
+        assert_eq!(
+            resolve_sampling_ps(5., None, Some(false), "t.mdcrd").unwrap(),
+            5.
+        );
+    }
+
+    // `unknown` must behave exactly like `Some(true)` everywhere. This is a
+    // promise the code makes in a comment and nothing enforced until now, and
+    // it is not a corner case: cpptraj prints no `is a ... with ...` line for a
+    // DCD, so EVERY DCD arrives here as None. If the two arms ever diverge,
+    // every DCD in the archive changes behaviour at once.
+    #[test]
+    fn unknown_behaves_exactly_like_true_across_the_whole_grid() {
+        let spacings = [
+            0.5,
+            1.0,
+            1.005,
+            2.0,
+            6.25,
+            one_ulp_below(constants::SAMPLING_FLOOR_PS),
+            10.0,
+            100.0,
+        ];
+        let declarations = [None, Some(1.0), Some(2.0), Some(6.25), Some(100.0)];
+
+        for spacing in spacings {
+            for declared in declarations {
+                let known = resolve_sampling_ps(spacing, declared, Some(true), "t.xtc");
+                let unknown = resolve_sampling_ps(spacing, declared, None, "t.xtc");
+
+                assert_eq!(
+                    known.is_ok(),
+                    unknown.is_ok(),
+                    "spacing {spacing}, declared {declared:?}"
+                );
+                if let (Ok(a), Ok(b)) = (&known, &unknown) {
+                    assert_eq!(a, b, "spacing {spacing}, declared {declared:?}");
+                }
+            }
+        }
+    }
+
+    // A hole, asserted as it stands today rather than as it should be. The
+    // function refuses a spacing below 1 ps on the way in and then hands back a
+    // declared value below 1 ps on the way out, because it never re-checks what
+    // it returns. Nothing reaches this in production -- Meta::check's range
+    // validation rejects the declaration first, and
+    // sampling_frequency_range_is_inclusive_at_both_ends in libmdrepo is what
+    // pins that -- so this is a latent hole, not a live one. When it is closed,
+    // this test is the one that goes red, and its name says why.
+    #[test]
+    fn resolve_sampling_ps_does_not_recheck_its_own_return_value() {
+        let got = resolve_sampling_ps(1.0, Some(0.995), Some(true), "t.xtc").unwrap();
+
+        assert_eq!(got, 0.995);
+        assert!(
+            got < constants::SAMPLING_FREQUENCY_PS_MIN,
+            "the returned value is below the minimum this function enforces on input"
+        );
+    }
+
+    // The DDD's own numbers, which are the reason the floor is 10 ps and not
+    // higher. Measured 2026-09-09 over the contributor's 2026-09-08 delivery:
+    // all 15,525 metadata files declare `integration_timestep_fs = 1`, and all
+    // 6,664 imported batch-1 originals agree. So a saved frame every 1 ps is
+    // 1,000 integration steps apart.
+    //
+    // That corrects a figure repeated in two source comments -- constants.rs's
+    // note on SAMPLING_FLOOR_PS and measure_trajectory's note on nstxout -- both
+    // of which say 2 fs and 500 steps. The conclusion they draw survives the
+    // correction, since 1,000 and 250 are both clean whole numbers and so
+    // spacing/timestep still cannot separate a real 1 ps from a fabricated one.
+    #[test]
+    fn ddd_one_ps_over_a_one_fs_timestep_clears_every_check() {
+        let toml = r#"
+            lead_contributor_orcid = "0000-0000-0000-0000"
+            trajectory_file_names = ["Pro_lig1.mdc"]
+            structure_file_name = "Pro_lig.pdb"
+            topology_file_name = "Pro_lig.gro"
+            temperature_kelvin = 300
+            integration_timestep_fs = 1
+            sampling_frequency_ps = 1.0
+            short_description = "A DDD dissociation trajectory ensemble"
+            software_name = "SPONGE"
+            software_version = "1.4"
+        "#;
+        let meta = Meta::from_toml(toml).expect("a DDD-shaped document parses");
+
+        assert_eq!(meta.integration_timestep_fs, 1);
+        assert_eq!(meta.sampling_frequency_ps, Some(1.0));
+        assert!(
+            !meta
+                .check(None)
+                .iter()
+                .any(|m| m.starts_with("sampling_frequency_ps:")),
+            "1 ps declared against a 1 fs timestep must validate"
+        );
+
+        assert_eq!(
+            resolve_sampling_ps(
+                1.0,
+                meta.sampling_frequency_ps,
+                Some(true),
+                "Pro_lig1.mdc"
+            )
+            .unwrap(),
+            1.0
+        );
+
+        // The steps-per-frame figure itself, computed the way
+        // measure_trajectory computes it.
+        let nstxout = 1.0 / (f64::from(meta.integration_timestep_fs) / FS_PER_PS);
+        assert_eq!(nstxout, 1000.);
+        assert!(
+            nstxout <= 1e7,
+            "the inflation guard must not fire on real DDD numbers"
+        );
+    }
+
+    // Which marker a `.mdc` produces has not been established -- cpptraj
+    // reports an AMBER trajectory as "is an AMBER trajectory", and the wrapper
+    // matches on " is a " with a trailing space, so `unknown` is at least as
+    // likely as `false`. Settling it needs a cpptraj run. Covering all three
+    // arms means the remaining ~1,422 DDD imports behave identically whichever
+    // it turns out to be.
+    #[test]
+    fn the_ddd_marker_is_not_settled_so_all_three_must_land_on_one_ps() {
+        for axis in [Some(false), None, Some(true)] {
+            assert_eq!(
+                resolve_sampling_ps(1.0, Some(1.0), axis, "Pro_lig1.mdc").unwrap(),
+                1.0,
+                "marker {axis:?}"
+            );
+        }
+    }
+
+    // Below the floor the published figure is coarser than the rule that
+    // admitted it. `sampling_frequency_ns` is rounded to 3 decimal places in
+    // NANOSECONDS, so the whole 1-10 ps range collapses onto ten values: a
+    // 6.25 ps spacing that survived the full corroboration ritual is published
+    // as 6 ps, and 9.9 ps is published as though it sat exactly on the floor.
+    // Meanwhile totaltime_ns is computed from the unrounded spacing, so the two
+    // published fields disagree. The DDD's exact 1.0 ps is unaffected, which is
+    // why this has never been noticed.
+    #[test]
+    fn a_sub_floor_spacing_is_published_at_one_ps_granularity() {
+        for (spacing_ps, published_ns) in [
+            (1.0, 0.001),
+            (1.4, 0.001),
+            (1.5, 0.002),
+            (2.5, 0.003),
+            (6.25, 0.006),
+            (9.9, 0.01),
+        ] {
+            assert_eq!(
+                round_dp(spacing_ps / PS_PER_NS, 3),
+                published_ns,
+                "{spacing_ps} ps"
+            );
+        }
+    }
+
+    // The marker is a bare string contract across two repositories, produced by
+    // report_time_axis() in simulation-processing's
+    // cpptraj_gmx_traj_manipulation.py and consumed here. Only the exact
+    // literals `true` and `false` mean anything; everything else degrades to
+    // None, which is the SAFE-LOOKING answer -- it restores the pre-2026-09-08
+    // behaviour where a converter's fabricated 1 ps was measured back and
+    // believed. A rename or a capitalisation change on the python side would
+    // break this silently and no test anywhere would fail. `True` is not
+    // paranoia: it is what `str(has_time)` produces.
+    #[test]
+    fn the_time_axis_marker_maps_only_two_literals() {
+        const M: &str = "[mdrepo] source_has_time_axis=";
+
+        for (value, want) in [
+            ("true", Some(true)),
+            ("false", Some(false)),
+            ("unknown", None),
+            ("True", None),
+            ("TRUE", None),
+            (" true", Some(true)),
+            ("", None),
+            ("yes", None),
+            ("1", None),
+        ] {
+            assert_eq!(
+                parse_time_axis_marker(&format!("{M}{value}")),
+                want,
+                "value {value:?}"
+            );
+        }
+
+        assert_eq!(parse_time_axis_marker(""), None);
+        assert_eq!(
+            parse_time_axis_marker("Reading 'x.dcd' as Charmm DCD\n"),
+            None
+        );
+    }
+
+    // The marker need not be the last line, and it arrives indented and
+    // sometimes CRLF-terminated out of a subprocess pipe. The .trim() that
+    // makes that work is load-bearing and was unasserted.
+    #[test]
+    fn the_marker_is_found_in_real_wrapper_stdout() {
+        let stdout = "Reading 'Pro_lig1.mdc' as Amber Trajectory\n\
+                      \tINPUT TRAJECTORIES (1 total):\n\
+                      \t[mdrepo] source_has_time_axis=false\r\n\
+                      Running 2 threads\n\
+                      TIME: Total execution time: 0.5000 seconds.\n";
+
+        assert_eq!(parse_time_axis_marker(stdout), Some(false));
+    }
+
+    // The wrapper emits this marker from two call sites. If a code path ever
+    // reaches both in one invocation the LAST one wins, so an `unknown` from a
+    // second, unrelated cpptraj call would erase a genuine `false` from the
+    // first and re-enable the fabricated spacing. Worth knowing before anyone
+    // adds a third emission point.
+    #[test]
+    fn the_last_marker_wins_and_unknown_erases_a_finding() {
+        const M: &str = "[mdrepo] source_has_time_axis=";
+
+        assert_eq!(
+            parse_time_axis_marker(&format!("{M}true\n{M}false\n")),
+            Some(false)
+        );
+        assert_eq!(
+            parse_time_axis_marker(&format!("{M}false\n{M}unknown\n")),
+            None
+        );
+    }
+
+    // strip_prefix anchors after the trim, so output that merely quotes the
+    // marker -- an error message, or a `set -x` trace of the print that emits
+    // it -- cannot spoof a finding.
+    #[test]
+    fn a_marker_quoted_inside_a_log_line_is_not_matched() {
+        assert_eq!(
+            parse_time_axis_marker(
+                "note: [mdrepo] source_has_time_axis=false was expected"
+            ),
+            None
+        );
+        assert_eq!(
+            parse_time_axis_marker("xx[mdrepo] source_has_time_axis=true"),
+            None
+        );
+    }
+
+    // The literal bytes of a duration.json written before the floor existed,
+    // taken from ddd/work/2zc9/2zc9/processed/. Duration carries
+    // deny_unknown_fields, so renaming a field would break the cached artifact
+    // in 6,659 already-imported bundles -- and because get_duration reads the
+    // cache before doing anything else, that failure surfaces on the next
+    // reprocess rather than at the point of change.
+    #[test]
+    fn the_duration_json_already_on_disk_still_deserialises() {
+        let cached = r#"{"totaltime_ns": 6.14, "sampling_frequency_ns": 0.001}"#;
+        let duration: Duration =
+            serde_json::from_str(cached).expect("the on-disk shape");
+
+        assert_eq!(duration.totaltime_ns, 6.14);
+        assert_eq!(duration.sampling_frequency_ns, 0.001_f32);
+
+        // 0.001 ns per frame is the DDD's 1 ps, which is what every one of
+        // those bundles recorded.
+        assert_eq!(
+            (f64::from(duration.sampling_frequency_ns) * PS_PER_NS).round(),
+            1.0
+        );
+    }
+
+    // The bug this function exists for. Shape taken from BioEmu ONE-cath1
+    // cath1_1b43A02/run006_protein.cmprsd.xtc: 501 frames 10000 ps apart in
+    // four concatenated segments, whose last one ends at 30000 ps. molly --info
+    // reports `time: 0-30000 ps`, so the old span-based reading called this
+    // 30000 ps -- 0.6% of the truth.
     #[test]
     fn modal_gap_survives_a_clock_that_restarts_mid_file() {
         let mut times = Vec::new();

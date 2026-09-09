@@ -1467,6 +1467,7 @@ mod tests {
         AdditionalFile, DateTime, Ligand, Meta, MetaCheckOptions, Summary, Utc,
         is_valid_inchi, is_valid_smiles,
     };
+    use crate::constants;
     use anyhow::Result;
     use std::path::PathBuf;
     use validator::Validate;
@@ -1917,6 +1918,8 @@ mod tests {
             "[water]\nmodel = \"TIP3P\"\ndensity_kg_m3 = 1000.0\nnope = 1",
             "[[external_links]]\nurl = \"https://example.com\"\nnope = 1",
             "[[additional_files]]\nfile_name = \"a\"\nfile_type = \"b\"\nnope = 1",
+            // `papers` was the one nested table this loop missed.
+            "[[papers]]\ntitle = \"A paper\"\nauthors = \"A. Author\"\nnope = 1",
         ] {
             let res = Meta::from_toml(&minimal_plus(table));
             assert!(res.is_err(), "accepted a stray key in: {table}");
@@ -1925,6 +1928,107 @@ mod tests {
                 "did not name the key in: {table}"
             );
         }
+    }
+
+    // --- a ligand must declare a structure: the corpus shape ---
+
+    /// The shape the DDD contributor actually ships, twice over now: a
+    /// `[[ligands]]` table carrying a name and nothing else. All 15,525 files
+    /// in the 2026-09-08 delivery are like this -- zero `smiles`, zero `inchi`,
+    /// zero `formula`.
+    ///
+    /// The document is well-formed, so it parses; the rule that catches it is
+    /// the struct-level one, and it has to survive both. Before `cba350b` this
+    /// failed at DESERIALIZATION with "missing field smiles", so `Meta::check`
+    /// never ran and the submitter got a serde error instead of a sentence.
+    #[test]
+    fn test_a_ligand_with_only_a_name_is_reported_not_a_parse_error() {
+        let meta = Meta::from_toml(&minimal_plus(
+            "[[ligands]]\nname = \"2-HYDROXYETHYL DISULFIDE\"",
+        ))
+        .expect("a name-only ligand is well-formed TOML and must parse");
+
+        assert_eq!(meta.ligands.as_ref().unwrap().len(), 1);
+        assert_eq!(meta.ligands.as_ref().unwrap()[0].smiles, None);
+        assert_eq!(meta.ligands.as_ref().unwrap()[0].inchi, None);
+
+        assert!(
+            meta.check(no_id_opts())
+                .iter()
+                .any(|m| m == "ligands[1]: must declare either smiles or inchi"),
+            "{:?}",
+            meta.check(no_id_opts())
+        );
+    }
+
+    /// A blank name AND no structure, which is 585 of those 15,525 files.
+    ///
+    /// Both problems must be reported. `skip_on_field_errors = false` on the
+    /// Ligand schema validator is what makes the structure complaint survive
+    /// alongside the name one; flipping it to `true` would silently drop the
+    /// second whenever the first fires, and nothing pinned that.
+    #[test]
+    fn test_a_blank_name_does_not_hide_the_missing_structure() {
+        let meta =
+            Meta::from_toml(&minimal_plus("[[ligands]]\nname = \"\"")).expect("parses");
+        let messages = meta.check(no_id_opts());
+
+        assert!(
+            messages.iter().any(|m| m.starts_with("ligands[1].name")),
+            "{messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|m| m == "ligands[1]: must declare either smiles or inchi"),
+            "{messages:?}"
+        );
+    }
+
+    /// `Ligand::identity()` falls back to the literal `<no structure declared>`
+    /// and its only consumer is a WARNING in resolve_ligands, so a ligand with
+    /// neither notation would print a placeholder rather than fail.
+    ///
+    /// Validation is what makes that unreachable, and validation is the only
+    /// thing that makes it unreachable -- the type permits the state and a
+    /// struct literal reaches it, as the line below shows. If the schema rule
+    /// is ever relaxed, this is where the consequence is written down.
+    #[test]
+    fn test_the_identity_fallback_is_unreachable_through_validation_only() {
+        let naked = Ligand {
+            name: "mystery".into(),
+            smiles: None,
+            inchi: None,
+        };
+
+        assert_eq!(naked.identity(), "<no structure declared>");
+        assert!(naked.validate().is_err(), "validation is the only guard");
+
+        // Through the parse path the fallback cannot be reached, because the
+        // document does not survive check().
+        let meta = Meta::from_toml(&minimal_plus("[[ligands]]\nname = \"mystery\""))
+            .expect("parses");
+        assert!(!meta.check(no_id_opts()).is_empty());
+    }
+
+    // --- either notation alone: true here, and not true end to end ---
+
+    /// `is_valid_inchi` accepts `InChI=1S/xyzzy`, and that is deliberate.
+    ///
+    /// It is a FORMAT check -- prefix, a non-empty first segment, no
+    /// whitespace. The chemistry check needs a toolkit, so it lives on the
+    /// ingest path where one is available, and `mdr-meta check` is pure Rust
+    /// and reaches submitters without one. Asserted so that the next person to
+    /// notice the hole reaches for the ingest-path check instead of building a
+    /// half-parser here.
+    #[test]
+    fn test_is_valid_inchi_is_a_format_check_not_a_chemistry_check() {
+        assert!(is_valid_inchi("InChI=1S/xyzzy").is_ok());
+        assert!(is_valid_inchi("InChI=1S/C2H6/zzzz").is_ok());
+
+        // What it does catch is a string that could not be an InChI at all.
+        assert!(is_valid_inchi("InChI=1S/").is_err());
+        assert!(is_valid_inchi("CCO").is_err());
     }
 
     // --- is_valid_smiles ---
@@ -1954,6 +2058,82 @@ mod tests {
         // Balanced rings of both digit forms still pass.
         assert!(is_valid_smiles("c1ccccc1").is_ok());
         assert!(is_valid_smiles("C%10CCCCC%10").is_ok());
+    }
+
+    // --- sampling_frequency_ps: the range check, at its edges ---
+
+    /// The proptests either side of this file draw from `1.0..=100_000.0` and
+    /// `0.0..1.0`, and proptest float strategies essentially never emit an
+    /// endpoint, so `validator`'s inclusivity has never been asserted.
+    ///
+    /// The 0.995 case is deliberately the same number as
+    /// `resolve_sampling_ps_does_not_recheck_its_own_return_value` over in
+    /// mdr-process. That function will hand back a sub-1 ps value if it is ever
+    /// given one; this is the check that stops it being given one. The two
+    /// belong together.
+    #[test]
+    fn sampling_frequency_range_is_inclusive_at_both_ends() {
+        let says_sampling = |value: Option<f64>| {
+            let mut meta = Meta::example_minimal();
+            meta.sampling_frequency_ps = value;
+            meta.check(None)
+                .iter()
+                .any(|m| m.starts_with("sampling_frequency_ps:"))
+        };
+
+        let min = constants::SAMPLING_FREQUENCY_PS_MIN;
+        let max = constants::SAMPLING_FREQUENCY_PS_MAX;
+
+        assert!(!says_sampling(Some(min)), "exactly the minimum is valid");
+        assert!(!says_sampling(Some(max)), "exactly the maximum is valid");
+
+        for bad in [
+            f64::from_bits(min.to_bits() - 1),
+            f64::from_bits(max.to_bits() + 1),
+            0.995,
+            0.,
+            -1.,
+            f64::INFINITY,
+        ] {
+            assert!(says_sampling(Some(bad)), "{bad} must be reported");
+        }
+    }
+
+    /// A hole, asserted as it stands. TOML 1.0 has a `nan` literal, and the
+    /// range validator answers "in range" for it because both of its
+    /// comparisons are false for NaN. So `sampling_frequency_ps = nan` parses
+    /// and validates, and downstream it is worse than wrong: resolve_sampling_ps
+    /// returns Ok(NaN), serde_json writes NaN as `null`, and the resulting
+    /// duration.json then fails to read back into a non-Option f32 -- on every
+    /// subsequent run, identically, from a cache the pipeline wrote itself.
+    ///
+    /// `inf` is caught, which is what makes this specific to NaN. The fix is an
+    /// `is_finite()` guard next to the cross-field timestep check; when it
+    /// lands, this test flips.
+    #[test]
+    fn a_nan_sampling_frequency_is_accepted_today() {
+        let meta = Meta::from_toml(&minimal_plus("sampling_frequency_ps = nan"))
+            .expect("TOML 1.0 has a nan literal");
+        assert!(meta.sampling_frequency_ps.expect("parsed").is_nan());
+        assert!(
+            !meta
+                .check(None)
+                .iter()
+                .any(|m| m.starts_with("sampling_frequency_ps:")),
+            "NaN is not reported today -- this test flips when it is"
+        );
+
+        // The contrast that shows it is NaN specifically, not non-finite values
+        // in general.
+        let infinite = Meta::from_toml(&minimal_plus("sampling_frequency_ps = inf"))
+            .expect("inf parses too");
+        assert!(
+            infinite
+                .check(None)
+                .iter()
+                .any(|m| m.starts_with("sampling_frequency_ps:")),
+            "inf IS caught by the range check"
+        );
     }
 
     // --- example() / example_minimal() validity ---

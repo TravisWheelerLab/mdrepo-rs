@@ -262,4 +262,96 @@ mod tests {
 
         assert_eq!(validate_meta(dir.path(), &meta, None).unwrap(), before);
     }
+
+    /// Write the minimal document plus a `[[ligands]]` block.
+    fn write_dir_with_ligands(dir: &Path, ligands: &str) {
+        write_minimal_dir(dir);
+        fs::write(
+            dir.join("mdrepo-metadata.toml"),
+            format!("{MINIMAL_TOML}\n{ligands}\n"),
+        )
+        .unwrap();
+    }
+
+    /// A ligand declared only by InChI is skipped by canonicalization rather
+    /// than mangled by it, and skipping the whole batch means no spawn at all.
+    ///
+    /// `bogus_uv()` is the assertion: if this tried to canonicalize, it would
+    /// fail on a `uv` that cannot exist. Canonicalization is an OpenBabel round
+    /// trip for SMILES and has nothing to say about an InChI string.
+    #[test]
+    fn an_inchi_only_ligand_is_not_sent_to_canonicalization() {
+        let dir = tempdir().unwrap();
+        write_dir_with_ligands(
+            dir.path(),
+            "[[ligands]]\nname = \"ethanol\"\ninchi = \"InChI=1S/C2H6O/c1-2-3/h3H,2H2,1H3\"",
+        );
+
+        let meta = load_canonical_meta(
+            &dir.path().join("mdrepo-metadata.toml"),
+            Path::new("."),
+            bogus_uv(),
+        )
+        .expect("no SMILES to canonicalize, so no spawn");
+
+        let ligand = &meta.ligands.as_ref().unwrap()[0];
+        assert_eq!(ligand.smiles, None, "nothing may invent a SMILES here");
+        assert_eq!(
+            ligand.inchi.as_deref(),
+            Some("InChI=1S/C2H6O/c1-2-3/h3H,2H2,1H3"),
+            "the declared InChI must survive untouched"
+        );
+    }
+
+    /// The off-by-one that `load_canonical_meta`'s index tuple exists to
+    /// prevent, in the arrangement that would expose it: an InChI-only ligand
+    /// FIRST, a SMILES ligand second.
+    ///
+    /// Canonicalization sends only the SMILES it found and writes the results
+    /// back by original index. Lose the index and the single canonical string
+    /// comes back to position 0 -- attaching one ligand's structure to another
+    /// ligand's record, with no error anywhere. `validate.rs`'s count check
+    /// cannot see it, exactly as `test_canonicalize_smiles.py` records for the
+    /// CLI's ordering contract.
+    ///
+    /// Requires the real `uv` and the canonicalize script; skips otherwise, in
+    /// the manner of the Postgres suites.
+    #[test]
+    fn canonicalization_writes_back_to_the_ligand_it_came_from() {
+        let Some(uv) = which::which("uv").ok() else {
+            eprintln!("skipping: no uv on PATH");
+            return;
+        };
+        let script_dir = Path::new("../../simulation-processing/python");
+        if !script_dir.join("canonicalize_smiles.py").is_file() {
+            eprintln!("skipping: canonicalize_smiles.py not checked out beside us");
+            return;
+        }
+
+        let dir = tempdir().unwrap();
+        write_dir_with_ligands(
+            dir.path(),
+            "[[ligands]]\nname = \"ethanol\"\ninchi = \"InChI=1S/C2H6O/c1-2-3/h3H,2H2,1H3\"\n\
+             \n[[ligands]]\nname = \"benzene\"\nsmiles = \"C1=CC=CC=C1\"",
+        );
+
+        let meta = load_canonical_meta(
+            &dir.path().join("mdrepo-metadata.toml"),
+            script_dir,
+            &uv,
+        )
+        .expect("canonicalization runs");
+
+        let ligands = meta.ligands.as_ref().unwrap();
+        assert_eq!(
+            ligands[0].smiles, None,
+            "the InChI-only ligand gained a SMILES"
+        );
+        assert_eq!(ligands[0].name, "ethanol");
+        assert_eq!(
+            ligands[1].smiles.as_deref(),
+            Some("c1ccccc1"),
+            "the canonical form must land on the ligand it came from"
+        );
+    }
 }

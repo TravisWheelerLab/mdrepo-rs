@@ -46,8 +46,14 @@ pub const SAMPLING_FREQUENCY_PS_MAX: f64 = 100_000.;
 // 1.0 ps. Only five are actually wrong and all five record exactly 0.
 //
 // No computation separates those two cases. `spacing / timestep` does not: the
-// DDD's real 1 ps over a 2 fs timestep is 500 steps and the fabricated 1 ps
+// DDD's real 1 ps over its 1 fs timestep is 1,000 steps and a fabricated 1 ps
 // over 4 fs is 250, both clean whole numbers. Only the submitter can say.
+//
+// The timestep here was 2 fs / 500 steps until 2026-09-09, which was wrong.
+// Measured over the contributor's 2026-09-08 delivery, every one of the 15,525
+// metadata files declares `integration_timestep_fs = 1`, and so does every one
+// of the 6,664 batch-1 originals already imported. The argument is unchanged --
+// both figures are still clean whole numbers -- but the number was not.
 pub const SAMPLING_FLOOR_PS: f64 = 10.;
 // How close a measured spacing must sit to the declared one for the
 // declaration to be honoured below the floor. The declaration lowers the bar;
