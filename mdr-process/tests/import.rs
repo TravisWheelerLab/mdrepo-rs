@@ -33,7 +33,9 @@ use libmdrepo::metadata;
 use mdr_db::models::*;
 use mdr_db::ops;
 use mdr_process::import::{self, ImportOpts};
-use mdr_process::types::{ExportSimulation, MdFile, PdbEntry, UniprotEntry};
+use mdr_process::types::{
+    ExportSimulation, MdFile, PdbEntry, ResolvedLigand, UniprotEntry,
+};
 
 /// A connection whose work always rolls back, or `None` when the test DB
 /// isn't configured (so the caller can skip). Mirrors
@@ -180,10 +182,13 @@ fn import_new_simulation_creates_all_related_rows() {
         original_files: vec![md_file("orig.pdb", "Structure")],
         processed_files: vec![md_file("proc1.nc", "Trajectory")],
         replicates: vec!["traj1.xtc".into()],
-        ligands: vec![metadata::Ligand {
+        ligands: vec![ResolvedLigand {
             name: "TestLigand".into(),
-            smiles: Some("CC".into()),
-            inchi: None,
+            smiles: "CC".into(),
+            inchi: Some("InChI=1S/C2H6/c1-2/h1-2H3".into()),
+            inchikey: Some("OTMSDBZUPAUEDD-UHFFFAOYSA-N".into()),
+            declared_identity: Some("smiles".into()),
+            identity_software: Some("rdkit".into()),
         }],
         solutes: vec![metadata::Solute {
             name: "Na+".into(),
@@ -301,10 +306,13 @@ fn import_same_alias_twice_is_idempotent_not_duplicated() {
             email: None,
             institution: None,
         }],
-        ligands: vec![metadata::Ligand {
+        ligands: vec![ResolvedLigand {
             name: "IdempotentLigand".into(),
-            smiles: Some("CC".into()),
-            inchi: None,
+            smiles: "CC".into(),
+            inchi: Some("InChI=1S/C2H6/c1-2/h1-2H3".into()),
+            inchikey: Some("OTMSDBZUPAUEDD-UHFFFAOYSA-N".into()),
+            declared_identity: Some("smiles".into()),
+            identity_software: Some("rdkit".into()),
         }],
         collections: vec!["ATLAS-idempotent".into()],
         ..base_sim("idempotent", orcid)

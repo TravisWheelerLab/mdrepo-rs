@@ -29,7 +29,7 @@
 //! - **A bare `Cl` solute becomes `Cl-`, not the script's `Cl+`.** Chloride is an
 //!   anion; the script wrote a cation that does not exist in these systems.
 
-use crate::types::{ExportSimulation, MdFile};
+use crate::types::{ExportSimulation, MdFile, ResolvedLigand};
 use anyhow::{Result, anyhow};
 use chrono::Utc;
 use diesel::{PgConnection, connection::Connection};
@@ -482,49 +482,32 @@ fn upsert_contributor(
 }
 
 // --------------------------------------------------
+/// Write one ligand exactly as `resolve_ligands` decided it.
+///
+/// Deliberately no derivation and no judgement here. Every field including
+/// `declared_identity` was settled in `process::resolve_ligands`, which is the
+/// only place that still knows whether the submitter declared these ligands or
+/// whether they were perceived from coordinates. Recomputing any of it from
+/// the resolved values would answer confidently and wrongly.
+///
+/// `update` names all six columns rather than merging, so a reprocess of a
+/// simulation whose ligands changed cannot leave the previous run's InChI
+/// beside the new run's SMILES.
 fn upsert_ligand(
     conn: &mut PgConnection,
     sim_id: i64,
-    ligand: &metadata::Ligand,
+    ligand: &ResolvedLigand,
 ) -> Result<i64> {
-    // `md_ligand.smiles` is NOT NULL, so import still needs one.
-    //
-    // NOTHING DERIVES ONE NOTATION FROM THE OTHER YET (checked 2026-09-09).
-    // `load_canonical_meta` canonicalizes the SMILES that are present and
-    // explicitly skips the rest -- its own comment says deriving the missing
-    // notation is resolution's job -- and no resolution step exists. So a
-    // ligand declared only by `inchi` passes `mdr-meta check` and then fails
-    // HERE. The columns to hold the derived values now exist; the step that
-    // fills them does not.
-    //
-    // An error, not an `expect`: it should name itself and stop the
-    // simulation, not abort the process.
-    let smiles = ligand.smiles.clone().ok_or_else(|| {
-        anyhow!(
-            r#"Ligand "{}" reached import with no SMILES; it was not resolved"#,
-            ligand.name
-        )
-    })?;
-
-    // Recorded BEFORE anything is derived from one notation to fill the other.
-    // Once a resolver exists, both fields will be populated on every row and
-    // this distinction is gone -- so it has to be read off the submitter's own
-    // document, here, or it cannot be recovered at all. Setting it after
-    // derivation would make every row read "both".
-    let declared_identity = ligand.declared_identity().map(str::to_string);
-
-    // `inchikey` and `identity_software` stay empty until there is a resolver
-    // to derive them. Writing a key here would mean computing it, and the
-    // toolkit that computed it is exactly what `identity_software` exists to
-    // record -- so they land together or not at all.
     if let Some(id) = ops::find_ligand_id(conn, sim_id, &ligand.name)? {
         ops::update_ligand(
             conn,
             id,
             LigandUpdate {
-                smiles: Some(smiles),
+                smiles: Some(ligand.smiles.clone()),
                 inchi: ligand.inchi.clone(),
-                declared_identity,
+                inchikey: ligand.inchikey.clone(),
+                declared_identity: ligand.declared_identity.clone(),
+                identity_software: ligand.identity_software.clone(),
                 ..Default::default()
             },
         )?;
@@ -535,11 +518,11 @@ fn upsert_ligand(
         conn,
         NewLigand {
             name: ligand.name.clone(),
-            smiles,
+            smiles: ligand.smiles.clone(),
             inchi: ligand.inchi.clone(),
-            inchikey: None,
-            declared_identity,
-            identity_software: None,
+            inchikey: ligand.inchikey.clone(),
+            declared_identity: ligand.declared_identity.clone(),
+            identity_software: ligand.identity_software.clone(),
             simulation_id: sim_id,
         },
     )?

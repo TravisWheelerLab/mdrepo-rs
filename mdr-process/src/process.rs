@@ -6,7 +6,8 @@ use crate::{
         ExportSimulation, ImportJsonArgs, ImportResult, InferredLigand, MdFile,
         PdbEntry, PdbResponse, ProcessArgs, ProcessResult, ProcessTrajectoryArgs,
         ProcessedTarball, ProcessedTrajectory, ProcessedTrajectoryType, PushOutcome,
-        RmsdRmsf, RunImportArgs, Server, UniprotDb, UniprotEntry, UniprotResponse,
+        ResolvedLigand, RmsdRmsf, RunImportArgs, Server, UniprotDb, UniprotEntry,
+        UniprotResponse,
     },
     validate,
 };
@@ -1223,14 +1224,27 @@ pub fn make_import_json(
 }
 
 // --------------------------------------------------
+/// Turn the declared (or, failing that, the inferred) ligands into what gets
+/// stored, filling in whichever notation the submitter did not supply.
+///
+/// WHETHER THE SUBMITTER DECLARED ANYTHING IS KNOWN ONLY HERE. This function
+/// picks between the two branches below, and after it returns, a declared
+/// ligand and an inferred one are the same shape. `md_ligand.declared_identity`
+/// therefore has to be decided in this function and carried forward, not
+/// recomputed downstream from the resolved values -- an inferred ligand is
+/// synthesised with a SMILES `mol_id.py` perceived from coordinates, so asking
+/// the resolved struct what was declared answers "smiles" when the submitter
+/// declared nothing. That is what simulations 98331 and 98332 recorded on
+/// 2026-09-09, on the first six rows the column ever held.
 fn resolve_ligands(
     given_ligands: Option<&Vec<metadata::Ligand>>,
     inferred_ligands: Vec<InferredLigand>,
     script_dir: &Path,
     uv: &Path,
-) -> Result<(Vec<metadata::Ligand>, Vec<String>)> {
-    let mut ligands = vec![];
+) -> Result<(Vec<ResolvedLigand>, Vec<String>)> {
+    let mut ligands: Vec<metadata::Ligand> = vec![];
     let mut warnings = vec![];
+    let declared = given_ligands.is_some();
 
     if let Some(given_ligands) = given_ligands {
         ligands = given_ligands.clone();
@@ -1273,7 +1287,36 @@ fn resolve_ligands(
         }
     }
 
-    Ok((ligands, warnings))
+    // Read BEFORE resolving, and only meaningful for a declared ligand. Once
+    // the resolver has run every ligand carries both notations and
+    // `declared_identity()` would answer "both" for all of them.
+    let declared_identity: Vec<Option<String>> = ligands
+        .iter()
+        .map(|l| {
+            declared
+                .then(|| l.declared_identity().map(str::to_string))
+                .flatten()
+        })
+        .collect();
+
+    let resolved = validate::resolve_ligand_identity(&ligands, script_dir, uv)?;
+
+    Ok((
+        ligands
+            .into_iter()
+            .zip(resolved)
+            .zip(declared_identity)
+            .map(|((given, identity), declared_identity)| ResolvedLigand {
+                name: given.name,
+                smiles: identity.smiles,
+                inchi: identity.inchi,
+                inchikey: identity.inchikey,
+                declared_identity,
+                identity_software: identity.identity_software,
+            })
+            .collect(),
+        warnings,
+    ))
 }
 
 // --------------------------------------------------
@@ -3193,6 +3236,106 @@ mod tests {
                 2
             )
             .is_err()
+        );
+    }
+
+    /// A helper for the two declared_identity tests below.
+    fn resolver_available() -> Option<(std::path::PathBuf, &'static Path)> {
+        let uv = which::which("uv").ok()?;
+        let script_dir = Path::new("../../simulation-processing/python");
+        script_dir
+            .join("resolve_ligand_identity.py")
+            .is_file()
+            .then_some((uv, script_dir))
+    }
+
+    /// THE REGRESSION THIS FILE EXISTS FOR.
+    ///
+    /// `declared_identity` records which notation the submitter supplied, and
+    /// it is knowable only before resolution fills in the other one. Read it
+    /// afterwards -- from the resolved values, or by calling
+    /// `Ligand::declared_identity()` on a struct resolution has already
+    /// touched -- and every row answers "both".
+    #[test]
+    fn declared_identity_survives_resolution() {
+        let Some((uv, script_dir)) = resolver_available() else {
+            eprintln!("skipping: no uv or resolver script");
+            return;
+        };
+
+        let given = vec![
+            metadata::Ligand {
+                name: "from-smiles".into(),
+                smiles: Some("CC=O".into()),
+                inchi: None,
+            },
+            metadata::Ligand {
+                name: "from-inchi".into(),
+                smiles: None,
+                inchi: Some("InChI=1S/C2H4O/c1-2-3/h2H,1H3".into()),
+            },
+        ];
+
+        let (ligands, _) =
+            resolve_ligands(Some(&given), vec![], script_dir, &uv).unwrap();
+
+        // Both now carry both notations...
+        assert!(ligands.iter().all(|l| l.inchi.is_some()));
+        assert!(ligands.iter().all(|l| !l.smiles.is_empty()));
+
+        // ...and each still remembers which one it arrived with.
+        assert_eq!(ligands[0].declared_identity.as_deref(), Some("smiles"));
+        assert_eq!(ligands[1].declared_identity.as_deref(), Some("inchi"));
+    }
+
+    /// An INFERRED ligand was declared by nobody, so the column must be NULL.
+    ///
+    /// It is synthesised with a SMILES that `mol_id.py` perceived from the
+    /// coordinates, so anything asking the struct what was declared answers
+    /// "smiles" -- which is what simulations 98331 and 98332 stored on
+    /// 2026-09-09, on the first six rows the column ever held. Their submitter
+    /// declared no `[[ligands]]` table at all.
+    #[test]
+    fn an_inferred_ligand_declares_nothing() {
+        let Some((uv, script_dir)) = resolver_available() else {
+            eprintln!("skipping: no uv or resolver script");
+            return;
+        };
+
+        let inferred = vec![InferredLigand {
+            structure: crate::types::InferredLigandStructure {
+                smiles: "CC=O".into(),
+                formula: "C2H4O".into(),
+                num_atoms: 7,
+                num_heavy_atoms: 3,
+                charge: 0,
+                inchikey: "IKHGUXGNUITLKF-UHFFFAOYSA-N".into(),
+                resname: "ACD".into(),
+            },
+            name: crate::types::InferredLigandName {
+                smiles_input: "CC=O".into(),
+                cid: None,
+                iupac_name: Some("acetaldehyde".into()),
+                inchikey: None,
+                wikidata_label: None,
+                pubchem_title: None,
+                best_name: Some("acetaldehyde".into()),
+                name_source: None,
+                common_name: None,
+                formula: None,
+                charge: None,
+                synonyms: None,
+            },
+        }];
+
+        let (ligands, _) = resolve_ligands(None, inferred, script_dir, &uv).unwrap();
+
+        assert_eq!(ligands.len(), 1);
+        assert_eq!(ligands[0].name, "acetaldehyde");
+        assert!(ligands[0].inchi.is_some(), "resolution still runs");
+        assert_eq!(
+            ligands[0].declared_identity, None,
+            "nobody declared this ligand"
         );
     }
 }

@@ -485,6 +485,50 @@ pub struct Export {
 }
 
 // --------------------------------------------------
+/// A ligand as it will be STORED, which is not the same shape as a ligand as it
+/// was DECLARED.
+///
+/// `metadata::Ligand` is the TOML model: a name and whichever of `smiles` and
+/// `inchi` the submitter chose to write, with `deny_unknown_fields` and a
+/// round trip back out to a file. `md_ligand` holds four more columns that no
+/// TOML has ever carried, so putting them on that struct would mean the
+/// submitter's document model growing fields the document cannot express.
+///
+/// `declared_identity` is the field this type exists for. It records which
+/// notation came from the submitter, and it is ONLY knowable before resolution
+/// fills in the other one -- afterwards every ligand carries both and the
+/// distinction is gone. Crucially it is not derivable from the resolved values
+/// either, which is the bug this type fixes: an INFERRED ligand is synthesised
+/// with a SMILES that `mol_id.py` perceived from coordinates, and asking that
+/// synthetic struct what was declared answers "smiles" when the submitter
+/// declared nothing at all. Simulations 98331 and 98332 recorded exactly that
+/// on 2026-09-09, on the first six rows the column ever held.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct ResolvedLigand {
+    pub name: String,
+
+    /// Always present: `md_ligand.smiles` is NOT NULL. Derived from the InChI
+    /// when the submitter gave only that.
+    pub smiles: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inchi: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inchikey: Option<String>,
+
+    /// `"smiles"`, `"inchi"`, `"both"`, or None when the ligand was inferred
+    /// rather than declared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub declared_identity: Option<String>,
+
+    /// The toolkit behind a value WE produced, so it is None when the
+    /// submitter supplied both notations and nothing was derived.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity_software: Option<String>,
+}
+
+// --------------------------------------------------
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ExportSimulation {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -575,7 +619,7 @@ pub struct ExportSimulation {
     pub replicates: Vec<String>,
 
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub ligands: Vec<metadata::Ligand>,
+    pub ligands: Vec<ResolvedLigand>,
 
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub solutes: Vec<metadata::Solute>,

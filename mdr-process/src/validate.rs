@@ -1,7 +1,13 @@
-use anyhow::{Result, bail};
-use libmdrepo::metadata::{Meta, MetaCheckOptions};
+use anyhow::{Result, anyhow, bail};
+use libmdrepo::metadata::{self, Meta, MetaCheckOptions};
 use log::debug;
-use std::{fs, path::Path, process::Command};
+use serde::Deserialize;
+use std::{
+    fs,
+    io::Write,
+    path::Path,
+    process::{Command, Stdio},
+};
 
 // --------------------------------------------------
 /// Read the metadata and canonicalize its ligand SMILES in memory, so both the
@@ -44,6 +50,95 @@ pub fn load_canonical_meta(
         ligands[*num].smiles = Some(canon);
     }
     Ok(meta)
+}
+
+// --------------------------------------------------
+/// What `resolve_ligand_identity.py` gives back for one ligand, in input order.
+///
+/// `smiles` is never optional here: filling `md_ligand`'s NOT NULL column from
+/// an InChI-only declaration is the reason the script exists. The other three
+/// are, because a molecule RDKit will not accept still has to be storable --
+/// see the script's FAILURE POLICY.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ResolvedIdentity {
+    pub smiles: String,
+    pub inchi: Option<String>,
+    pub inchikey: Option<String>,
+    pub identity_software: Option<String>,
+}
+
+// --------------------------------------------------
+/// Fill in whichever ligand notation the submitter did not supply.
+///
+/// One `uv` spawn for the whole batch, like `canonicalize_smiles`: the RDKit
+/// and OpenBabel imports cost about a second between them and neither is worth
+/// paying per ligand.
+///
+/// Results come back BY POSITION, so the caller must not filter the input --
+/// every ligand goes in, including ones that need nothing done to them, and
+/// the two lists line up index for index. The script fails the whole batch
+/// naming the ligand when a SMILES will not parse or an InChI-only ligand
+/// cannot be read, which is the same shape `canonicalize_smiles.py` has always
+/// had.
+pub fn resolve_ligand_identity(
+    ligands: &[metadata::Ligand],
+    script_dir: &Path,
+    uv: &Path,
+) -> Result<Vec<ResolvedIdentity>> {
+    if ligands.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let payload = serde_json::to_string(
+        &ligands
+            .iter()
+            .map(|l| {
+                serde_json::json!({
+                    "name": l.name,
+                    "smiles": l.smiles,
+                    "inchi": l.inchi,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )?;
+
+    let script = script_dir.join("resolve_ligand_identity.py");
+    let mut cmd = Command::new(uv);
+    cmd.current_dir(script_dir)
+        .arg("run")
+        .arg(&script)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    debug!("Running {cmd:?}");
+
+    let mut child = cmd.spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("no stdin on {}", script.display()))?
+        .write_all(payload.as_bytes())?;
+
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        bail!(
+            "{} failed: {}",
+            script.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    let resolved: Vec<ResolvedIdentity> = serde_json::from_slice(&output.stdout)?;
+    if resolved.len() != ligands.len() {
+        bail!(
+            "{} returned {} result(s) for {} ligand(s)",
+            script.display(),
+            resolved.len(),
+            ligands.len()
+        );
+    }
+
+    Ok(resolved)
 }
 
 // --------------------------------------------------
