@@ -2568,16 +2568,32 @@ mod tests {
     /// -- and because `cargo test` lists ignored tests by name, so it stays
     /// visible. When the resolver lands, delete the attribute.
     #[test]
-    #[ignore = "slice 2: no step derives SMILES from a declared InChI yet"]
     fn an_inchi_only_ligand_should_be_resolved_before_the_pipeline_sees_it() {
-        let resolved = inchi_only_ligand();
+        let Some((uv, script_dir)) = resolver_available() else {
+            eprintln!("skipping: no uv or resolver script");
+            return;
+        };
+
+        let given = vec![inchi_only_ligand()];
+        let (resolved, _) =
+            resolve_ligands(Some(&given), vec![], script_dir, &uv).unwrap();
 
         assert_eq!(
-            resolved.smiles.as_deref(),
-            Some("CCO"),
+            resolved[0].smiles, "CCO",
             "resolution must fill the missing notation, not refuse the ligand"
         );
-        assert_eq!(resolved.declared_identity(), Some("inchi"));
+        assert_eq!(resolved[0].declared_identity.as_deref(), Some("inchi"));
+
+        // The other half, and the reason resolution does NOT write back into
+        // `metadata::Ligand`: that struct is the submitter's document, and
+        // filling its missing notation would both rewrite what they sent and
+        // destroy `declared_identity`, which is only knowable while one side
+        // is still empty. Every ligand would read "both" afterwards.
+        assert_eq!(
+            given[0].smiles, None,
+            "the submitter's own metadata must come through untouched"
+        );
+        assert_eq!(given[0].declared_identity(), Some("inchi"));
     }
 
     // The next representable f64 either side of a positive finite value. Both
