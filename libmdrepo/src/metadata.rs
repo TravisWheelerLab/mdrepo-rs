@@ -321,28 +321,40 @@ impl Meta {
             }
         }
 
-        // Special check for GROMACS with only a ".top" file
+        // Special check for GROMACS with only a ".top" file.
+        //
+        // A ".top" carries no coordinates, so something must supply them --
+        // a ".tpr" or a ".gro". Where that something is declared does not
+        // matter, so every declared filename is searched, not just
+        // additional_files. Checking additional_files alone rejected
+        // submissions that satisfy the rule: MDR00004453 declares
+        // structure_file_name = "npt_dry.gro" and lists only md.mdp,
+        // npt_dry.pdb and mdrepo-metadata.toml as additional, so it was
+        // refused for lacking the very file it declares. That refusal is
+        // also why it could never be reprocessed.
         let is_gromacs = self.software_name.to_lowercase().contains("gromacs");
         if is_gromacs
             && Path::new(&self.topology_file_name).extension()
                 == Some(OsStr::new("top"))
         {
-            let exts: Vec<String> = match &self.additional_files {
-                Some(files) => files
-                    .iter()
-                    .filter_map(|f| {
-                        Path::new(&f.file_name)
-                            .extension()
-                            .map(|e| e.to_string_lossy().to_string())
-                    })
-                    .collect(),
-                _ => vec![],
-            };
+            let declared = self
+                .additional_files
+                .iter()
+                .flatten()
+                .map(|f| f.file_name.as_str())
+                .chain(std::iter::once(self.structure_file_name.as_str()))
+                .chain(self.trajectory_file_names.iter().map(|s| s.as_str()));
 
-            if !exts.iter().any(|e| matches!(e.as_str(), "tpr" | "gro")) {
+            let mut has_coords = declared.filter_map(|name| {
+                Path::new(name)
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_lowercase())
+            });
+
+            if !has_coords.any(|e| matches!(e.as_str(), "tpr" | "gro")) {
                 messages.push(
                     "topology_file_name: GROMACS topology \".top\" file requires \
-                    additional \".tpr\" or \".gro\""
+                    a \".tpr\" or \".gro\" among the declared files"
                         .to_string(),
                 );
             }
@@ -1409,6 +1421,26 @@ mod proptest_tests {
         assert!(
             errors.iter().any(|e| e.contains("GROMACS topology")),
             "Expected GROMACS topology error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn gromacs_top_with_gro_as_the_structure_passes() {
+        // The coordinates may be declared as the structure rather than as an
+        // additional file, and that satisfies the rule. MDR00004453 is the
+        // case in point -- structure_file_name = "npt_dry.gro", nothing but
+        // md.mdp, npt_dry.pdb and mdrepo-metadata.toml alongside -- and
+        // checking additional_files alone refused it for lacking the file it
+        // declares, which is also why it could never be reprocessed.
+        let mut meta = base_meta();
+        meta.software_name = "GROMACS".to_string();
+        meta.topology_file_name = "topol.top".to_string();
+        meta.structure_file_name = "npt_dry.gro".to_string();
+        meta.additional_files = None;
+        let errors = meta.check(None);
+        assert!(
+            !errors.iter().any(|e| e.contains("GROMACS topology")),
+            "A .gro structure satisfies the rule, got: {errors:?}"
         );
     }
 
