@@ -737,11 +737,11 @@ fn fix_alpha_carbon_name(path: &Path) -> Result<()> {
 pub fn get_rmsd_rmsf(
     min_pdb: &Path,
     min_xtc: &Path,
-    processed_dir: &Path,
+    out_dir: &Path,
     script_dir: &Path,
     uv: &Path,
 ) -> Result<RmsdRmsf> {
-    let out_file = processed_dir.join("rmsd_rmsf.json");
+    let out_file = out_dir.join("rmsd_rmsf.json");
 
     if file_exists(&out_file) {
         debug!("RMSD/RMSF file exists");
@@ -781,6 +781,83 @@ pub fn get_rmsd_rmsf(
     let vals: RmsdRmsf = serde_json::from_str(&contents)?;
 
     Ok(vals)
+}
+
+// --------------------------------------------------
+/// Check every processed trajectory, and return the example's values.
+///
+/// The ceiling inside `get_rmsd_rmsf.py` is a corruption detector, not a
+/// scientific bound, so it has to see every replicate. It used to run on the
+/// example trajectory alone, which left the rest of a multi-trajectory
+/// simulation unmeasured: ticket 2369 published six replicates on the
+/// strength of one of them, and the next submission from the same exporter
+/// carried a garbage unit cell in four of its six. A submitter's exporter
+/// does not damage every replicate, so measuring one and publishing six is
+/// not a sample -- it is a coin toss.
+///
+/// Each trajectory's `rmsd_rmsf.json` is written beside its own
+/// `minimal.xtc`, in the `rep_N` directory `process_trajectory` made for it.
+/// One shared file in `processed_dir` could not work: `get_rmsd_rmsf` treats
+/// an existing file as a cached result, so the first replicate's numbers
+/// would be returned for all of them and the other replicates would never
+/// run at all.
+///
+/// Only the example's values reach the import payload, exactly as before.
+/// What the others contribute is the refusal: any replicate over the ceiling
+/// fails the whole simulation, which is what a single-trajectory submission
+/// has always done.
+///
+/// Deliberately serial. The measurement is seconds against a job of tens of
+/// minutes, and running them in order keeps the failing replicate's name
+/// attached to the error that stops the job.
+pub fn get_all_rmsd_rmsf(
+    example_trajectory: &ProcessedTrajectory,
+    all_trajectories: &[ProcessedTrajectory],
+    script_dir: &Path,
+    uv: &Path,
+) -> Result<RmsdRmsf> {
+    let mut example_vals: Option<RmsdRmsf> = None;
+
+    for trajectory in all_trajectories {
+        // Every file in ProcessedTrajectory is built by joining onto the
+        // trajectory's own directory, so this is that directory.
+        let out_dir = trajectory.min_xtc.parent().ok_or_else(|| {
+            anyhow!(
+                r#"No parent directory for "{}""#,
+                trajectory.min_xtc.display()
+            )
+        })?;
+
+        debug!(
+            "Checking RMSD/RMSF for \"{}\"",
+            trajectory.trajectory_file_name
+        );
+
+        let vals = get_rmsd_rmsf(
+            &trajectory.min_pdb,
+            &trajectory.min_xtc,
+            out_dir,
+            script_dir,
+            uv,
+        )
+        .map_err(|e| {
+            anyhow!(
+                r#"RMSD/RMSF check failed for trajectory "{}": {e}"#,
+                trajectory.trajectory_file_name
+            )
+        })?;
+
+        if trajectory.trajectory_file_name == example_trajectory.trajectory_file_name {
+            example_vals = Some(vals);
+        }
+    }
+
+    example_vals.ok_or_else(|| {
+        anyhow!(
+            r#"Example trajectory "{}" is not among the processed trajectories"#,
+            example_trajectory.trajectory_file_name
+        )
+    })
 }
 
 // --------------------------------------------------
@@ -1077,10 +1154,9 @@ pub fn make_import_json(
         args.uv,
     )?;
 
-    let rmsd_rmsf = get_rmsd_rmsf(
-        &args.example_trajectory.min_pdb,
-        &args.example_trajectory.min_xtc,
-        args.processed_dir,
+    let rmsd_rmsf = get_all_rmsd_rmsf(
+        args.example_trajectory,
+        args.all_trajectories,
         args.script_dir,
         args.uv,
     )?;
@@ -2292,6 +2368,142 @@ mod tests {
     use libmdrepo::metadata::Meta;
     use std::io::Write;
     use tempfile::{NamedTempFile, tempdir};
+
+    /// A `ProcessedTrajectory` whose files all sit in `rep_dir`, which is how
+    /// `process_trajectory` builds the real ones.
+    fn fake_trajectory(rep_dir: &Path, file_name: &str) -> ProcessedTrajectory {
+        ProcessedTrajectory {
+            full_gro: rep_dir.join("full.gro"),
+            full_pdb: rep_dir.join("full.pdb"),
+            full_xtc: rep_dir.join("full.xtc"),
+            min_gro: rep_dir.join("minimal.gro"),
+            min_pdb: rep_dir.join("minimal.pdb"),
+            min_xtc: rep_dir.join("minimal.xtc"),
+            sampled_xtc: rep_dir.join("sampled.xtc"),
+            thumbnail_png: rep_dir.join("thumbnail.png"),
+            full_xtc_size: 1024,
+            trajectory_file_name: file_name.to_string(),
+            trajectory_file_stem: file_name
+                .rsplit_once('.')
+                .map_or(file_name, |(stem, _)| stem)
+                .to_string(),
+            directory_name: rep_dir.to_string_lossy().to_string(),
+            source_has_time_axis: Some(true),
+            is_coarse_grained: false,
+        }
+    }
+
+    /// Seed a replicate directory with the cached result the real script
+    /// would have written, so the check can be exercised without invoking it.
+    fn seed_rmsd_rmsf(rep_dir: &Path, rmsd: f64, rmsf: f64) -> anyhow::Result<()> {
+        fs::create_dir_all(rep_dir)?;
+        fs::write(
+            rep_dir.join("rmsd_rmsf.json"),
+            format!(r#"{{"rmsd":[{rmsd}],"rmsf":[{rmsf}]}}"#),
+        )?;
+        Ok(())
+    }
+
+    // Every replicate is measured, and the example's numbers are the ones the
+    // import payload gets. The distinct per-replicate values are the point:
+    // a single shared `rmsd_rmsf.json` would hand the first replicate's
+    // numbers back for all three and never look at the other two.
+    #[test]
+    fn rmsd_rmsf_reads_each_replicate_and_returns_the_example() -> anyhow::Result<()> {
+        let dir = tempdir()?;
+        let processed = dir.path();
+
+        let trajectories: Vec<_> =
+            [("rep_1", "a.nc"), ("rep_2", "b.nc"), ("rep_3", "c.nc")]
+                .iter()
+                .enumerate()
+                .map(|(i, (rep, name))| {
+                    let rep_dir = processed.join(rep);
+                    seed_rmsd_rmsf(&rep_dir, i as f64, 10.0 + i as f64)?;
+                    Ok(fake_trajectory(&rep_dir, name))
+                })
+                .collect::<anyhow::Result<_>>()?;
+
+        // The example is the LAST processed trajectory in the real pipeline.
+        let example = trajectories.last().unwrap();
+        let vals = get_all_rmsd_rmsf(
+            example,
+            &trajectories,
+            Path::new("/nonexistent/script/dir"),
+            Path::new("/nonexistent/uv"),
+        )?;
+
+        assert_eq!(vals.rmsd, vec![2.0]);
+        assert_eq!(vals.rmsf, vec![12.0]);
+
+        Ok(())
+    }
+
+    // A replicate with no cached result and no way to produce one must fail
+    // the simulation rather than be quietly skipped -- the whole reason the
+    // check now walks all of them.
+    #[test]
+    fn rmsd_rmsf_fails_when_a_replicate_cannot_be_measured() -> anyhow::Result<()> {
+        let dir = tempdir()?;
+        let processed = dir.path();
+
+        let rep1 = processed.join("rep_1");
+        seed_rmsd_rmsf(&rep1, 1.0, 11.0)?;
+        let rep2 = processed.join("rep_2");
+        fs::create_dir_all(&rep2)?;
+
+        let trajectories = vec![
+            fake_trajectory(&rep1, "a.nc"),
+            fake_trajectory(&rep2, "b.nc"),
+        ];
+        let example = &trajectories[0];
+
+        let err = get_all_rmsd_rmsf(
+            example,
+            &trajectories,
+            Path::new("/nonexistent/script/dir"),
+            Path::new("/nonexistent/uv"),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(
+            err.contains("b.nc"),
+            "error should name the replicate: {err}"
+        );
+
+        Ok(())
+    }
+
+    // The example has to be one of the trajectories that were measured; if it
+    // is not, returning any other replicate's numbers would be a lie.
+    #[test]
+    fn rmsd_rmsf_fails_when_the_example_is_not_among_the_trajectories()
+    -> anyhow::Result<()> {
+        let dir = tempdir()?;
+        let processed = dir.path();
+
+        let rep1 = processed.join("rep_1");
+        seed_rmsd_rmsf(&rep1, 1.0, 11.0)?;
+        let orphan_dir = processed.join("rep_9");
+        seed_rmsd_rmsf(&orphan_dir, 9.0, 19.0)?;
+
+        let trajectories = vec![fake_trajectory(&rep1, "a.nc")];
+        let orphan = fake_trajectory(&orphan_dir, "z.nc");
+
+        let err = get_all_rmsd_rmsf(
+            &orphan,
+            &trajectories,
+            Path::new("/nonexistent/script/dir"),
+            Path::new("/nonexistent/uv"),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("z.nc"), "error should name the example: {err}");
+
+        Ok(())
+    }
 
     const MINIMAL_TOML: &str = r#"
         lead_contributor_orcid = "0000-0000-0000-0000"
