@@ -538,6 +538,77 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
             std::iter::once(simproc_bin).chain(env::split_paths(&path_var)),
         )?;
 
+        // Screen the trajectory before cpptraj is asked to convert it. Two
+        // submissions have carried frames that are not simulation data, and
+        // conversion is the worst place to meet one: ticket 2371 spun cpptraj
+        // for 2h52m on a single frame rather than failing, and was found by
+        // hand. The RMSD/RMSF ceiling does not cover this -- it runs after
+        // conversion, on the stripped selection, so damage confined to solvent
+        // passes it while the full.xtc written alongside carries a frame that
+        // crashes the XTC reader.
+        //
+        // Screening is by trajectory, not by ticket, so a bad replicate names
+        // itself. The script covers NetCDF, XTC, TRR and DCD, which includes a
+        // submitted `.mdc` because the branch above has already rewritten
+        // `trajectory_path` to the decompressed XTC by this point.
+        //
+        // The script has to be beside the others in SCRIPT_DIR, so installing
+        // this binary without pulling simulation-processing first fails every
+        // job on the host. That is deliberate: a screen that is missing must
+        // not read as a screen that passed.
+        let screen = args.script_dir.join("screen_trajectory.py");
+        if !screen.is_file() {
+            bail!(r#"Missing "{}""#, screen.display());
+        }
+
+        let mut screen_cmd = Command::new(&python);
+        screen_cmd.env("PATH", &new_path).args([
+            screen.to_string_lossy().to_string(),
+            "--trajectory".into(),
+            trajectory_path.to_string_lossy().to_string(),
+        ]);
+
+        debug!("Running {screen_cmd:?}");
+
+        let screen_out = screen_cmd.output()?;
+        if !screen_out.status.success() {
+            // The script's own message names the file and the frames. Pass it
+            // through as the failure rather than wrapping it in a command dump:
+            // this one goes in front of a person deciding what to tell a
+            // submitter.
+            let reason = String::from_utf8_lossy(&screen_out.stderr);
+            let reason = reason.trim();
+
+            // A signal rather than an exit code means reading the trajectory
+            // killed the screener. That is a verdict, not a malfunction: the
+            // full.xtc of ticket 2371 rep_1 raises SIGFPE at frame 5220 on any
+            // reader, and it must not reach cpptraj. Say so, because "signal 8"
+            // on its own sends whoever reads it looking in the wrong place.
+            let killed = screen_out.status.code().is_none();
+
+            bail!(
+                "Refusing to convert {}: {}",
+                args.trajectory_file_name,
+                if killed {
+                    format!(
+                        "reading it killed the screener ({}), so the file is \
+                         damaged in a way its own format's reader cannot \
+                         survive{}",
+                        screen_out.status,
+                        if reason.is_empty() {
+                            String::new()
+                        } else {
+                            format!(": {reason}")
+                        }
+                    )
+                } else if reason.is_empty() {
+                    format!("screen failed ({})", screen_out.status)
+                } else {
+                    reason.to_string()
+                }
+            );
+        }
+
         let coord = args.input_dir.join(args.structure_file_name);
         let top = args.input_dir.join(args.topology_file_name);
         let script_args = [
