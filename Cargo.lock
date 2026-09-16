@@ -2281,9 +2281,9 @@ checksum = "f38d5652c16fde515bb1ecef450ab0f6a219d619a7274976324d5e377f7dceba"
 
 [[package]]
 name = "pdbrust"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b8990e558a428c426bece1d13612c1c8844ee3bce4376e1531a71678b85abb1"
+checksum = "97823f723cbb3e2ad816c84cba8a1670f203a2f01e1a063be01bbc40010a6552"
 dependencies = [
  "itertools",
  "thiserror 1.0.69",

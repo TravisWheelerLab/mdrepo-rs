@@ -26,13 +26,12 @@ use std::{
     collections::{HashMap, HashSet},
     env,
     fs::{self, File},
-    io::{BufRead, BufReader, Write},
+    io::{BufReader, Write},
     path::{self, Path, PathBuf},
     process::Command,
     time::Instant,
 };
 use strum::IntoEnumIterator;
-use tempfile::NamedTempFile;
 use which::which;
 
 // ── BLAST parameters ──────────────────────────────────────────────────────────
@@ -657,16 +656,7 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
 
 // --------------------------------------------------
 pub fn check_coarse_grained(full_pdb: &Path, min_pdb: &Path) -> Result<bool> {
-    // TEMPORARY FIX TO REMOVE REMARK UNTIL KEN'S PR IS ACCEPTED BY pdbrust
-    let mut tmp = NamedTempFile::new()?;
-    for line in BufReader::new(File::open(min_pdb)?).lines() {
-        let line = line?;
-        if !line.starts_with("REMARK") {
-            writeln!(tmp, "{line}")?;
-        }
-    }
-
-    let structure = pdbrust::parse_pdb_file(tmp.path())
+    let structure = pdbrust::parse_pdb_file(min_pdb)
         .map_err(|err| anyhow!("{}: {err}", min_pdb.display()))?;
     let protein = structure.select("protein")?;
     let total_atoms = protein.get_num_atoms();
@@ -693,15 +683,8 @@ pub fn check_coarse_grained(full_pdb: &Path, min_pdb: &Path) -> Result<bool> {
 
 // --------------------------------------------------
 fn fix_alpha_carbon_name(path: &Path) -> Result<()> {
-    // TEMPORARY FIX TO REMOVE REMARK UNTIL PR IS ACCEPTED
-    let mut tmp = NamedTempFile::new()?;
-    for line in BufReader::new(File::open(path)?).lines() {
-        let line = line?;
-        if !line.starts_with("REMARK") {
-            writeln!(tmp, "{line}")?;
-        }
-    }
-    let structure = pdbrust::parse_pdb_file(tmp.path())?;
+    let structure = pdbrust::parse_pdb_file(path)
+        .map_err(|err| anyhow!("{}: {err}", path.display()))?;
     let protein = structure.select("protein")?;
     let total_atoms = protein.get_num_atoms();
     let protein_serials: HashSet<i32> = protein
@@ -715,8 +698,14 @@ fn fix_alpha_carbon_name(path: &Path) -> Result<()> {
             r#"All proteins in "{}" are named "A," changing to "CA""#,
             path.display()
         );
+        // The parser puts every atom in `structure.atoms` and, when the file
+        // wraps them in MODEL/ENDMDL as `trjconv` does, a second copy in
+        // `model.atoms`. The writer emits the model copies whenever `models`
+        // is non-empty, so both sets have to be renamed or the rewrite keeps
+        // the old names.
         let mut fixed = structure.clone();
-        for atom in fixed.atoms.iter_mut() {
+        let models = fixed.models.iter_mut().flat_map(|m| m.atoms.iter_mut());
+        for atom in fixed.atoms.iter_mut().chain(models) {
             if protein_serials.contains(&atom.serial) {
                 atom.name = "CA".to_string();
             }
@@ -2368,6 +2357,149 @@ mod tests {
     use libmdrepo::metadata::Meta;
     use std::io::Write;
     use tempfile::{NamedTempFile, tempdir};
+
+    /// The header GROMACS' `trjconv` writes on every `minimal.pdb`, plus a
+    /// numbered REMARK with no text. Both once aborted the parse, which is why
+    /// this module used to copy PDB files through a temp file with every
+    /// REMARK line dropped before handing them to pdbrust.
+    const TRJCONV_HEADER: &str = "\
+TITLE     Generic title t=   0.00000 step= 0
+REMARK    THIS IS A SIMULATION BOX
+REMARK   2
+CRYST1  100.700  100.700  100.700 109.47 109.47 109.47 P 1           1
+";
+
+    /// One ATOM line per (name, residue_seq), in the fixed columns pdbrust
+    /// reads. `wrap_in_model` writes the MODEL/ENDMDL pair that `trjconv`
+    /// emits; files converted from other formats have no models.
+    fn trjconv_pdb(atoms: &[(&str, i32)], wrap_in_model: bool) -> String {
+        let mut out = TRJCONV_HEADER.to_string();
+        if wrap_in_model {
+            out.push_str("MODEL        1\n");
+        }
+        for (index, (name, residue_seq)) in atoms.iter().enumerate() {
+            let serial = index + 1;
+            out.push_str(&format!(
+                "ATOM  {serial:>5} {name:<4} ALA A{residue_seq:>4}    \
+                 {:>8.3}{:>8.3}{:>8.3}  1.00  0.00           C\n",
+                serial as f64, 0.0, 0.0
+            ));
+        }
+        if wrap_in_model {
+            out.push_str("ENDMDL\n");
+        }
+        out.push_str("END\n");
+        out
+    }
+
+    /// Writes `minimal.pdb` and `full.pdb` from the same atoms, the pair
+    /// `check_coarse_grained` is given.
+    fn write_pdb_pair(
+        dir: &Path,
+        atoms: &[(&str, i32)],
+        wrap_in_model: bool,
+    ) -> anyhow::Result<(PathBuf, PathBuf)> {
+        let text = trjconv_pdb(atoms, wrap_in_model);
+        let full_pdb = dir.join("full.pdb");
+        let min_pdb = dir.join("minimal.pdb");
+        fs::write(&full_pdb, &text)?;
+        fs::write(&min_pdb, &text)?;
+        Ok((full_pdb, min_pdb))
+    }
+
+    /// The atom names of a PDB file, read from the columns they live in
+    /// (13-16) rather than matched anywhere in the line -- a bead named "A"
+    /// and the chain ID "A" are otherwise easy to confuse.
+    fn atom_names(pdb: &str) -> Vec<String> {
+        pdb.lines()
+            .filter(|line| line.starts_with("ATOM") || line.starts_with("HETATM"))
+            .filter_map(|line| line.get(12..16))
+            .map(|name| name.trim().to_string())
+            .collect()
+    }
+
+    // An all-atom model: several atoms share a residue, so atoms outnumber
+    // residues. The REMARK lines in the header are the real subject here --
+    // pdbrust 0.7.0 refused the whole file over them, 0.7.1 reads them.
+    #[test]
+    fn coarse_grained_check_reads_a_trjconv_header() -> anyhow::Result<()> {
+        let dir = tempdir()?;
+        let atoms = [("N", 1), ("CA", 1), ("C", 1), ("N", 2), ("CA", 2), ("C", 2)];
+        let (full_pdb, min_pdb) = write_pdb_pair(dir.path(), &atoms, true)?;
+
+        assert!(!check_coarse_grained(&full_pdb, &min_pdb)?);
+        Ok(())
+    }
+
+    // One bead per residue is the coarse-grained signature, and when every
+    // bead is named "A" both files are rewritten with "CA" so the viewers
+    // downstream can find the backbone.
+    #[test]
+    fn coarse_grained_beads_named_a_are_renamed_ca() -> anyhow::Result<()> {
+        let dir = tempdir()?;
+        let atoms = [("A", 1), ("A", 2), ("A", 3)];
+        let (full_pdb, min_pdb) = write_pdb_pair(dir.path(), &atoms, false)?;
+
+        assert!(check_coarse_grained(&full_pdb, &min_pdb)?);
+
+        for (path, backup) in
+            [(&min_pdb, "minimal_orig.pdb"), (&full_pdb, "full_orig.pdb")]
+        {
+            let rewritten = fs::read_to_string(path)?;
+            assert_eq!(
+                atom_names(&rewritten),
+                vec!["CA"; atoms.len()],
+                "{} kept its \"A\" names:\n{rewritten}",
+                path.display()
+            );
+            assert!(dir.path().join(backup).exists(), "{backup} was not kept");
+        }
+        Ok(())
+    }
+
+    // Beads already named "CA" are coarse-grained too, and nothing is rewritten.
+    #[test]
+    fn coarse_grained_beads_named_ca_are_left_alone() -> anyhow::Result<()> {
+        let dir = tempdir()?;
+        let atoms = [("CA", 1), ("CA", 2), ("CA", 3)];
+        let (full_pdb, min_pdb) = write_pdb_pair(dir.path(), &atoms, false)?;
+        let before = fs::read_to_string(&min_pdb)?;
+
+        assert!(check_coarse_grained(&full_pdb, &min_pdb)?);
+        assert_eq!(
+            fs::read_to_string(&min_pdb)?,
+            before,
+            "minimal.pdb was rewritten"
+        );
+        assert!(
+            !dir.path().join("minimal_orig.pdb").exists(),
+            "a backup was made for a file that needed no change"
+        );
+        Ok(())
+    }
+
+    // The same rename, on the file shape `trjconv` actually writes: the atoms
+    // sit inside a MODEL. The rename used to reach only the `structure.atoms`
+    // copies while the writer emitted the `model.atoms` ones, so the original
+    // was moved aside to `_orig.pdb` and replaced by a file whose beads were
+    // all still named "A".
+    #[test]
+    fn coarse_grained_rename_reaches_atoms_inside_a_model() -> anyhow::Result<()> {
+        let dir = tempdir()?;
+        let atoms = [("A", 1), ("A", 2), ("A", 3)];
+        let (full_pdb, min_pdb) = write_pdb_pair(dir.path(), &atoms, true)?;
+
+        assert!(check_coarse_grained(&full_pdb, &min_pdb)?);
+
+        let rewritten = fs::read_to_string(&min_pdb)?;
+        let names = atom_names(&rewritten);
+        assert_eq!(
+            names,
+            vec!["CA"; atoms.len()],
+            "not every bead was renamed:\n{rewritten}"
+        );
+        Ok(())
+    }
 
     /// A `ProcessedTrajectory` whose files all sit in `rep_dir`, which is how
     /// `process_trajectory` builds the real ones.

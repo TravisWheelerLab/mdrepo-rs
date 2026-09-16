@@ -16,7 +16,7 @@ libmdrepo = { path = "../libmdrepo" }
 mdr-db = { path = "../mdr-db" }
 log = "0.4.29"
 num_cpus = "1.17.0"
-pdbrust = { version = "0.7.0", features = ["filter"] }
+pdbrust = { version = "0.7.1", features = ["filter"] }
 rayon = "1.12.0"
 regex = "1.12.3"
 reqwest = { version = "0.13.1", features = ["blocking", "json"] }
