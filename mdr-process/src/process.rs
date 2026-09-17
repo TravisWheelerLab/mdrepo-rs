@@ -779,17 +779,35 @@ fn fix_alpha_carbon_name(path: &Path) -> Result<()> {
             r#"All proteins in "{}" are named "A," changing to "CA""#,
             path.display()
         );
-        // The parser puts every atom in `structure.atoms` and, when the file
-        // wraps them in MODEL/ENDMDL as `trjconv` does, a second copy in
-        // `model.atoms`. The writer emits the model copies whenever `models`
-        // is non-empty, so both sets have to be renamed or the rewrite keeps
-        // the old names.
-        let mut fixed = structure.clone();
-        let models = fixed.models.iter_mut().flat_map(|m| m.atoms.iter_mut());
-        for atom in fixed.atoms.iter_mut().chain(models) {
-            if protein_serials.contains(&atom.serial) {
-                atom.name = "CA".to_string();
+
+        // Edit the atom-name columns in the text rather than serialising the
+        // parsed structure back out.
+        //
+        // pdbrust writes only the records it models, and says nothing about
+        // the ones it does not. A parse/write round trip through 0.7.1 drops
+        // CRYST1 -- the unit cell, which is the only place a PDB records the
+        // periodic box -- and drops TER, and rewrites "END   " as "END".
+        // Verified against a released file carrying a real triclinic box:
+        // 3,953 atoms in, 3,953 out, CRYST1 gone, no warning.
+        //
+        // Nothing has actually been lost yet, because the only simulations
+        // this runs on are coarse-grained, and the ones we have are vacuum
+        // runs that cpptraj wrote no CRYST1 for. The first coarse-grained
+        // submission that carries a box would have lost it silently.
+        //
+        // Editing the text cannot lose a record it does not understand. It
+        // also needs no special case for the MODEL/ENDMDL copies `trjconv`
+        // emits: the parser lists those atoms twice, but the file holds each
+        // line once, so renaming by line renames each exactly once.
+        let text = fs::read_to_string(path)?;
+        let mut fixed = String::with_capacity(text.len());
+        for chunk in text.split_inclusive('\n') {
+            let content = chunk.trim_end_matches(['\n', '\r']);
+            match rename_bead_to_ca(content, &protein_serials) {
+                Some(renamed) => fixed.push_str(&renamed),
+                None => fixed.push_str(content),
             }
+            fixed.push_str(&chunk[content.len()..]);
         }
 
         // Backup original and then overwrite
@@ -797,10 +815,41 @@ fn fix_alpha_carbon_name(path: &Path) -> Result<()> {
         let backup =
             path.with_file_name(format!("{}_orig.pdb", stem.to_string_lossy()));
         fs::rename(path, backup)?;
-        fixed.to_file(path)?;
+        fs::write(path, fixed)?;
     }
 
     Ok(())
+}
+
+// --------------------------------------------------
+/// Rewrite one PDB line's atom name as `" CA "`, or return `None` to leave the
+/// line alone.
+///
+/// Columns 13-16 hold the atom name and columns 7-11 the serial, both
+/// 1-indexed and fixed-width. A line is left untouched unless it is an
+/// ATOM/HETATM record, plain ASCII, long enough to hold a name, and carries a
+/// serial we were asked to rename. Everything outside columns 13-16 is copied
+/// through byte for byte.
+fn rename_bead_to_ca(line: &str, serials: &HashSet<i32>) -> Option<String> {
+    if !(line.starts_with("ATOM") || line.starts_with("HETATM")) {
+        return None;
+    }
+
+    if !line.is_ascii() || line.len() < 16 {
+        return None;
+    }
+
+    let serial: i32 = line.get(6..11)?.trim().parse().ok()?;
+    if !serials.contains(&serial) {
+        return None;
+    }
+
+    let mut out = String::with_capacity(line.len());
+    out.push_str(&line[..12]);
+    out.push_str(" CA ");
+    out.push_str(&line[16..]);
+
+    Some(out)
 }
 
 // --------------------------------------------------
@@ -2536,6 +2585,87 @@ CRYST1  100.700  100.700  100.700 109.47 109.47 109.47 P 1           1
             assert!(dir.path().join(backup).exists(), "{backup} was not kept");
         }
         Ok(())
+    }
+
+    // The rename used to go out through pdbrust's writer, which emits only the
+    // records it models: a round trip drops CRYST1 and TER and rewrites
+    // "END   " as "END", all without a word. CRYST1 is the only place a PDB
+    // records the periodic box, so losing it loses the unit cell for good.
+    // Nothing has been lost in production -- the coarse-grained simulations we
+    // have are vacuum runs with no CRYST1 to drop -- and this is the guard
+    // against the first one that arrives with a box.
+    #[test]
+    fn rename_keeps_every_record_it_was_not_asked_to_change()
+    -> anyhow::Result<()> {
+        let dir = tempdir()?;
+        let original = "\
+TITLE     Generic title t=   0.00000 step= 0
+REMARK    THIS IS A SIMULATION BOX
+REMARK   2
+CRYST1  100.700  100.700  100.700 109.47 109.47 109.47 P 1           1
+ATOM      1 A    ALA A   1       0.000   0.000   0.000  1.00  0.00           C
+ATOM      2 A    ALA A   2       0.000   0.000   0.000  1.00  0.00           C
+ATOM      3 A    ALA A   3       0.000   0.000   0.000  1.00  0.00           C
+TER       4      ALA A   3
+END   
+";
+        let full_pdb = dir.path().join("full.pdb");
+        let min_pdb = dir.path().join("minimal.pdb");
+        fs::write(&full_pdb, original)?;
+        fs::write(&min_pdb, original)?;
+
+        assert!(check_coarse_grained(&full_pdb, &min_pdb)?);
+
+        let rewritten = fs::read_to_string(&min_pdb)?;
+        assert_eq!(atom_names(&rewritten), vec!["CA"; 3], "{rewritten}");
+
+        // Every line that is not an ATOM record survives byte for byte --
+        // CRYST1 and TER included, and END keeps its trailing spaces.
+        let kept: Vec<&str> = rewritten
+            .lines()
+            .filter(|l| !l.starts_with("ATOM"))
+            .collect();
+        let expected: Vec<&str> = original
+            .lines()
+            .filter(|l| !l.starts_with("ATOM"))
+            .collect();
+        assert_eq!(kept, expected, "a record was altered or dropped");
+
+        // And the ATOM lines change only in columns 13-16.
+        for (before, after) in original
+            .lines()
+            .filter(|l| l.starts_with("ATOM"))
+            .zip(rewritten.lines().filter(|l| l.starts_with("ATOM")))
+        {
+            assert_eq!(&before[..12], &after[..12], "columns 1-12 changed");
+            assert_eq!(&before[16..], &after[16..], "columns 17+ changed");
+            assert_eq!(&after[12..16], " CA ", "name column is not \" CA \"");
+        }
+
+        assert_eq!(rewritten.len(), original.len(), "length changed");
+        Ok(())
+    }
+
+    // A serial outside the rename set, a record that only looks like an atom,
+    // and a line too short to hold a name are all left exactly as they were.
+    #[test]
+    fn rename_bead_leaves_lines_it_was_not_asked_about() {
+        let serials: HashSet<i32> = [1].into_iter().collect();
+        let atom =
+            "ATOM      1 A    ALA A   1       0.000   0.000   0.000  1.00";
+        let other =
+            "ATOM      2 A    ALA A   2       0.000   0.000   0.000  1.00";
+
+        assert_eq!(
+            rename_bead_to_ca(atom, &serials).as_deref(),
+            Some(
+                "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00"
+            )
+        );
+        assert_eq!(rename_bead_to_ca(other, &serials), None, "wrong serial");
+        assert_eq!(rename_bead_to_ca("END   ", &serials), None, "not an atom");
+        assert_eq!(rename_bead_to_ca("CRYST1  100.700", &serials), None);
+        assert_eq!(rename_bead_to_ca("ATOM      1", &serials), None, "short");
     }
 
     // Beads already named "CA" are coarse-grained too, and nothing is rewritten.
