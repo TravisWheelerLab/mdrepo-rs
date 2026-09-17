@@ -526,18 +526,6 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
             bail!(r#"Missing "{}""#, cpp_traj.display());
         }
 
-        // Invoke the simproc env's python directly rather than via
-        // `micromamba run`. The latter registers each process under a single
-        // lock-guarded registry, which intermittently fails under the heavy
-        // parallelism here. We reproduce the parts of env activation the
-        // script actually needs: its bin/ on PATH (cpptraj) and AMBERHOME.
-        let simproc_bin = args.simproc_prefix.join("bin");
-        let python = simproc_bin.join("python");
-        let path_var = env::var_os("PATH").unwrap_or_default();
-        let new_path = env::join_paths(
-            std::iter::once(simproc_bin).chain(env::split_paths(&path_var)),
-        )?;
-
         // Screen the trajectory before cpptraj is asked to convert it. Two
         // submissions have carried frames that are not simulation data, and
         // conversion is the worst place to meet one: ticket 2371 spun cpptraj
@@ -552,6 +540,15 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
         // submitted `.mdc` because the branch above has already rewritten
         // `trajectory_path` to the decompressed XTC by this point.
         //
+        // Run under `uv`, NOT the simproc python used for cpptraj below. The
+        // screen needs MDAnalysis, which exists only in the uv environment:
+        // simproc is pinned to Python 3.7 by its AmberTools build and cannot
+        // have a current MDAnalysis. Wiring it to simproc (as 8c6537a did)
+        // made every XTC, TRR and DCD -- and so every `.mdc`, which becomes an
+        // XTC above -- fail with "No module named 'MDAnalysis'" reported as a
+        // refusal of the data. Only NetCDF passed, because that path uses
+        // scipy alone.
+        //
         // The script has to be beside the others in SCRIPT_DIR, so installing
         // this binary without pulling simulation-processing first fails every
         // job on the host. That is deliberate: a screen that is missing must
@@ -561,8 +558,9 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
             bail!(r#"Missing "{}""#, screen.display());
         }
 
-        let mut screen_cmd = Command::new(&python);
-        screen_cmd.env("PATH", &new_path).args([
+        let mut screen_cmd = Command::new(args.uv);
+        screen_cmd.current_dir(args.script_dir).args([
+            "run".to_string(),
             screen.to_string_lossy().to_string(),
             "--trajectory".into(),
             trajectory_path.to_string_lossy().to_string(),
@@ -608,6 +606,18 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
                 }
             );
         }
+
+        // Invoke the simproc env's python directly rather than via
+        // `micromamba run`. The latter registers each process under a single
+        // lock-guarded registry, which intermittently fails under the heavy
+        // parallelism here. We reproduce the parts of env activation the
+        // script actually needs: its bin/ on PATH (cpptraj) and AMBERHOME.
+        let simproc_bin = args.simproc_prefix.join("bin");
+        let python = simproc_bin.join("python");
+        let path_var = env::var_os("PATH").unwrap_or_default();
+        let new_path = env::join_paths(
+            std::iter::once(simproc_bin).chain(env::split_paths(&path_var)),
+        )?;
 
         let coord = args.input_dir.join(args.structure_file_name);
         let top = args.input_dir.join(args.topology_file_name);
