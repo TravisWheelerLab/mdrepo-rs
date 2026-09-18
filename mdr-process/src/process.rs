@@ -441,6 +441,88 @@ fn find_conda_env_prefix(env_name: &str) -> Result<PathBuf> {
 }
 
 // --------------------------------------------------
+/// Run `screen_trajectory.py` over one trajectory and fail the job if it finds
+/// a frame that is not data.
+///
+/// Factored out of the pre-conversion check so the SAME screen, with the same
+/// criteria and the same failure text, can be pointed at a file we produced.
+/// A second implementation would drift from the first, and the criteria are
+/// the interesting part.
+///
+/// Run under `uv`, NOT the simproc python used for cpptraj. The screen needs
+/// MDAnalysis, which exists only in the uv environment: simproc is pinned to
+/// Python 3.7 by its AmberTools build. Wiring it to simproc (as 8c6537a did)
+/// made every XTC, TRR and DCD fail with "No module named 'MDAnalysis'"
+/// reported as a refusal of the data.
+///
+/// The script has to be beside the others in SCRIPT_DIR, so installing this
+/// binary without pulling simulation-processing first fails every job on the
+/// host. That is deliberate: a screen that is missing must not read as a
+/// screen that passed.
+fn screen_trajectory(
+    script_dir: &Path,
+    uv: &Path,
+    trajectory_path: &Path,
+    display_name: &str,
+    refusal: &str,
+) -> Result<()> {
+    let screen = script_dir.join("screen_trajectory.py");
+    if !screen.is_file() {
+        bail!(r#"Missing "{}""#, screen.display());
+    }
+
+    let mut screen_cmd = Command::new(uv);
+    screen_cmd.current_dir(script_dir).args([
+        "run".to_string(),
+        screen.to_string_lossy().to_string(),
+        "--trajectory".into(),
+        trajectory_path.to_string_lossy().to_string(),
+    ]);
+
+    debug!("Running {screen_cmd:?}");
+
+    let screen_out = screen_cmd.output()?;
+    if screen_out.status.success() {
+        return Ok(());
+    }
+
+    // The script's own message names the file and the frames. Pass it through
+    // as the failure rather than wrapping it in a command dump: this one goes
+    // in front of a person deciding what to tell a submitter.
+    let reason = String::from_utf8_lossy(&screen_out.stderr);
+    let reason = reason.trim();
+
+    // A signal rather than an exit code means reading the trajectory killed
+    // the screener. That is a verdict, not a malfunction: the full.xtc of
+    // ticket 2371 rep_1 raises SIGFPE at frame 5220 on any reader. Say so,
+    // because "signal 8" on its own sends whoever reads it looking in the
+    // wrong place.
+    let killed = screen_out.status.code().is_none();
+
+    bail!(
+        "{} {}: {}",
+        refusal,
+        display_name,
+        if killed {
+            format!(
+                "reading it killed the screener ({}), so the file is damaged \
+                 in a way its own format's reader cannot survive{}",
+                screen_out.status,
+                if reason.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {reason}")
+                }
+            )
+        } else if reason.is_empty() {
+            format!("screen failed ({})", screen_out.status)
+        } else {
+            reason.to_string()
+        }
+    );
+}
+
+// --------------------------------------------------
 pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajectory> {
     let trajectory_dir = args
         .processed_dir
@@ -553,59 +635,13 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
         // this binary without pulling simulation-processing first fails every
         // job on the host. That is deliberate: a screen that is missing must
         // not read as a screen that passed.
-        let screen = args.script_dir.join("screen_trajectory.py");
-        if !screen.is_file() {
-            bail!(r#"Missing "{}""#, screen.display());
-        }
-
-        let mut screen_cmd = Command::new(args.uv);
-        screen_cmd.current_dir(args.script_dir).args([
-            "run".to_string(),
-            screen.to_string_lossy().to_string(),
-            "--trajectory".into(),
-            trajectory_path.to_string_lossy().to_string(),
-        ]);
-
-        debug!("Running {screen_cmd:?}");
-
-        let screen_out = screen_cmd.output()?;
-        if !screen_out.status.success() {
-            // The script's own message names the file and the frames. Pass it
-            // through as the failure rather than wrapping it in a command dump:
-            // this one goes in front of a person deciding what to tell a
-            // submitter.
-            let reason = String::from_utf8_lossy(&screen_out.stderr);
-            let reason = reason.trim();
-
-            // A signal rather than an exit code means reading the trajectory
-            // killed the screener. That is a verdict, not a malfunction: the
-            // full.xtc of ticket 2371 rep_1 raises SIGFPE at frame 5220 on any
-            // reader, and it must not reach cpptraj. Say so, because "signal 8"
-            // on its own sends whoever reads it looking in the wrong place.
-            let killed = screen_out.status.code().is_none();
-
-            bail!(
-                "Refusing to convert {}: {}",
-                args.trajectory_file_name,
-                if killed {
-                    format!(
-                        "reading it killed the screener ({}), so the file is \
-                         damaged in a way its own format's reader cannot \
-                         survive{}",
-                        screen_out.status,
-                        if reason.is_empty() {
-                            String::new()
-                        } else {
-                            format!(": {reason}")
-                        }
-                    )
-                } else if reason.is_empty() {
-                    format!("screen failed ({})", screen_out.status)
-                } else {
-                    reason.to_string()
-                }
-            );
-        }
+        screen_trajectory(
+            args.script_dir,
+            args.uv,
+            &trajectory_path,
+            args.trajectory_file_name,
+            "Refusing to convert",
+        )?;
 
         // Invoke the simproc env's python directly rather than via
         // `micromamba run`. The latter registers each process under a single
@@ -697,6 +733,29 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
     let is_coarse_grained = check_coarse_grained(&full_pdb, &min_pdb)?;
 
     sample_trajectory(&min_xtc, &min_pdb, &sampled_xtc, args.script_dir, args.uv)?;
+
+    // SCREEN WHAT WE JUST WROTE. sampled.xtc is the only file this pipeline
+    // produces by reading one of its OWN outputs back rather than converting
+    // the source, and that path has demonstrably failed: bundles 1m0o and
+    // 4bzs killed sample_trajectory.py with SIGFPE reading minimal.xtc.
+    //
+    // The pre-conversion screen cannot cover this. It reads the SOURCE, and a
+    // fault introduced after conversion is invisible to it. Nor does the
+    // sampler cover it: on a trajectory over 1,000 frames it reads 100 and
+    // never touches anything at index 1,000 or beyond.
+    //
+    // It is cheap. Measured on MDR00004397: 0.7s for sampled.xtc against 22s
+    // for its minimal.xtc and 217s for its full.xtc. Those two are cpptraj
+    // output from an already-screened source, and the MDR00099629 control --
+    // 111,312 frame-screenings from a proven-clean source -- found cpptraj
+    // introduced no damage, so they are not screened here. This one is.
+    screen_trajectory(
+        args.script_dir,
+        args.uv,
+        &sampled_xtc,
+        "sampled.xtc",
+        "Refusing to publish",
+    )?;
 
     make_thumbnail(
         &thumbnail_png,
