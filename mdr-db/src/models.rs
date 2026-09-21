@@ -47,9 +47,8 @@ pub struct CollectionUpdate {
 
 // ── md_creator ────────────────────────────────────────────────────────────────
 //
-// The normalized replacement for `md_contribution`: one row per distinct
-// person rather than one per (person, simulation). `md_contribution` is still
-// written alongside these — see `import::upsert_contributor`.
+// One row per distinct person, rather than the one row per
+// (person, simulation) that the dropped `md_contribution` held.
 
 #[derive(
     Debug, Queryable, Selectable, Identifiable, Serialize, Deserialize, ToSchema,
