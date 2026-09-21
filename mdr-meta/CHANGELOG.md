@@ -4,6 +4,63 @@ Notable user-facing changes to `mdr-meta`. Each entry here becomes the
 GitHub release note for that version (see `.github/workflows/release.yml`)
 -- write it before tagging, not after.
 
+## 0.3.25
+
+Two corrections to GROMACS validation. Both only **accept** metadata that
+0.3.24 refused -- nothing that passes today can start failing.
+
+### Fix: a bare GROMACS `"2025"` is a real release, and was being refused
+
+GROMACS names the first release of a series with no patch component.
+`2016`, `2018` through `2024` were all listed that way and there is no
+`2024.0`, but the 2025 series had been entered as `2025.0` instead. So
+
+```toml
+software_version = "2025"
+```
+
+was rejected as an invalid version while the spelling GROMACS never
+shipped was accepted. `2025` is now in the list. `2025.0` is kept as
+well, so nothing that validated before changes.
+
+This was our defect, not a submitter's. One released simulation
+(MDR00020615) declares `"2025"` and is invalid under 0.3.24 for that
+reason alone; the forward-looking case is the one that matters, since
+2025 is a current series and anyone declaring the version they actually
+ran was getting a wrong rejection.
+
+### Fix: the `.top` coordinate rule now looks at every declared file
+
+A GROMACS `.top` carries no coordinates, so validation requires a `.tpr`
+or a `.gro` alongside it. That check only ever looked in
+`additional_files`, so a submission declaring its `.gro` as the
+structure was refused for lacking the very file it declares:
+
+```toml
+structure_file_name = "npt_dry.gro"
+topology_file_name  = "topol.top"
+```
+
+Where the coordinates are declared does not matter to the rule's intent,
+so `additional_files`, `structure_file_name` and `trajectory_file_names`
+are all searched now, and extensions are matched case-insensitively --
+a `.GRO` counts, which it did not before.
+
+The message text changed with it, since "additional" named a field the
+rule should never have been restricted to:
+
+```
+topology_file_name: GROMACS topology ".top" file requires a ".tpr" or
+".gro" among the declared files
+```
+
+### Verification
+
+Both builds were run over all 97,809 released TOMLs with stdout captured
+and diffed. **No file gains a message.** Two lose one -- MDR00004453 to
+the `.top` fix and MDR00020615 to the `2025` fix -- and every message on
+every other flagged file is textually identical.
+
 ## 0.3.24
 
 ### New: `ligands.inchi`, and `ligands.smiles` becomes optional
