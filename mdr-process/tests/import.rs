@@ -235,6 +235,20 @@ fn import_new_simulation_creates_all_related_rows() {
             .unwrap()
             .is_some()
     );
+
+    // The md_creator half of the dual-write. Until this existed the tests
+    // only checked md_contribution, so the import could have stopped
+    // populating the new tables entirely and nothing would have failed --
+    // which matters, because the dual-write is the only thing keeping them
+    // current for new imports between the backfill and the drop.
+    let creators =
+        ops::list_creators_for_simulation(&mut c, sim_id).expect("creators load");
+    assert_eq!(creators.len(), 1, "the creator should be linked");
+    assert_eq!(creators[0].name.as_deref(), Some("Ada Lovelace"));
+    assert_eq!(
+        creators[0].orcid.as_deref(),
+        Some("0000-0002-contributor-new")
+    );
     assert!(
         ops::find_contribution_id(
             &mut c,
@@ -341,6 +355,17 @@ fn import_same_alias_twice_is_idempotent_not_duplicated() {
     )
     .unwrap();
     assert!(contribution_id.is_some());
+
+    // Re-importing must not duplicate the creator or its link. The creator
+    // row is deduped by identity and the link by its composite primary key,
+    // so a second import of the same payload is a no-op on both.
+    let creators =
+        ops::list_creators_for_simulation(&mut c, first_id).expect("creators load");
+    assert_eq!(
+        creators.len(),
+        1,
+        "re-import duplicated the simulation's creators: {creators:?}"
+    );
 
     let ligand_id = ops::find_ligand_id(&mut c, first_id, "IdempotentLigand").unwrap();
     assert!(ligand_id.is_some());
