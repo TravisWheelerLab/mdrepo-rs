@@ -250,15 +250,6 @@ fn import_new_simulation_creates_all_related_rows() {
         Some("0000-0002-contributor-new")
     );
     assert!(
-        ops::find_contribution_id(
-            &mut c,
-            sim_id,
-            ops::ContributionKey::Orcid("0000-0002-contributor-new")
-        )
-        .unwrap()
-        .is_some()
-    );
-    assert!(
         ops::find_ligand_id(&mut c, sim_id, "TestLigand")
             .unwrap()
             .is_some()
@@ -347,14 +338,6 @@ fn import_same_alias_twice_is_idempotent_not_duplicated() {
     let uploaded_file_id =
         ops::find_uploaded_file_id(&mut c, first_id, "orig.pdb").unwrap();
     assert!(uploaded_file_id.is_some());
-
-    let contribution_id = ops::find_contribution_id(
-        &mut c,
-        first_id,
-        ops::ContributionKey::Orcid("0000-0002-contributor-idempotent"),
-    )
-    .unwrap();
-    assert!(contribution_id.is_some());
 
     // Re-importing must not duplicate the creator or its link. The creator
     // row is deduped by identity and the link by its composite primary key,

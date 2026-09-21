@@ -35,10 +35,7 @@ use chrono::Utc;
 use diesel::{PgConnection, connection::Connection};
 use libmdrepo::metadata;
 use log::debug;
-use mdr_db::{
-    models::*,
-    ops::{self, ContributionKey},
-};
+use mdr_db::{models::*, ops};
 use std::path::Path;
 
 /// Uploads made under this ORCID are attributed to the fixed `mdrepo_admin`
@@ -125,7 +122,7 @@ pub fn import_simulation(
             upsert_replicate(conn, sim_id, trajectory)?;
         }
         for (rank, creator) in sim.creators.iter().enumerate() {
-            upsert_creator_rows(conn, sim_id, creator, rank as i32 + 1)?;
+            upsert_creator(conn, sim_id, creator, rank as i32 + 1)?;
         }
         for ligand in &sim.ligands {
             upsert_ligand(conn, sim_id, ligand)?;
@@ -438,77 +435,14 @@ fn upsert_replicate(
 }
 
 // --------------------------------------------------
-/// Write one contributor to `md_contribution` AND to the normalized
-/// `md_creator` / `md_simulation_creator` pair.
-///
-/// **Both, on purpose, for now.** `md_contribution` is still what every read
-/// path uses -- the serializers, the `contribution__name` filter and the Elm
-/// client all go through it -- so dropping it here would empty the site. The
-/// new tables are written in parallel so they stay current from this commit
-/// forward, which is what lets the read switch be a separate change that needs
-/// no backfill of its own. `utils/python/normalize_creators.py` covers
-/// everything imported before today.
-///
-/// The two halves key differently, and that is not an oversight.
-/// `md_contribution` is per-simulation and resolves by ORCID, then email, then
-/// name -- a contributor row belongs to one simulation, so the first match
-/// within it is the right one. `md_creator` is global, so it matches on the
-/// full coalesced 4-tuple: two people sharing a name must not collapse across
-/// the whole repository just because they never gave an ORCID. That is
-/// deliberately stricter here than the per-simulation lookup below.
-fn upsert_creator_rows(
-    conn: &mut PgConnection,
-    sim_id: i64,
-    creator: &metadata::Creator,
-    rank: i32,
-) -> Result<i64> {
-    // ORCID identifies a creator best, then email, then the name they gave.
-    let key = match (&creator.orcid, &creator.email) {
-        (Some(orcid), _) => ContributionKey::Orcid(orcid),
-        (None, Some(email)) => ContributionKey::Email(email),
-        (None, None) => ContributionKey::Name(&creator.name),
-    };
-
-    upsert_creator_link(conn, sim_id, creator, rank)?;
-
-    if let Some(id) = ops::find_contribution_id(conn, sim_id, key)? {
-        ops::update_contribution(
-            conn,
-            id,
-            ContributionUpdate {
-                orcid: Some(creator.orcid.clone()),
-                name: Some(Some(creator.name.clone())),
-                email: Some(creator.email.clone()),
-                institution: Some(creator.institution.clone()),
-                rank: Some(rank),
-                ..Default::default()
-            },
-        )?;
-        return Ok(id);
-    }
-
-    Ok(ops::insert_contribution(
-        conn,
-        NewContribution {
-            email: creator.email.clone(),
-            institution: creator.institution.clone(),
-            name: Some(creator.name.clone()),
-            orcid: creator.orcid.clone(),
-            simulation_id: Some(sim_id),
-            rank,
-        },
-    )?
-    .id)
-}
-
-// --------------------------------------------------
-/// The `md_creator` half of `upsert_creator_rows`.
+/// Write one creator of a simulation: the identity into `md_creator`,
+/// the link and its author rank into `md_simulation_creator`.
 ///
 /// Values are stored exactly as submitted. The lower-casing lives only in the
 /// match, never in what is written, so the first spelling of a person to
 /// arrive stays the canonical row and a later variant links to it rather than
 /// rewriting it.
-fn upsert_creator_link(
+fn upsert_creator(
     conn: &mut PgConnection,
     sim_id: i64,
     creator: &metadata::Creator,

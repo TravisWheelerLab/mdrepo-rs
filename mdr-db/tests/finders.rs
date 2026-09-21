@@ -683,52 +683,6 @@ fn upsert_simulation_creator_relinks_rather_than_duplicating() {
 }
 
 #[test]
-fn find_contribution_by_orcid_email_or_name() {
-    let mut c = conn_or_skip!();
-    let sim = seed_sim(&mut c);
-    let other_sim = seed_sim(&mut c);
-    let contrib = ops::insert_contribution(
-        &mut c,
-        NewContribution {
-            email: Some("ada@example.org".into()),
-            institution: None,
-            name: Some("Ada Lovelace".into()),
-            orcid: Some("0000-0002-contribtest".into()),
-            simulation_id: Some(sim),
-            rank: 1,
-        },
-    )
-    .unwrap()
-    .id;
-
-    for key in [
-        ops::ContributionKey::Orcid("0000-0002-contribtest"),
-        ops::ContributionKey::Email("ada@example.org"),
-        ops::ContributionKey::Name("Ada Lovelace"),
-    ] {
-        assert_eq!(
-            ops::find_contribution_id(&mut c, sim, key).unwrap(),
-            Some(contrib)
-        );
-    }
-    // Contributors are scoped to their simulation.
-    assert_eq!(
-        ops::find_contribution_id(
-            &mut c,
-            other_sim,
-            ops::ContributionKey::Orcid("0000-0002-contribtest")
-        )
-        .unwrap(),
-        None
-    );
-    assert_eq!(
-        ops::find_contribution_id(&mut c, sim, ops::ContributionKey::Name("Nobody"))
-            .unwrap(),
-        None
-    );
-}
-
-#[test]
 fn find_sim_scoped_children_by_natural_key() {
     let mut c = conn_or_skip!();
     let sim = seed_sim(&mut c);

@@ -45,52 +45,6 @@ pub struct CollectionUpdate {
     pub user_id: Option<i64>,
 }
 
-// ── md_contribution ───────────────────────────────────────────────────────────
-
-#[derive(
-    Debug,
-    Queryable,
-    Selectable,
-    Identifiable,
-    Associations,
-    Serialize,
-    Deserialize,
-    ToSchema,
-)]
-#[diesel(table_name = md_contribution)]
-#[diesel(belongs_to(Simulation))]
-pub struct Contribution {
-    pub id: i64,
-    pub email: Option<String>,
-    pub institution: Option<String>,
-    pub name: Option<String>,
-    pub orcid: Option<String>,
-    pub simulation_id: Option<i64>,
-    pub rank: i32,
-}
-
-#[derive(Debug, Insertable, Deserialize)]
-#[diesel(table_name = md_contribution)]
-pub struct NewContribution {
-    pub email: Option<String>,
-    pub institution: Option<String>,
-    pub name: Option<String>,
-    pub orcid: Option<String>,
-    pub simulation_id: Option<i64>,
-    pub rank: i32,
-}
-
-#[derive(Debug, AsChangeset, Default, Deserialize)]
-#[diesel(table_name = md_contribution)]
-pub struct ContributionUpdate {
-    pub email: Option<Option<String>>,
-    pub institution: Option<Option<String>>,
-    pub name: Option<Option<String>>,
-    pub orcid: Option<Option<String>>,
-    pub simulation_id: Option<Option<i64>>,
-    pub rank: Option<i32>,
-}
-
 // ── md_creator ────────────────────────────────────────────────────────────────
 //
 // The normalized replacement for `md_contribution`: one row per distinct

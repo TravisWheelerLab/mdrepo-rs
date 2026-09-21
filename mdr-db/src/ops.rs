@@ -111,41 +111,6 @@ pub fn upsert_collection(
         .get_result(conn)
 }
 
-// ── md_contribution ───────────────────────────────────────────────────────────
-
-// NOTE: nothing READS md_contribution for its own sake any more.
-// `contribution_query`, `list_contributions` and `get_contribution` went
-// when mdr-export moved to `list_creators_for_simulation`. What remains is
-// the write path: insert/update here, plus `find_contribution_id` further
-// down, which reads only to decide insert-vs-update inside the upsert.
-// All of it goes with mdr-process's dual-write, and then the table can be
-// dropped.
-
-pub fn insert_contribution(
-    conn: &mut PgConnection,
-    new: NewContribution,
-) -> QueryResult<Contribution> {
-    diesel::insert_into(md_contribution::table)
-        .values(&new)
-        .returning(Contribution::as_returning())
-        .get_result(conn)
-}
-
-pub fn update_contribution(
-    conn: &mut PgConnection,
-    rid: i64,
-    cs: ContributionUpdate,
-) -> QueryResult<Contribution> {
-    diesel::update(md_contribution::table.find(rid))
-        .set(&cs)
-        .returning(Contribution::as_returning())
-        .get_result(conn)
-}
-
-pub fn delete_contribution(conn: &mut PgConnection, rid: i64) -> QueryResult<usize> {
-    diesel::delete(md_contribution::table.find(rid)).execute(conn)
-}
-
 // ── md_creator / md_simulation_creator ───────────────────────────────────────
 
 /// Every creator of a simulation, in author order.
@@ -2329,31 +2294,6 @@ pub fn find_simulation_id_by_hash(
 
 /// Which column identifies a contributor within a simulation. The script tries
 /// ORCID, then email, then name — the caller picks, so that precedence stays
-/// visible at the call site.
-pub enum ContributionKey<'a> {
-    Orcid(&'a str),
-    Email(&'a str),
-    Name(&'a str),
-}
-
-/// Contribution id for a simulation, by whichever natural key the caller has.
-pub fn find_contribution_id(
-    conn: &mut PgConnection,
-    sim_id: i64,
-    key: ContributionKey<'_>,
-) -> QueryResult<Option<i64>> {
-    use crate::schema::md_contribution::dsl::*;
-    let q = md_contribution
-        .filter(simulation_id.eq(sim_id))
-        .into_boxed();
-    let q = match key {
-        ContributionKey::Orcid(v) => q.filter(orcid.eq(v)),
-        ContributionKey::Email(v) => q.filter(email.eq(v)),
-        ContributionKey::Name(v) => q.filter(name.eq(v)),
-    };
-    q.select(id).first::<i64>(conn).optional()
-}
-
 /// Processed-file id by `(simulation_id, filename)`.
 pub fn find_processed_file_id(
     conn: &mut PgConnection,

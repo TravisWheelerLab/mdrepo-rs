@@ -18,19 +18,6 @@ diesel::table! {
 
 diesel::table! {
     use diesel::sql_types::*;
-    md_contribution (id) {
-        id -> Int8,
-        email -> Nullable<Varchar>,
-        institution -> Nullable<Text>,
-        name -> Nullable<Text>,
-        orcid -> Nullable<Varchar>,
-        simulation_id -> Nullable<Int8>,
-        rank -> Int4,
-    }
-}
-
-diesel::table! {
-    use diesel::sql_types::*;
     md_creator (id) {
         id -> Int8,
         name -> Nullable<Text>,
@@ -397,7 +384,6 @@ diesel::table! {
 
 diesel::allow_tables_to_appear_in_same_query!(
     md_collection,
-    md_contribution,
     md_creator,
     md_external_link,
     md_feature_switch,
