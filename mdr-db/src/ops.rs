@@ -186,6 +186,96 @@ pub fn delete_contribution(conn: &mut PgConnection, rid: i64) -> QueryResult<usi
     diesel::delete(md_contribution::table.find(rid)).execute(conn)
 }
 
+// ── md_creator / md_simulation_creator ───────────────────────────────────────
+
+/// Creator id for an exact identity, matched the way `uniq_creator_identity`
+/// matches.
+///
+/// The comparison MUST mirror that index — `lower(coalesce(col, ''))` on name,
+/// email and institution, and `coalesce(col, '')` on orcid. Matching on the raw
+/// columns instead would miss a stored NULL against an incoming `""` and insert
+/// a duplicate that the index then refuses, failing the import. See
+/// md-repo-app `docs/creator-normalization.md`.
+pub fn find_creator_id(
+    conn: &mut PgConnection,
+    new: &NewCreator,
+) -> QueryResult<Option<i64>> {
+    use diesel::dsl::sql;
+    use diesel::sql_types::{Bool, Text};
+
+    let norm = |v: &Option<String>| v.clone().unwrap_or_default().to_lowercase();
+
+    md_creator::table
+        .filter(
+            sql::<Bool>("lower(coalesce(name, '')) = ")
+                .bind::<Text, _>(norm(&new.name)),
+        )
+        .filter(
+            sql::<Bool>("coalesce(orcid, '') = ")
+                .bind::<Text, _>(new.orcid.clone().unwrap_or_default()),
+        )
+        .filter(
+            sql::<Bool>("lower(coalesce(email, '')) = ")
+                .bind::<Text, _>(norm(&new.email)),
+        )
+        .filter(
+            sql::<Bool>("lower(coalesce(institution, '')) = ")
+                .bind::<Text, _>(norm(&new.institution)),
+        )
+        .select(md_creator::id)
+        .first::<i64>(conn)
+        .optional()
+}
+
+pub fn insert_creator(
+    conn: &mut PgConnection,
+    new: NewCreator,
+) -> QueryResult<Creator> {
+    diesel::insert_into(md_creator::table)
+        .values(&new)
+        .returning(Creator::as_returning())
+        .get_result(conn)
+}
+
+/// Find-or-insert one creator by identity.
+pub fn upsert_creator(conn: &mut PgConnection, new: NewCreator) -> QueryResult<i64> {
+    if let Some(id) = find_creator_id(conn, &new)? {
+        return Ok(id);
+    }
+    Ok(insert_creator(conn, new)?.id)
+}
+
+/// Link a creator to a simulation, or correct the rank if already linked.
+///
+/// `(simulation_id, creator_id)` is the primary key, so a reprocess that
+/// reorders authors updates the rank rather than duplicating the row.
+pub fn upsert_simulation_creator(
+    conn: &mut PgConnection,
+    new: NewSimulationCreator,
+) -> QueryResult<usize> {
+    diesel::insert_into(md_simulation_creator::table)
+        .values(&new)
+        .on_conflict((
+            md_simulation_creator::simulation_id,
+            md_simulation_creator::creator_id,
+        ))
+        .do_update()
+        .set(md_simulation_creator::rank.eq(new.rank))
+        .execute(conn)
+}
+
+/// Drop every creator link for a simulation, for a reprocess that rebuilds them.
+pub fn delete_simulation_creators(
+    conn: &mut PgConnection,
+    sim_id: i64,
+) -> QueryResult<usize> {
+    diesel::delete(
+        md_simulation_creator::table
+            .filter(md_simulation_creator::simulation_id.eq(sim_id)),
+    )
+    .execute(conn)
+}
+
 // ── md_external_link ──────────────────────────────────────────────────────────
 
 fn external_link_query(

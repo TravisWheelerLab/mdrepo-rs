@@ -17,6 +17,7 @@ use chrono::Utc;
 use diesel::prelude::*;
 use mdr_db::models::*;
 use mdr_db::ops;
+use mdr_db::schema::md_simulation_creator;
 
 /// A connection whose work always rolls back, or `None` when the test DB isn't
 /// configured (so the caller can skip).
@@ -474,6 +475,119 @@ fn find_simulation_by_hash() {
     assert_eq!(
         ops::find_simulation_id_by_hash(&mut c, "nope").unwrap(),
         None
+    );
+}
+
+#[test]
+fn upsert_creator_dedups_on_the_coalesced_identity() {
+    let mut c = conn_or_skip!();
+
+    let mk = |name: &str, orcid: Option<&str>, inst: Option<&str>| NewCreator {
+        name: Some(name.into()),
+        orcid: orcid.map(Into::into),
+        email: None,
+        institution: inst.map(Into::into),
+    };
+
+    let first = ops::upsert_creator(
+        &mut c,
+        mk("Ada Lovelace", Some("0000-1"), Some("Analytical Engine Co")),
+    )
+    .unwrap();
+
+    // Same identity again is the same row, not a second one.
+    assert_eq!(
+        ops::upsert_creator(
+            &mut c,
+            mk("Ada Lovelace", Some("0000-1"), Some("Analytical Engine Co"))
+        )
+        .unwrap(),
+        first,
+        "an identical identity must reuse the existing creator"
+    );
+
+    // Case-insensitive on the text fields, matching uniq_creator_identity.
+    assert_eq!(
+        ops::upsert_creator(
+            &mut c,
+            mk("ada lovelace", Some("0000-1"), Some("ANALYTICAL ENGINE CO"))
+        )
+        .unwrap(),
+        first,
+        "the match lower-cases name and institution"
+    );
+
+    // This is the case the whole NULL-safe key exists for: a stored NULL and
+    // an incoming "" are the same person. Matching on the raw columns would
+    // insert a duplicate here and the unique index would then reject it.
+    let null_inst =
+        ops::upsert_creator(&mut c, mk("Grace Hopper", Some("0000-2"), None)).unwrap();
+    assert_eq!(
+        ops::upsert_creator(&mut c, mk("Grace Hopper", Some("0000-2"), Some("")))
+            .unwrap(),
+        null_inst,
+        "a NULL institution and an empty one are one identity"
+    );
+
+    // A different institution is a different creator -- best-effort matching
+    // does not try to merge spellings of one human.
+    assert_ne!(
+        ops::upsert_creator(
+            &mut c,
+            mk("Ada Lovelace", Some("0000-1"), Some("Somewhere Else"))
+        )
+        .unwrap(),
+        first,
+        "identity includes institution; two spellings stay two rows"
+    );
+}
+
+#[test]
+fn upsert_simulation_creator_relinks_rather_than_duplicating() {
+    let mut c = conn_or_skip!();
+    let sim = seed_sim(&mut c);
+
+    let creator = ops::upsert_creator(
+        &mut c,
+        NewCreator {
+            name: Some("Ada Lovelace".into()),
+            orcid: Some("0000-3".into()),
+            email: None,
+            institution: None,
+        },
+    )
+    .unwrap();
+
+    let link = |c: &mut PgConnection, rank: i32| {
+        ops::upsert_simulation_creator(
+            c,
+            NewSimulationCreator {
+                simulation_id: sim,
+                creator_id: creator,
+                rank,
+            },
+        )
+        .unwrap()
+    };
+
+    link(&mut c, 1);
+    // A reprocess that reorders authors must move the rank, not add a row --
+    // (simulation_id, creator_id) is the primary key.
+    link(&mut c, 3);
+
+    let rows: Vec<SimulationCreator> = md_simulation_creator::table
+        .filter(md_simulation_creator::simulation_id.eq(sim))
+        .select(SimulationCreator::as_select())
+        .load(&mut c)
+        .unwrap();
+
+    assert_eq!(rows.len(), 1, "re-linking must not duplicate the row");
+    assert_eq!(rows[0].rank, 3, "the rank must be updated in place");
+
+    assert_eq!(
+        ops::delete_simulation_creators(&mut c, sim).unwrap(),
+        1,
+        "the reprocess helper clears the simulation's links"
     );
 }
 

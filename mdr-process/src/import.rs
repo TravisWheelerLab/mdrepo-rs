@@ -438,6 +438,24 @@ fn upsert_replicate(
 }
 
 // --------------------------------------------------
+/// Write one contributor to `md_contribution` AND to the normalized
+/// `md_creator` / `md_simulation_creator` pair.
+///
+/// **Both, on purpose, for now.** `md_contribution` is still what every read
+/// path uses -- the serializers, the `contribution__name` filter and the Elm
+/// client all go through it -- so dropping it here would empty the site. The
+/// new tables are written in parallel so they stay current from this commit
+/// forward, which is what lets the read switch be a separate change that needs
+/// no backfill of its own. `utils/python/normalize_creators.py` covers
+/// everything imported before today.
+///
+/// The two halves key differently, and that is not an oversight.
+/// `md_contribution` is per-simulation and resolves by ORCID, then email, then
+/// name -- a contributor row belongs to one simulation, so the first match
+/// within it is the right one. `md_creator` is global, so it matches on the
+/// full coalesced 4-tuple: two people sharing a name must not collapse across
+/// the whole repository just because they never gave an ORCID. That is
+/// deliberately stricter here than the per-simulation lookup below.
 fn upsert_contributor(
     conn: &mut PgConnection,
     sim_id: i64,
@@ -450,6 +468,8 @@ fn upsert_contributor(
         (None, Some(email)) => ContributionKey::Email(email),
         (None, None) => ContributionKey::Name(&contributor.name),
     };
+
+    upsert_creator_link(conn, sim_id, contributor, rank)?;
 
     if let Some(id) = ops::find_contribution_id(conn, sim_id, key)? {
         ops::update_contribution(
@@ -479,6 +499,41 @@ fn upsert_contributor(
         },
     )?
     .id)
+}
+
+// --------------------------------------------------
+/// The `md_creator` half of `upsert_contributor`.
+///
+/// Values are stored exactly as submitted. The lower-casing lives only in the
+/// match, never in what is written, so the first spelling of a person to
+/// arrive stays the canonical row and a later variant links to it rather than
+/// rewriting it.
+fn upsert_creator_link(
+    conn: &mut PgConnection,
+    sim_id: i64,
+    contributor: &metadata::Contributor,
+    rank: i32,
+) -> Result<i64> {
+    let creator_id = ops::upsert_creator(
+        conn,
+        NewCreator {
+            name: Some(contributor.name.clone()),
+            orcid: contributor.orcid.clone(),
+            email: contributor.email.clone(),
+            institution: contributor.institution.clone(),
+        },
+    )?;
+
+    ops::upsert_simulation_creator(
+        conn,
+        NewSimulationCreator {
+            simulation_id: sim_id,
+            creator_id,
+            rank,
+        },
+    )?;
+
+    Ok(creator_id)
 }
 
 // --------------------------------------------------

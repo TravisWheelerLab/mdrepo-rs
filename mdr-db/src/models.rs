@@ -91,6 +91,63 @@ pub struct ContributionUpdate {
     pub rank: Option<i32>,
 }
 
+// ── md_creator ────────────────────────────────────────────────────────────────
+//
+// The normalized replacement for `md_contribution`: one row per distinct
+// person rather than one per (person, simulation). `md_contribution` is still
+// written alongside these — see `import::upsert_contributor`.
+
+#[derive(
+    Debug, Queryable, Selectable, Identifiable, Serialize, Deserialize, ToSchema,
+)]
+#[diesel(table_name = md_creator)]
+pub struct Creator {
+    pub id: i64,
+    pub name: Option<String>,
+    pub orcid: Option<String>,
+    pub email: Option<String>,
+    pub institution: Option<String>,
+}
+
+#[derive(Debug, Insertable, Deserialize)]
+#[diesel(table_name = md_creator)]
+pub struct NewCreator {
+    pub name: Option<String>,
+    pub orcid: Option<String>,
+    pub email: Option<String>,
+    pub institution: Option<String>,
+}
+
+// ── md_simulation_creator ─────────────────────────────────────────────────────
+
+#[derive(
+    Debug,
+    Queryable,
+    Selectable,
+    Identifiable,
+    Associations,
+    Serialize,
+    Deserialize,
+    ToSchema,
+)]
+#[diesel(table_name = md_simulation_creator)]
+#[diesel(primary_key(simulation_id, creator_id))]
+#[diesel(belongs_to(Simulation))]
+#[diesel(belongs_to(Creator))]
+pub struct SimulationCreator {
+    pub simulation_id: i64,
+    pub creator_id: i64,
+    pub rank: i32,
+}
+
+#[derive(Debug, Insertable, Deserialize)]
+#[diesel(table_name = md_simulation_creator)]
+pub struct NewSimulationCreator {
+    pub simulation_id: i64,
+    pub creator_id: i64,
+    pub rank: i32,
+}
+
 // ── md_external_link ──────────────────────────────────────────────────────────
 
 #[derive(

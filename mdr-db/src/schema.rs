@@ -31,6 +31,28 @@ diesel::table! {
 
 diesel::table! {
     use diesel::sql_types::*;
+    md_creator (id) {
+        id -> Int8,
+        name -> Nullable<Text>,
+        orcid -> Nullable<Varchar>,
+        email -> Nullable<Varchar>,
+        institution -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    /// Composite primary key `(simulation_id, creator_id)` — there is no
+    /// surrogate `id` column. See md-repo-app migration 0275.
+    md_simulation_creator (simulation_id, creator_id) {
+        simulation_id -> Int8,
+        creator_id -> Int8,
+        rank -> Int4,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
     md_external_link (id) {
         id -> Int8,
         url -> Varchar,
@@ -376,6 +398,7 @@ diesel::table! {
 diesel::allow_tables_to_appear_in_same_query!(
     md_collection,
     md_contribution,
+    md_creator,
     md_external_link,
     md_feature_switch,
     md_frontend_download_instance,
@@ -388,6 +411,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     md_replicate,
     md_simulation,
     md_simulation_collection,
+    md_simulation_creator,
     md_simulation_pub,
     md_simulation_uniprot,
     md_software,
