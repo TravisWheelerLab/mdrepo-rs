@@ -5,7 +5,7 @@ use libmdrepo::{
         ENGINE_FILE_FORMATS, EngineFileFormats, STRUCTURE_FILE_EXTS,
         TOPOLOGY_FILE_EXTS, TRAJECTORY_FILE_EXTS, VALID_SOFTWARE,
     },
-    metadata::{AdditionalFile, Contributor, Meta},
+    metadata::{AdditionalFile, Creator, Meta},
 };
 use std::{
     collections::HashSet,
@@ -126,7 +126,7 @@ pub fn generate(args: &GenArgs) -> Result<Meta> {
 
     meta.software_version = "<software_version> (required)".to_string();
 
-    meta.contributors = Some(vec![Contributor {
+    meta.creators = Some(vec![Creator {
         name: "<Your Name>".to_string(),
         institution: Some("<institution> (optional)".to_string()),
         email: Some("<email> (optional)".to_string()),

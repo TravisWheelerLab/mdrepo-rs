@@ -60,7 +60,7 @@ doi = "https://doi.org/10.1038/s43588-024-00627-2"
 url = "https://zenodo.org/records/7711953"
 label = "Zenodo"
 
-[[contributors]]
+[[creators]]
 name = "Alex Leifson"
 orcid = "0000-0003-2819-749X"
 email = "alex@aol.com"

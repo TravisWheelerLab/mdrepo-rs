@@ -129,7 +129,7 @@ fn base_sim(key: &str, orcid: &str) -> ExportSimulation {
         water_type: None,
         water_density: None,
         structure_hash: format!("struct-hash-{key}"),
-        contributors: vec![],
+        creators: vec![],
         original_files: vec![],
         processed_files: vec![],
         replicates: vec![],
@@ -173,7 +173,7 @@ fn import_new_simulation_creates_all_related_rows() {
             url: "https://example.org/import-test".into(),
             label: Some("Example".into()),
         }],
-        contributors: vec![metadata::Contributor {
+        creators: vec![metadata::Creator {
             name: "Ada Lovelace".into(),
             orcid: Some("0000-0002-contributor-new".into()),
             email: None,
@@ -293,14 +293,14 @@ fn import_same_alias_twice_is_idempotent_not_duplicated() {
     // import of the same payload must resolve to the same simulation (via
     // its alias) and refresh each related row rather than inserting a
     // second one -- otherwise every re-run of a landing directory would
-    // duplicate its uploaded files, contributors, ligands, etc.
+    // duplicate its uploaded files, creators, ligands, etc.
     let mut c = conn_or_skip!();
     let orcid = "0000-0001-import-idempotent";
     seed_user_with_orcid(&mut c, "idempotent", orcid);
 
     let make_sim = || ExportSimulation {
         original_files: vec![md_file("orig.pdb", "Structure")],
-        contributors: vec![metadata::Contributor {
+        creators: vec![metadata::Creator {
             name: "Grace Hopper".into(),
             orcid: Some("0000-0002-contributor-idempotent".into()),
             email: None,

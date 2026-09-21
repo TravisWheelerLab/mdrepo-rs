@@ -4,6 +4,34 @@ Notable user-facing changes to `mdr-meta`. Each entry here becomes the
 GitHub release note for that version (see `.github/workflows/release.yml`)
 -- write it before tagging, not after.
 
+## 0.3.26
+
+### `[[contributors]]` is now `[[creators]]`, and the old name still works
+
+The people who generated the simulation data are its **creators**. The
+person who uploaded the submission is its **contributor**, named by
+`lead_contributor_orcid`. Those were the same word in one file, for two
+different people.
+
+```toml
+[[creators]]
+name = "Barbara McClintock"
+orcid = "0000-0002-6897-9608"
+```
+
+- **Nothing you already have needs changing.** `[[contributors]]` is
+  still accepted, exactly as `run_commands` still accepts `commands`.
+  This is not a breaking change and `toml_version` stays at `2`.
+- **`mdr-meta` writes the new name.** `eg`, `gen`, `to-toml` and
+  `to-json` all emit `creators`, and so does exported metadata. Only one
+  spelling is ever written, so a file never carries both.
+- **Validation messages name `creators`** even for a file that spells it
+  `contributors` -- an error will read `creators[1].email: ...` for a
+  `[[contributors]]` table. The position is still right.
+
+Nothing about the fields inside the table changed: `name` is required,
+`orcid`, `email` and `institution` remain optional.
+
 ## 0.3.25
 
 Two corrections to GROMACS validation. Both only **accept** metadata that

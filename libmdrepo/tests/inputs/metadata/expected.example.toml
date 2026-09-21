@@ -49,7 +49,7 @@ concentration_mol_liter = 0.15
 url = "http://aol.com"
 label = "My Link"
 
-[[contributors]]
+[[creators]]
 name = "Barbara McClintock"
 orcid = "0000-0002-6897-9608"
 email = "barb@cshl.edu"

@@ -607,7 +607,7 @@ pub struct ExportSimulation {
     pub structure_hash: String,
 
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub contributors: Vec<metadata::Contributor>,
+    pub creators: Vec<metadata::Creator>,
 
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub original_files: Vec<MdFile>,

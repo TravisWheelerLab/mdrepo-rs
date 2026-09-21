@@ -124,8 +124,8 @@ pub fn import_simulation(
         for trajectory in &sim.replicates {
             upsert_replicate(conn, sim_id, trajectory)?;
         }
-        for (rank, contributor) in sim.contributors.iter().enumerate() {
-            upsert_contributor(conn, sim_id, contributor, rank as i32 + 1)?;
+        for (rank, creator) in sim.creators.iter().enumerate() {
+            upsert_creator_rows(conn, sim_id, creator, rank as i32 + 1)?;
         }
         for ligand in &sim.ligands {
             upsert_ligand(conn, sim_id, ligand)?;
@@ -456,30 +456,30 @@ fn upsert_replicate(
 /// full coalesced 4-tuple: two people sharing a name must not collapse across
 /// the whole repository just because they never gave an ORCID. That is
 /// deliberately stricter here than the per-simulation lookup below.
-fn upsert_contributor(
+fn upsert_creator_rows(
     conn: &mut PgConnection,
     sim_id: i64,
-    contributor: &metadata::Contributor,
+    creator: &metadata::Creator,
     rank: i32,
 ) -> Result<i64> {
-    // ORCID identifies a contributor best, then email, then the name they gave.
-    let key = match (&contributor.orcid, &contributor.email) {
+    // ORCID identifies a creator best, then email, then the name they gave.
+    let key = match (&creator.orcid, &creator.email) {
         (Some(orcid), _) => ContributionKey::Orcid(orcid),
         (None, Some(email)) => ContributionKey::Email(email),
-        (None, None) => ContributionKey::Name(&contributor.name),
+        (None, None) => ContributionKey::Name(&creator.name),
     };
 
-    upsert_creator_link(conn, sim_id, contributor, rank)?;
+    upsert_creator_link(conn, sim_id, creator, rank)?;
 
     if let Some(id) = ops::find_contribution_id(conn, sim_id, key)? {
         ops::update_contribution(
             conn,
             id,
             ContributionUpdate {
-                orcid: Some(contributor.orcid.clone()),
-                name: Some(Some(contributor.name.clone())),
-                email: Some(contributor.email.clone()),
-                institution: Some(contributor.institution.clone()),
+                orcid: Some(creator.orcid.clone()),
+                name: Some(Some(creator.name.clone())),
+                email: Some(creator.email.clone()),
+                institution: Some(creator.institution.clone()),
                 rank: Some(rank),
                 ..Default::default()
             },
@@ -490,10 +490,10 @@ fn upsert_contributor(
     Ok(ops::insert_contribution(
         conn,
         NewContribution {
-            email: contributor.email.clone(),
-            institution: contributor.institution.clone(),
-            name: Some(contributor.name.clone()),
-            orcid: contributor.orcid.clone(),
+            email: creator.email.clone(),
+            institution: creator.institution.clone(),
+            name: Some(creator.name.clone()),
+            orcid: creator.orcid.clone(),
             simulation_id: Some(sim_id),
             rank,
         },
@@ -502,7 +502,7 @@ fn upsert_contributor(
 }
 
 // --------------------------------------------------
-/// The `md_creator` half of `upsert_contributor`.
+/// The `md_creator` half of `upsert_creator_rows`.
 ///
 /// Values are stored exactly as submitted. The lower-casing lives only in the
 /// match, never in what is written, so the first spelling of a person to
@@ -511,16 +511,16 @@ fn upsert_contributor(
 fn upsert_creator_link(
     conn: &mut PgConnection,
     sim_id: i64,
-    contributor: &metadata::Contributor,
+    creator: &metadata::Creator,
     rank: i32,
 ) -> Result<i64> {
     let creator_id = ops::upsert_creator(
         conn,
         NewCreator {
-            name: Some(contributor.name.clone()),
-            orcid: contributor.orcid.clone(),
-            email: contributor.email.clone(),
-            institution: contributor.institution.clone(),
+            name: Some(creator.name.clone()),
+            orcid: creator.orcid.clone(),
+            email: creator.email.clone(),
+            institution: creator.institution.clone(),
         },
     )?;
 

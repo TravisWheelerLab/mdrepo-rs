@@ -314,18 +314,19 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
             .collect::<Vec<_>>()
     });
 
-    let (_, contributors_res) =
+    // Still md_contribution, not md_creator. This is the LAST reader of that
+    // table and switching it is what clears the way to drop it -- but that
+    // change also fixes the author ordering below, so it is kept separate.
+    let (_, creators_res) =
         ops::list_contributions(conn, None, Some(sim_id), true, None, None)?;
 
-    let contributors = (!contributors_res.is_empty())
+    let creators = (!creators_res.is_empty())
         .then(|| {
-            contributors_res
+            creators_res
                 .into_iter()
-                .map(|val| -> Result<metadata::Contributor> {
-                    Ok(metadata::Contributor {
-                        name: val
-                            .name
-                            .ok_or_else(|| anyhow!("contributor has no name"))?,
+                .map(|val| -> Result<metadata::Creator> {
+                    Ok(metadata::Creator {
+                        name: val.name.ok_or_else(|| anyhow!("creator has no name"))?,
                         email: empty_to_none(val.email),
                         institution: empty_to_none(val.institution),
                         orcid: empty_to_none(val.orcid),
@@ -421,7 +422,7 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
             Some(papers)
         },
         external_links,
-        contributors,
+        creators,
     };
 
     Ok(meta)

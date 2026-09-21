@@ -143,9 +143,22 @@ pub struct Meta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_links: Option<Vec<ExternalLink>>,
 
+    /// The people who GENERATED the simulation data.
+    ///
+    /// Renamed from `contributors` so it stops colliding with
+    /// `lead_contributor_orcid`, which is the person who UPLOADED the
+    /// submission -- two different people in the same file under one word.
+    ///
+    /// **The old spelling is still accepted** via the serde alias, the way
+    /// `run_commands` still takes `commands`. Every TOML written before this
+    /// keeps validating, which is the whole point: `Meta` is
+    /// `deny_unknown_fields`, so a bare rename would have turned every one of
+    /// the ~97,809 released files into a hard parse error. Dropping the alias
+    /// later is the breaking step, and it is not taken here.
     #[validate(nested)]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub contributors: Option<Vec<Contributor>>,
+    #[serde(alias = "contributors")]
+    pub creators: Option<Vec<Creator>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_embargoed: Option<bool>,
@@ -577,7 +590,7 @@ impl Meta {
             papers: None,
             dois: Some(vec!["10.1017/j.str.2019.08.032".to_string()]),
             is_embargoed: Some(true),
-            contributors: Some(vec![Contributor {
+            creators: Some(vec![Creator {
                 name: "Barbara McClintock".to_string(),
                 institution: Some("Cold Spring Harbor Laboratory".to_string()),
                 email: Some("barb@cshl.edu".to_string()),
@@ -617,7 +630,7 @@ impl Meta {
             papers: None,
             dois: None,
             is_embargoed: None,
-            contributors: None,
+            creators: None,
         }
     }
 }
@@ -686,7 +699,7 @@ pub struct AdditionalFile {
 
 #[derive(Debug, Clone, Deserialize, Serialize, Validate)]
 #[serde(deny_unknown_fields)]
-pub struct Contributor {
+pub struct Creator {
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
     pub name: String,
 
@@ -1557,12 +1570,9 @@ mod tests {
         assert_eq!(solute.name, "Na+".to_string());
         assert_eq!(solute.concentration_mol_liter, 0.15);
 
-        let contributors = meta
-            .contributors
-            .as_ref()
-            .expect("contributors should be Some");
-        assert_eq!(contributors.len(), 1);
-        let c = contributors.first().expect("contributor should exist");
+        let creators = meta.creators.as_ref().expect("creators should be Some");
+        assert_eq!(creators.len(), 1);
+        let c = creators.first().expect("creator should exist");
         assert_eq!(c.name, "Alex Leifson".to_string());
         assert_eq!(c.orcid, Some("0000-0003-2819-749X".to_string()));
         assert_eq!(c.email, Some("alex@aol.com".to_string()));
@@ -1639,8 +1649,8 @@ mod tests {
             r#"additional_files[1].file_name: value " " invalid"#,
             r#"additional_files[1].file_type: value " " invalid"#,
             r#"collections: value ["   "] invalid"#,
-            r#"contributors[1].email: value "alex" invalid"#,
-            r#"contributors[1].orcid: value "0000-2819-749X" invalid"#,
+            r#"creators[1].email: value "alex" invalid"#,
+            r#"creators[1].orcid: value "0000-2819-749X" invalid"#,
             r#"dois: value ["1038/s43588-024-00627-2"] invalid"#,
             r#"external_links[1].label: value " " invalid"#,
             r#"external_links[1].url: value "zenodo.org/records/7711953" invalid"#,
@@ -1943,8 +1953,39 @@ mod tests {
     }
 
     #[test]
+    fn creators_accepts_the_legacy_contributors_spelling() {
+        // The whole reason the rename is safe. Meta is deny_unknown_fields,
+        // so without the alias every TOML written before the rename -- all
+        // ~97,809 released ones -- becomes a hard parse error rather than
+        // being quietly ignored.
+        let table = "[[contributors]]\nname = \"Ada Lovelace\"";
+        let meta = Meta::from_toml(&minimal_plus(table))
+            .expect("the old spelling must still parse");
+        let creators = meta.creators.expect("it must land in `creators`");
+        assert_eq!(creators.len(), 1);
+        assert_eq!(creators[0].name, "Ada Lovelace");
+    }
+
+    #[test]
+    fn creators_serializes_under_the_new_name_only() {
+        // Reading either spelling is the compatibility promise; WRITING both
+        // would put two keys for one concept into exported metadata.
+        let table = "[[contributors]]\nname = \"Ada Lovelace\"";
+        let meta = Meta::from_toml(&minimal_plus(table)).expect("parse");
+        let out = toml::to_string(&meta).expect("serialize");
+        assert!(out.contains("[[creators]]"), "should write the new name");
+        assert!(
+            !out.contains("[[contributors]]"),
+            "should not write the old name: {out}"
+        );
+    }
+
+    #[test]
     fn test_stray_key_rejected_in_every_nested_table() {
         for table in [
+            "[[creators]]\nname = \"A\"\nnope = 1",
+            // Via the legacy alias as well -- deny_unknown_fields has to keep
+            // biting inside a table reached by its old name.
             "[[contributors]]\nname = \"A\"\nnope = 1",
             "[[solutes]]\nname = \"NaCl\"\nconcentration_mol_liter = 0.1\nnope = 1",
             "[water]\nmodel = \"TIP3P\"\ndensity_kg_m3 = 1000.0\nnope = 1",

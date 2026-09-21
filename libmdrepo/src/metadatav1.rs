@@ -275,11 +275,14 @@ impl MetaV1 {
             }
         }
 
-        let contributors: Vec<_> = self
+        // v1 called these contributors; v2 calls them creators. The v1
+        // struct and field keep their own name -- they describe the old
+        // format, which does not change.
+        let creators: Vec<_> = self
             .contributors
             .iter()
             .flat_map(|vals| vals.iter())
-            .map(|v| metadata::Contributor {
+            .map(|v| metadata::Creator {
                 name: v.name.clone(),
                 email: v.email.clone(),
                 institution: v.institution.clone(),
@@ -341,7 +344,7 @@ impl MetaV1 {
             ligands: non_empty(ligands),
             solutes: non_empty(solutes),
             papers: non_empty(papers),
-            contributors: non_empty(contributors),
+            creators: non_empty(creators),
         })
     }
 }
@@ -576,12 +579,11 @@ mod metav1_tests {
                 .starts_with("8 ns simulation of the 5aom PDB entry (P04637)")
         );
 
-        let contributors = meta_v2.contributors;
-        assert!(contributors.is_some());
+        let creators = meta_v2.creators;
+        assert!(creators.is_some());
 
-        let contributors =
-            contributors.ok_or_else(|| anyhow::anyhow!("no contributors"))?;
-        assert_eq!(contributors.len(), 14);
+        let creators = creators.ok_or_else(|| anyhow::anyhow!("no creators"))?;
+        assert_eq!(creators.len(), 14);
 
         Ok(())
     }

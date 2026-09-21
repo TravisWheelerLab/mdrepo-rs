@@ -1446,7 +1446,7 @@ pub fn make_import_json(
         water_type,
         water_density,
         structure_hash,
-        contributors: args.meta.contributors.unwrap_or_default(),
+        creators: args.meta.creators.unwrap_or_default(),
         original_files,
         processed_files,
         ligands,

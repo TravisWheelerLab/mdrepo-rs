@@ -20,7 +20,7 @@ file_type = "Other"
 file_name = "add2.xyz"
 file_type = "Other"
 
-[[contributors]]
+[[creators]]
 name = "<Your Name>"
 orcid = "<orcid> (optional)"
 email = "<email> (optional)"
