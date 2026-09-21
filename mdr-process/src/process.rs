@@ -2654,8 +2654,7 @@ CRYST1  100.700  100.700  100.700 109.47 109.47 109.47 P 1           1
     // have are vacuum runs with no CRYST1 to drop -- and this is the guard
     // against the first one that arrives with a box.
     #[test]
-    fn rename_keeps_every_record_it_was_not_asked_to_change()
-    -> anyhow::Result<()> {
+    fn rename_keeps_every_record_it_was_not_asked_to_change() -> anyhow::Result<()> {
         let dir = tempdir()?;
         let original = "\
 TITLE     Generic title t=   0.00000 step= 0
@@ -2710,16 +2709,12 @@ END
     #[test]
     fn rename_bead_leaves_lines_it_was_not_asked_about() {
         let serials: HashSet<i32> = [1].into_iter().collect();
-        let atom =
-            "ATOM      1 A    ALA A   1       0.000   0.000   0.000  1.00";
-        let other =
-            "ATOM      2 A    ALA A   2       0.000   0.000   0.000  1.00";
+        let atom = "ATOM      1 A    ALA A   1       0.000   0.000   0.000  1.00";
+        let other = "ATOM      2 A    ALA A   2       0.000   0.000   0.000  1.00";
 
         assert_eq!(
             rename_bead_to_ca(atom, &serials).as_deref(),
-            Some(
-                "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00"
-            )
+            Some("ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00")
         );
         assert_eq!(rename_bead_to_ca(other, &serials), None, "wrong serial");
         assert_eq!(rename_bead_to_ca("END   ", &serials), None, "not an atom");
