@@ -113,53 +113,13 @@ pub fn upsert_collection(
 
 // ── md_contribution ───────────────────────────────────────────────────────────
 
-fn contribution_query(
-    search: Option<&str>,
-    sim_id: Option<i64>,
-) -> md_contribution::BoxedQuery<'static, Pg> {
-    use crate::schema::md_contribution::dsl::*;
-    let mut q = md_contribution.into_boxed();
-    if let Some(t) = search {
-        let p = format!("%{t}%");
-        q = q.filter(name.ilike(p.clone()).or(email.ilike(p)));
-    }
-    if let Some(s) = sim_id {
-        q = q.filter(simulation_id.eq(s));
-    }
-    q
-}
-
-pub fn list_contributions(
-    conn: &mut PgConnection,
-    search: Option<String>,
-    sim_id: Option<i64>,
-    all: bool,
-    lim: Option<i64>,
-    offset: Option<i64>,
-) -> QueryResult<(i64, Vec<Contribution>)> {
-    use crate::schema::md_contribution::dsl::id;
-    let count = contribution_query(search.as_deref(), sim_id)
-        .select(count_star())
-        .first(conn)?;
-    let mut q = contribution_query(search.as_deref(), sim_id)
-        .order(id.desc())
-        .select(Contribution::as_select());
-    if !all {
-        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
-    }
-    let results = q.load(conn)?;
-    Ok((count, results))
-}
-
-pub fn get_contribution(
-    conn: &mut PgConnection,
-    rid: i64,
-) -> QueryResult<Contribution> {
-    md_contribution::table
-        .find(rid)
-        .select(Contribution::as_select())
-        .first(conn)
-}
+// NOTE: nothing READS md_contribution for its own sake any more.
+// `contribution_query`, `list_contributions` and `get_contribution` went
+// when mdr-export moved to `list_creators_for_simulation`. What remains is
+// the write path: insert/update here, plus `find_contribution_id` further
+// down, which reads only to decide insert-vs-update inside the upsert.
+// All of it goes with mdr-process's dual-write, and then the table can be
+// dropped.
 
 pub fn insert_contribution(
     conn: &mut PgConnection,
@@ -187,6 +147,35 @@ pub fn delete_contribution(conn: &mut PgConnection, rid: i64) -> QueryResult<usi
 }
 
 // ── md_creator / md_simulation_creator ───────────────────────────────────────
+
+/// Every creator of a simulation, in author order.
+///
+/// Ordered by `(rank, creator_id)` to match md-repo-app's
+/// `SimulationCreator.Meta.ordering`, so the exported metadata and the API
+/// list the same people in the same order. The creator_id tiebreak is not
+/// decoration: ranks are NOT unique per simulation (simulation 352 has three
+/// rows at rank 1) and md_simulation_creator has no surrogate id, so without
+/// it Postgres may order those differently between calls.
+///
+/// This replaced a read of md_contribution that ordered by `id DESC`, which
+/// put author lists in the exported TOML in REVERSE -- 82,143 of 104,122
+/// simulations were affected.
+pub fn list_creators_for_simulation(
+    conn: &mut PgConnection,
+    sim_id: i64,
+) -> QueryResult<Vec<Creator>> {
+    md_simulation_creator::table
+        .inner_join(
+            md_creator::table.on(md_creator::id.eq(md_simulation_creator::creator_id)),
+        )
+        .filter(md_simulation_creator::simulation_id.eq(sim_id))
+        .order((
+            md_simulation_creator::rank.asc(),
+            md_simulation_creator::creator_id.asc(),
+        ))
+        .select(Creator::as_select())
+        .load(conn)
+}
 
 /// Creator id for an exact identity, matched the way `uniq_creator_identity`
 /// matches.

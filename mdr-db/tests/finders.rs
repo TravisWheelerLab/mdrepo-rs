@@ -543,6 +543,97 @@ fn upsert_creator_dedups_on_the_coalesced_identity() {
 }
 
 #[test]
+fn creators_for_a_simulation_come_back_in_author_order() {
+    // The bug this replaced: mdr-export read md_contribution ordered by
+    // `id DESC`, so exported author lists ran BACKWARDS -- 82,143 of 104,122
+    // simulations. Insertion order here is deliberately neither rank order
+    // nor its reverse, so a query that forgot to order at all, or ordered by
+    // id either way, fails.
+    let mut c = conn_or_skip!();
+    let sim = seed_sim(&mut c);
+
+    let mk = |c: &mut PgConnection, name: &str| {
+        ops::upsert_creator(
+            c,
+            NewCreator {
+                name: Some(name.into()),
+                orcid: None,
+                email: None,
+                institution: None,
+            },
+        )
+        .unwrap()
+    };
+    let second = mk(&mut c, "Second Author");
+    let third = mk(&mut c, "Third Author");
+    let first = mk(&mut c, "First Author");
+
+    for (creator, rank) in [(second, 2), (third, 3), (first, 1)] {
+        ops::upsert_simulation_creator(
+            &mut c,
+            NewSimulationCreator {
+                simulation_id: sim,
+                creator_id: creator,
+                rank,
+            },
+        )
+        .unwrap();
+    }
+
+    let names: Vec<String> = ops::list_creators_for_simulation(&mut c, sim)
+        .unwrap()
+        .into_iter()
+        .map(|r| r.name.unwrap_or_default())
+        .collect();
+
+    assert_eq!(
+        names,
+        vec!["First Author", "Second Author", "Third Author"],
+        "creators must come back by rank, not by id"
+    );
+}
+
+#[test]
+fn creators_for_a_simulation_are_scoped_and_stable() {
+    let mut c = conn_or_skip!();
+    let sim = seed_sim(&mut c);
+    let other = seed_sim(&mut c);
+
+    let ada = ops::upsert_creator(
+        &mut c,
+        NewCreator {
+            name: Some("Ada Lovelace".into()),
+            orcid: Some("0000-9-ada".into()),
+            email: None,
+            institution: None,
+        },
+    )
+    .unwrap();
+    ops::upsert_simulation_creator(
+        &mut c,
+        NewSimulationCreator {
+            simulation_id: sim,
+            creator_id: ada,
+            rank: 1,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        ops::list_creators_for_simulation(&mut c, sim)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        ops::list_creators_for_simulation(&mut c, other)
+            .unwrap()
+            .is_empty(),
+        "a creator linked to one simulation must not appear under another"
+    );
+}
+
+#[test]
 fn upsert_simulation_creator_relinks_rather_than_duplicating() {
     let mut c = conn_or_skip!();
     let sim = seed_sim(&mut c);
