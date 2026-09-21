@@ -538,7 +538,7 @@ pub struct PubUpdate {
 #[diesel(table_name = md_simulation)]
 #[diesel(belongs_to(Software))]
 #[diesel(belongs_to(Ticket, foreign_key = md_repo_ticket_id))]
-#[diesel(belongs_to(User, foreign_key = created_by_id))]
+#[diesel(belongs_to(User, foreign_key = contributor_id))]
 #[diesel(belongs_to(Pdb))]
 pub struct Simulation {
     pub id: i64,
@@ -559,7 +559,7 @@ pub struct Simulation {
     pub rmsd_values: Option<Vec<f64>>,
     pub rmsf_values: Option<Vec<f64>>,
     pub is_placeholder: bool,
-    pub created_by_id: Option<i64>,
+    pub contributor_id: Option<i64>,
     pub unique_file_hash_string: Option<String>,
     pub forcefield: Option<String>,
     pub forcefield_comments: Option<String>,
@@ -593,7 +593,7 @@ pub struct NewSimulation {
     pub integration_timestep_fs: Option<i32>,
     pub creation_date: DateTime<Utc>,
     pub software_id: Option<i64>,
-    pub created_by_id: Option<i64>,
+    pub contributor_id: Option<i64>,
     pub unique_file_hash_string: Option<String>,
     pub rmsd_values: Option<Vec<f64>>,
     pub rmsf_values: Option<Vec<f64>>,
@@ -628,7 +628,7 @@ pub struct SimulationUpdate {
     pub sampling_frequency_ps: Option<Option<f64>>,
     pub integration_timestep_fs: Option<Option<i32>>,
     pub software_id: Option<Option<i64>>,
-    pub created_by_id: Option<Option<i64>>,
+    pub contributor_id: Option<Option<i64>>,
     pub unique_file_hash_string: Option<Option<String>>,
     pub rmsd_values: Option<Option<Vec<f64>>>,
     pub rmsf_values: Option<Option<Vec<f64>>>,
@@ -856,7 +856,7 @@ pub struct SubmissionEventUpdate {
     ToSchema,
 )]
 #[diesel(table_name = md_ticket)]
-#[diesel(belongs_to(User, foreign_key = created_by_id))]
+#[diesel(belongs_to(User, foreign_key = created_by_id))] // md_ticket keeps created_by_id
 pub struct Ticket {
     pub id: i64,
     pub created_at: DateTime<Utc>,

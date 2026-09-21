@@ -2303,19 +2303,23 @@ pub fn find_simulation_pub_id(
         .optional()
 }
 
-/// Simulation id by `(alias, created_by_id)` — the first `get_simulation` upsert
-/// probe. A `None` creator matches a row whose `created_by_id IS NULL` (correct
-/// per-user alias semantics; the Python's `created_by_id = NULL` never matched).
+/// Simulation id by `(alias, contributor_id)` — the first `get_simulation`
+/// upsert probe. A `None` contributor matches a row whose `contributor_id IS
+/// NULL` (correct per-user alias semantics; the Python's
+/// `contributor_id = NULL` never matched).
+///
+/// The contributor is the UPLOADER. Not the simulation's creators, who are in
+/// md_creator and never took part in this lookup.
 pub fn find_simulation_id_by_alias(
     conn: &mut PgConnection,
     sim_alias: &str,
-    created_by: Option<i64>,
+    contributor: Option<i64>,
 ) -> QueryResult<Option<i64>> {
     use crate::schema::md_simulation::dsl::*;
     let mut q = md_simulation.filter(alias.eq(sim_alias)).into_boxed();
-    q = match created_by {
-        Some(u) => q.filter(created_by_id.eq(u)),
-        None => q.filter(created_by_id.is_null()),
+    q = match contributor {
+        Some(u) => q.filter(contributor_id.eq(u)),
+        None => q.filter(contributor_id.is_null()),
     };
     q.select(id).first::<i64>(conn).optional()
 }

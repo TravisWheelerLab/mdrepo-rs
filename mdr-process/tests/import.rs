@@ -212,7 +212,7 @@ fn import_new_simulation_creates_all_related_rows() {
         .expect("import should succeed");
 
     let row = ops::get_simulation(&mut c, sim_id).expect("simulation row exists");
-    assert_eq!(row.created_by_id, Some(user_id));
+    assert_eq!(row.contributor_id, Some(user_id));
     assert!(
         row.is_placeholder,
         "a freshly imported sim is a placeholder"

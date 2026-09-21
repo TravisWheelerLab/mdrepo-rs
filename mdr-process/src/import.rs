@@ -204,7 +204,7 @@ fn upsert_simulation(
             sim_id,
             SimulationUpdate {
                 software_id: Some(Some(software_id)),
-                created_by_id: Some(user_id),
+                contributor_id: Some(user_id),
                 unique_file_hash_string: Some(Some(
                     sim.unique_file_hash_string.clone(),
                 )),
@@ -244,7 +244,7 @@ fn upsert_simulation(
         conn,
         NewSimulation {
             software_id: Some(software_id),
-            created_by_id: user_id,
+            contributor_id: user_id,
             unique_file_hash_string: Some(sim.unique_file_hash_string.clone()),
             alias: sim.alias.clone(),
             description: sim.description.clone(),

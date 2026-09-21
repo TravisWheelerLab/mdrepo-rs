@@ -179,7 +179,7 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
         _ => None,
     };
 
-    let lead_contributor_orcid = match sim.created_by_id {
+    let lead_contributor_orcid = match sim.contributor_id {
         Some(user_id) => {
             let (_count, res) = ops::list_social_accounts(
                 conn,

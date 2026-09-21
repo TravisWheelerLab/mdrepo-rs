@@ -1455,7 +1455,7 @@ CREATE TABLE public.md_simulation (
     rmsd_values double precision[],
     rmsf_values double precision[],
     is_placeholder boolean NOT NULL,
-    created_by_id bigint,
+    contributor_id bigint,
     unique_file_hash_string text,
     forcefield text,
     forcefield_comments text,
@@ -2622,7 +2622,7 @@ ALTER TABLE ONLY public.md_replicate
 --
 
 ALTER TABLE ONLY public.md_simulation
-    ADD CONSTRAINT unique_simulation_alias_per_creator UNIQUE (alias, created_by_id);
+    ADD CONSTRAINT unique_simulation_alias_per_creator UNIQUE (alias, contributor_id);
 
 
 --
@@ -2935,10 +2935,10 @@ CREATE INDEX md_repo_app_pub_doi_2fecaec8_like ON public.md_pub USING btree (doi
 
 
 --
--- Name: md_repo_app_simulation_created_by_id_bf6777bb; Type: INDEX; Schema: public; Owner: -
+-- Name: md_repo_app_simulation_contributor_id_bf6777bb; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX md_repo_app_simulation_created_by_id_bf6777bb ON public.md_simulation USING btree (created_by_id);
+CREATE INDEX md_repo_app_simulation_contributor_id_bf6777bb ON public.md_simulation USING btree (contributor_id);
 
 
 --
@@ -3411,11 +3411,11 @@ ALTER TABLE ONLY public.md_ticket
 
 
 --
--- Name: md_simulation md_repo_app_simulati_created_by_id_bf6777bb_fk_md_repo_a; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: md_simulation md_repo_app_simulati_contributor_id_bf6777bb_fk_md_repo_a; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.md_simulation
-    ADD CONSTRAINT md_repo_app_simulati_created_by_id_bf6777bb_fk_md_repo_a FOREIGN KEY (created_by_id) REFERENCES public.md_user(id) DEFERRABLE INITIALLY DEFERRED;
+    ADD CONSTRAINT md_repo_app_simulati_contributor_id_bf6777bb_fk_md_repo_a FOREIGN KEY (contributor_id) REFERENCES public.md_user(id) DEFERRABLE INITIALLY DEFERRED;
 
 
 --

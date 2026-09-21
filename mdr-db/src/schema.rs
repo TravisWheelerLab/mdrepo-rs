@@ -177,7 +177,7 @@ diesel::table! {
         rmsd_values -> Nullable<Array<Float8>>,
         rmsf_values -> Nullable<Array<Float8>>,
         is_placeholder -> Bool,
-        created_by_id -> Nullable<Int8>,
+        contributor_id -> Nullable<Int8>,
         unique_file_hash_string -> Nullable<Text>,
         forcefield -> Nullable<Text>,
         forcefield_comments -> Nullable<Text>,

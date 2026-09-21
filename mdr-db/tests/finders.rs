@@ -111,7 +111,7 @@ fn seed_sim_with_flags(
             integration_timestep_fs: None,
             creation_date: Utc::now(),
             software_id: None,
-            created_by_id: None,
+            contributor_id: None,
             unique_file_hash_string: None,
             rmsd_values: None,
             rmsf_values: None,
@@ -239,7 +239,7 @@ fn set_sim_keys(
         sim_id,
         SimulationUpdate {
             alias: Some(alias.map(String::from)),
-            created_by_id: Some(created_by),
+            contributor_id: Some(created_by),
             unique_file_hash_string: Some(hash.map(String::from)),
             ..Default::default()
         },
