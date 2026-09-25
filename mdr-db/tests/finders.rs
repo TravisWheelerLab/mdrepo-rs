@@ -141,7 +141,9 @@ fn seed_processed_file(c: &mut PgConnection, sim_id: i64, name: &str) -> i64 {
     ops::insert_processed_file(
         c,
         NewProcessedFile {
-            file_type: "psf".into(),
+            // md_processed_file.file_type is a foreign key to
+            // md_processed_file_type (md-repo-app migration 0280).
+            file_type: "Processed topology".into(),
             local_file_path: format!("/data/{name}"),
             filename: name.into(),
             simulation_id: sim_id,

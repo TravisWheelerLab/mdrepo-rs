@@ -180,7 +180,7 @@ fn import_new_simulation_creates_all_related_rows() {
             institution: None,
         }],
         original_files: vec![md_file("orig.pdb", "Structure")],
-        processed_files: vec![md_file("proc1.nc", "Trajectory")],
+        processed_files: vec![md_file("proc1.nc", "Processed trajectory")],
         replicates: vec!["traj1.xtc".into()],
         ligands: vec![ResolvedLigand {
             name: "TestLigand".into(),
@@ -381,7 +381,7 @@ fn reprocess_replace_original_files_removes_old_uploaded_and_processed_files() {
 
     let first_sim = ExportSimulation {
         original_files: vec![md_file("orig.pdb", "Structure")],
-        processed_files: vec![md_file("proc1.nc", "Trajectory")],
+        processed_files: vec![md_file("proc1.nc", "Processed trajectory")],
         ..base_sim("replace", orcid)
     };
     let sim_id = import::import_simulation(&mut c, &first_sim, &ImportOpts::default())
@@ -389,7 +389,7 @@ fn reprocess_replace_original_files_removes_old_uploaded_and_processed_files() {
 
     let second_sim = ExportSimulation {
         original_files: vec![md_file("orig2.pdb", "Structure")],
-        processed_files: vec![md_file("proc2.nc", "Trajectory")],
+        processed_files: vec![md_file("proc2.nc", "Processed trajectory")],
         ..base_sim("replace", orcid)
     };
     let opts = ImportOpts {
@@ -435,7 +435,7 @@ fn reprocess_without_replace_original_files_keeps_uploaded_files() {
 
     let first_sim = ExportSimulation {
         original_files: vec![md_file("orig.pdb", "Structure")],
-        processed_files: vec![md_file("proc1.nc", "Trajectory")],
+        processed_files: vec![md_file("proc1.nc", "Processed trajectory")],
         ..base_sim("keep", orcid)
     };
     let sim_id = import::import_simulation(&mut c, &first_sim, &ImportOpts::default())
@@ -444,7 +444,7 @@ fn reprocess_without_replace_original_files_keeps_uploaded_files() {
     // A reprocess payload that lists no original files -- the normal shape
     // when only the processed outputs changed.
     let second_sim = ExportSimulation {
-        processed_files: vec![md_file("proc2.nc", "Trajectory")],
+        processed_files: vec![md_file("proc2.nc", "Processed trajectory")],
         ..base_sim("keep", orcid)
     };
     let opts = ImportOpts {

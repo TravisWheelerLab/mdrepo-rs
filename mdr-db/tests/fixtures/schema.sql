@@ -11,6 +11,7 @@
 --   pg_dump --schema-only --no-owner --no-privileges \
 --     > mdr-db/tests/fixtures/schema.sql
 --   # then re-add this header block.
+--   # and the md_processed_file_type rows (see the block near the end).
 --
 --
 -- PostgreSQL database dump
@@ -3653,6 +3654,35 @@ ALTER TABLE ONLY public.md_simulation_creator
 ALTER TABLE ONLY public.md_simulation_creator
     ADD CONSTRAINT md_simulation_creator_creator_id_12d0500b_fk_md_creator_id
     FOREIGN KEY (creator_id) REFERENCES public.md_creator(id) DEFERRABLE INITIALLY DEFERRED;
+
+-- md_processed_file_type and its foreign key: md-repo-app migration 0280,
+-- added by hand until staging has it. A --schema-only regeneration brings
+-- back the table and constraint but NOT these rows, and without them every
+-- md_processed_file insert fails; re-add them after regenerating.
+
+CREATE TABLE public.md_processed_file_type (
+    name character varying(40) NOT NULL
+);
+
+ALTER TABLE ONLY public.md_processed_file_type
+    ADD CONSTRAINT md_processed_file_type_pkey PRIMARY KEY (name);
+
+INSERT INTO public.md_processed_file_type (name) VALUES
+    ('Full Trajectories (All)'),
+    ('Minimal structure'),
+    ('Minimal topology'),
+    ('Minimal Trajectories (All)'),
+    ('Minimal trajectory'),
+    ('Preview image'),
+    ('Processed structure'),
+    ('Processed topology'),
+    ('Processed trajectory'),
+    ('Sampled minimal trajectory'),
+    ('Sampled Trajectories (All)');
+
+ALTER TABLE ONLY public.md_processed_file
+    ADD CONSTRAINT md_processed_file_file_type_fk
+    FOREIGN KEY (file_type) REFERENCES public.md_processed_file_type(name);
 
 --
 -- PostgreSQL database dump complete
