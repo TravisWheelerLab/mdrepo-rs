@@ -697,6 +697,55 @@ pub struct AdditionalFile {
     pub description: Option<String>,
 }
 
+impl AdditionalFile {
+    /// The file type to store for this file, and the description to store
+    /// with it.
+    ///
+    /// `file_type` is free text in the TOML, but md_uploaded_file.file_type is
+    /// a foreign key to a fixed set, so an unrecognized value must not reach
+    /// the database. A declared type matching one of
+    /// `constants::ADDITIONAL_FILE_TYPES`, ignoring case, spacing, hyphens and
+    /// underscores, is stored as that type with the description unchanged.
+    /// Anything else is stored as its synonym or as Miscellaneous, and the
+    /// submitter's wording is appended to the description so it is not lost.
+    pub fn stored_type_and_description(&self) -> (&'static str, Option<String>) {
+        fn key(s: &str) -> String {
+            s.replace(['-', '_'], " ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase()
+        }
+
+        let declared = key(&self.file_type);
+        if let Some(known) = constants::ADDITIONAL_FILE_TYPES
+            .iter()
+            .find(|t| key(t) == declared)
+        {
+            return (known, self.description.clone());
+        }
+
+        let stored = constants::ADDITIONAL_FILE_TYPE_SYNONYMS
+            .iter()
+            .find(|(synonym, _)| key(synonym) == declared)
+            .map_or(constants::ADDITIONAL_FILE_TYPE_FALLBACK, |(_, known)| known);
+
+        let wording = self.file_type.trim();
+        let description = match self.description.as_deref().map(str::trim) {
+            Some(d) if !d.is_empty() => {
+                let note = format!(" (declared file type: {wording})");
+                let room = constants::UPLOADED_FILE_DESCRIPTION_MAX_CHARS
+                    .saturating_sub(note.chars().count());
+                let d: String = d.chars().take(room).collect();
+                format!("{d}{note}")
+            }
+            _ => format!("Declared file type: {wording}"),
+        };
+
+        (stored, Some(description))
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, Validate)]
 #[serde(deny_unknown_fields)]
 pub struct Creator {
@@ -1516,6 +1565,88 @@ mod tests {
     use anyhow::Result;
     use std::path::PathBuf;
     use validator::Validate;
+
+    fn additional(file_type: &str, description: Option<&str>) -> AdditionalFile {
+        AdditionalFile {
+            file_name: "f".to_string(),
+            file_type: file_type.to_string(),
+            description: description.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn known_additional_file_type_is_stored_as_is() {
+        for known in constants::ADDITIONAL_FILE_TYPES {
+            assert_eq!(
+                additional(known, Some("notes")).stored_type_and_description(),
+                (*known, Some("notes".to_string()))
+            );
+        }
+    }
+
+    #[test]
+    fn known_type_matches_ignoring_case_spacing_and_hyphens() {
+        // Only the spelling differs, so the wording is not worth keeping.
+        for declared in [
+            "structure",
+            "  Topology ",
+            "USER-DEFINED FILE",
+            "user_defined   file",
+        ] {
+            let (stored, description) =
+                additional(declared, None).stored_type_and_description();
+            assert!(
+                constants::ADDITIONAL_FILE_TYPES.contains(&stored),
+                "{declared}"
+            );
+            assert_eq!(description, None, "{declared}");
+        }
+    }
+
+    #[test]
+    fn synonym_is_stored_as_its_type_with_the_wording_kept() {
+        // The two values sim 21342 declared.
+        assert_eq!(
+            additional(".tpr format", None).stored_type_and_description(),
+            (
+                "Topology",
+                Some("Declared file type: .tpr format".to_string())
+            )
+        );
+        assert_eq!(
+            additional(".gro format", Some("Coordinates"))
+                .stored_type_and_description(),
+            (
+                "Structure",
+                Some("Coordinates (declared file type: .gro format)".to_string())
+            )
+        );
+    }
+
+    #[test]
+    fn unknown_type_is_stored_as_miscellaneous_with_the_wording_kept() {
+        assert_eq!(
+            additional("Energy file", Some("  GROMACS energies "))
+                .stored_type_and_description(),
+            (
+                "Miscellaneous",
+                Some("GROMACS energies (declared file type: Energy file)".to_string())
+            )
+        );
+    }
+
+    #[test]
+    fn kept_wording_never_overflows_the_description_column() {
+        let long = "x".repeat(constants::UPLOADED_FILE_DESCRIPTION_MAX_CHARS);
+        let (_, description) =
+            additional("Energy file", Some(&long)).stored_type_and_description();
+        let description = description.unwrap();
+        assert_eq!(
+            description.chars().count(),
+            constants::UPLOADED_FILE_DESCRIPTION_MAX_CHARS
+        );
+        assert!(description.ends_with(" (declared file type: Energy file)"));
+    }
 
     #[test]
     fn meta_toml_ok() -> Result<()> {

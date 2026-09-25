@@ -1659,12 +1659,14 @@ fn collect_original_files(
             let path = input_dir.join(&file.file_name);
             let md5_sum = get_md5(&path)?;
             if !files.iter().any(|f| f.md5_sum == md5_sum) {
+                // The declared type is free text; store a known one.
+                let (file_type, description) = file.stored_type_and_description();
                 files.push(MdFile {
                     name: file.file_name.to_string(),
-                    file_type: file.file_type.to_string(),
+                    file_type: file_type.to_string(),
                     size: path.metadata()?.len(),
                     md5_sum,
-                    description: file.description.clone(),
+                    description,
                     is_primary: None,
                 });
             }

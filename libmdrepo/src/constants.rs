@@ -319,3 +319,34 @@ pub static VALID_SOFTWARE: Lazy<BTreeMap<&'static str, &'static [&'static str]>>
             ("SPONGE", SPONGE_VERSIONS),
         ])
     });
+
+// The additional-file types the TOML spec names (`toml_spec.md`,
+// `[[additional_files]].file_type`). The spec calls the field "text, e.g.", so
+// a submitter may write anything; mdr-process stores one of these instead
+// (see `AdditionalFile::stored_type_and_description`), and
+// md_uploaded_file.file_type is a foreign key to this set plus the pipeline's
+// own "Metadata" and "Trajectories (All)".
+pub const ADDITIONAL_FILE_TYPES: &[&str] = &[
+    "Input",
+    "Structure",
+    "Trajectory",
+    "Topology",
+    "Periodic boundary condition",
+    "Restart",
+    "Logs",
+    "Checkpoint",
+    "Parameters",
+    "User defined file",
+    "Miscellaneous",
+];
+
+// Declared additional-file types seen in prod that name one of the above in
+// other words (sim 21342, 2026-09-24).
+pub const ADDITIONAL_FILE_TYPE_SYNONYMS: &[(&str, &str)] =
+    &[(".tpr format", "Topology"), (".gro format", "Structure")];
+
+// Where an additional file with an unrecognized declared type is stored.
+pub const ADDITIONAL_FILE_TYPE_FALLBACK: &str = "Miscellaneous";
+
+// md_uploaded_file.description is varchar(1000).
+pub const UPLOADED_FILE_DESCRIPTION_MAX_CHARS: usize = 1000;

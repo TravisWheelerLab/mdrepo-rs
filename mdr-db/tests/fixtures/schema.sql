@@ -11,7 +11,8 @@
 --   pg_dump --schema-only --no-owner --no-privileges \
 --     > mdr-db/tests/fixtures/schema.sql
 --   # then re-add this header block.
---   # and the md_processed_file_type rows (see the block near the end).
+--   # and the md_processed_file_type and md_uploaded_file_type rows (see the
+--   # blocks near the end).
 --
 --
 -- PostgreSQL database dump
@@ -3683,6 +3684,36 @@ INSERT INTO public.md_processed_file_type (name) VALUES
 ALTER TABLE ONLY public.md_processed_file
     ADD CONSTRAINT md_processed_file_file_type_fk
     FOREIGN KEY (file_type) REFERENCES public.md_processed_file_type(name);
+
+-- md_uploaded_file_type and its foreign key: md-repo-app migration 0281,
+-- added by hand for the same reason, and its rows are likewise not in a
+-- --schema-only regeneration.
+
+CREATE TABLE public.md_uploaded_file_type (
+    name character varying(32) NOT NULL
+);
+
+ALTER TABLE ONLY public.md_uploaded_file_type
+    ADD CONSTRAINT md_uploaded_file_type_pkey PRIMARY KEY (name);
+
+INSERT INTO public.md_uploaded_file_type (name) VALUES
+    ('Checkpoint'),
+    ('Input'),
+    ('Logs'),
+    ('Metadata'),
+    ('Miscellaneous'),
+    ('Parameters'),
+    ('Periodic boundary condition'),
+    ('Restart'),
+    ('Structure'),
+    ('Topology'),
+    ('Trajectories (All)'),
+    ('Trajectory'),
+    ('User defined file');
+
+ALTER TABLE ONLY public.md_uploaded_file
+    ADD CONSTRAINT md_uploaded_file_file_type_fk
+    FOREIGN KEY (file_type) REFERENCES public.md_uploaded_file_type(name);
 
 --
 -- PostgreSQL database dump complete

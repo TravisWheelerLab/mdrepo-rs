@@ -161,7 +161,9 @@ fn seed_uploaded_file(c: &mut PgConnection, sim_id: i64, name: &str) -> i64 {
         c,
         NewUploadedFile {
             filename: name.into(),
-            file_type: "psf".into(),
+            // md_uploaded_file.file_type is a foreign key to
+            // md_uploaded_file_type (md-repo-app migration 0281).
+            file_type: "Topology".into(),
             simulation_id: sim_id,
             description: None,
             local_file_path: format!("/data/{name}"),
