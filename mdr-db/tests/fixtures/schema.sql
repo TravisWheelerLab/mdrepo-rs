@@ -3715,6 +3715,17 @@ ALTER TABLE ONLY public.md_uploaded_file
     ADD CONSTRAINT md_uploaded_file_file_type_fk
     FOREIGN KEY (file_type) REFERENCES public.md_uploaded_file_type(name);
 
+-- md5_hash format checks: md-repo-app migration 0281. Null stays allowed
+-- until the missing hashes are backfilled.
+
+ALTER TABLE public.md_processed_file
+    ADD CONSTRAINT md_processed_file_md5_hash_format
+    CHECK (((md5_hash IS NULL) OR ((md5_hash)::text ~ '^[0-9a-f]{32}$'::text)));
+
+ALTER TABLE public.md_uploaded_file
+    ADD CONSTRAINT md_uploaded_file_md5_hash_format
+    CHECK (((md5_hash IS NULL) OR ((md5_hash)::text ~ '^[0-9a-f]{32}$'::text)));
+
 --
 -- PostgreSQL database dump complete
 --
