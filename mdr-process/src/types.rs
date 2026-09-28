@@ -994,7 +994,7 @@ pub struct CheckedLigand {
 // --------------------------------------------------
 #[derive(Debug, Deserialize, Serialize)]
 pub struct BlastResult {
-    pub qaccver: u32,
+    pub qaccver: String,
     pub saccver: String,
     pub pident: f64,
     pub length: u32,

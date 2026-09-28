@@ -3760,7 +3760,7 @@ END
         assert!(!hash.is_empty());
     }
 
-    fn write_blast_tsv(dir: &Path, db: &str, rows: &[(u32, &str, f64)]) {
+    fn write_blast_tsv(dir: &Path, db: &str, rows: &[(&str, &str, f64)]) {
         let content = rows
             .iter()
             .map(|(qaccver, saccver, pident)| {
@@ -3776,11 +3776,11 @@ END
         let tmp = tempdir().unwrap();
         let blast_dir = tempdir().unwrap();
         let fasta = tmp.path().join("sequence.fa");
-        fs::write(&fasta, b">1\nACGT").unwrap();
+        fs::write(&fasta, b">A\nACGT").unwrap();
         write_blast_tsv(
             tmp.path(),
             "swissprot",
-            &[(1, "sp|P12345|PROT_HUMAN", 100.0)],
+            &[("A", "sp|P12345|PROT_HUMAN", 100.0)],
         );
         let ids =
             blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Swissprot, 2).unwrap();
@@ -3792,11 +3792,11 @@ END
         let tmp = tempdir().unwrap();
         let blast_dir = tempdir().unwrap();
         let fasta = tmp.path().join("sequence.fa");
-        fs::write(&fasta, b">1\nACGT").unwrap();
+        fs::write(&fasta, b">A\nACGT").unwrap();
         write_blast_tsv(
             tmp.path(),
             "trembl",
-            &[(1, "tr|A0A000XYZ|PROT_MOUSE", 100.0)],
+            &[("A", "tr|A0A000XYZ|PROT_MOUSE", 100.0)],
         );
         let ids =
             blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Trembl, 2).unwrap();
@@ -3808,18 +3808,38 @@ END
         let tmp = tempdir().unwrap();
         let blast_dir = tempdir().unwrap();
         let fasta = tmp.path().join("sequence.fa");
-        fs::write(&fasta, b">1\nACGT").unwrap();
+        fs::write(&fasta, b">A\nACGT").unwrap();
         write_blast_tsv(
             tmp.path(),
             "swissprot",
             &[
-                (1, "sp|P99999|GOOD_HUMAN", 100.0),
-                (1, "sp|P00001|POOR_HUMAN", 95.0),
+                ("A", "sp|P99999|GOOD_HUMAN", 100.0),
+                ("A", "sp|P00001|POOR_HUMAN", 95.0),
             ],
         );
         let ids =
             blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Swissprot, 2).unwrap();
         assert_eq!(ids, vec!["P99999".to_string()]);
+    }
+
+    #[test]
+    fn blast_uniprot_parses_chain_id_queries() {
+        // sequence.fa headers are chain IDs: `_` for blank, `A_2` for a repeat
+        let tmp = tempdir().unwrap();
+        let blast_dir = tempdir().unwrap();
+        let fasta = tmp.path().join("sequence.fa");
+        fs::write(&fasta, b">_\nACGT\n>A_2\nACGT").unwrap();
+        write_blast_tsv(
+            tmp.path(),
+            "swissprot",
+            &[
+                ("_", "sp|P05430|OMPA_NEIGO", 100.0),
+                ("A_2", "sp|P57042|OMPB_NEIMA", 100.0),
+            ],
+        );
+        let ids =
+            blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Swissprot, 2).unwrap();
+        assert_eq!(ids, vec!["P05430".to_string(), "P57042".to_string()]);
     }
 
     #[test]
