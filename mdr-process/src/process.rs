@@ -1,5 +1,6 @@
 use crate::{
     import::{self, ImportOpts},
+    sequence,
     ticket::dsn_for,
     types::{
         BlastResult, CheckedLigand, DoiAuthor, DoiPaper, Duration, Export,
@@ -1166,43 +1167,18 @@ pub fn blast_uniprot(
 }
 
 // --------------------------------------------------
-pub fn get_sequence(
-    full_pdb: &Path,
-    processed_dir: &Path,
-    script_dir: &Path,
-    uv: &Path,
-) -> Result<PathBuf> {
+/// Write `sequence.fa` from `full_pdb`, one record per chain. See
+/// `sequence.rs` for how chains are found.
+pub fn get_sequence(full_pdb: &Path, processed_dir: &Path) -> Result<PathBuf> {
     let sequence_file = processed_dir.join("sequence.fa");
 
     if file_exists(&sequence_file) {
         debug!("Sequence file exists");
     } else {
         debug!("Creating sequence file");
-        let script = script_dir.join("get_sequence_from_pdb.py");
-        let mut cmd = Command::new(uv);
-        cmd.current_dir(script_dir).args([
-            "run",
-            script.to_string_lossy().as_ref(),
-            "--out-file",
-            sequence_file.to_string_lossy().as_ref(),
-            full_pdb.to_string_lossy().as_ref(),
-        ]);
-        debug!("Running {cmd:?}");
-        let output = cmd.output()?;
-
-        debug!("{}", str::from_utf8(&output.stdout)?);
-
-        if !output.status.success() {
-            bail!(
-                "Command failed ({}): {cmd:?}\n{}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-
-        if !file_exists(&sequence_file) {
-            bail!(r#"Failed to create "{}""#, sequence_file.display());
-        }
+        let fasta = sequence::fasta_from_pdb(full_pdb)?;
+        fs::write(&sequence_file, fasta)
+            .map_err(|e| anyhow!("{}: {e}", sequence_file.display()))?;
     }
 
     Ok(sequence_file)
@@ -1325,12 +1301,8 @@ pub fn make_import_json(
     let structure_hash =
         get_file_hash(&args.input_dir.join(&args.meta.structure_file_name))?;
 
-    let fasta_sequence_file = get_sequence(
-        &args.example_trajectory.full_pdb,
-        args.processed_dir,
-        args.script_dir,
-        args.uv,
-    )?;
+    let fasta_sequence_file =
+        get_sequence(&args.example_trajectory.full_pdb, args.processed_dir)?;
 
     let rmsd_rmsf = get_all_rmsd_rmsf(
         args.example_trajectory,
