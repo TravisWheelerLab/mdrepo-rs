@@ -157,24 +157,28 @@ pub fn find_creator_id(
     use diesel::dsl::sql;
     use diesel::sql_types::{Bool, Text};
 
-    let norm = |v: &Option<String>| v.clone().unwrap_or_default().to_lowercase();
+    // Lowercase in SQL, not in Rust: the index uses Postgres's lower(), and
+    // Rust's to_lowercase() can disagree with it outside ASCII. A disagreement
+    // would let upsert_creator's insert hit the index and then fail to find
+    // the row it conflicted with.
+    let val = |v: &Option<String>| v.clone().unwrap_or_default();
 
     md_creator::table
         .filter(
-            sql::<Bool>("lower(coalesce(name, '')) = ")
-                .bind::<Text, _>(norm(&new.name)),
+            sql::<Bool>("lower(coalesce(name, '')) = lower(")
+                .bind::<Text, _>(val(&new.name))
+                .sql(")"),
+        )
+        .filter(sql::<Bool>("coalesce(orcid, '') = ").bind::<Text, _>(val(&new.orcid)))
+        .filter(
+            sql::<Bool>("lower(coalesce(email, '')) = lower(")
+                .bind::<Text, _>(val(&new.email))
+                .sql(")"),
         )
         .filter(
-            sql::<Bool>("coalesce(orcid, '') = ")
-                .bind::<Text, _>(new.orcid.clone().unwrap_or_default()),
-        )
-        .filter(
-            sql::<Bool>("lower(coalesce(email, '')) = ")
-                .bind::<Text, _>(norm(&new.email)),
-        )
-        .filter(
-            sql::<Bool>("lower(coalesce(institution, '')) = ")
-                .bind::<Text, _>(norm(&new.institution)),
+            sql::<Bool>("lower(coalesce(institution, '')) = lower(")
+                .bind::<Text, _>(val(&new.institution))
+                .sql(")"),
         )
         .select(md_creator::id)
         .first::<i64>(conn)
@@ -191,12 +195,51 @@ pub fn insert_creator(
         .get_result(conn)
 }
 
-/// Find-or-insert one creator by identity.
+/// The conflict target is `uniq_creator_identity`'s expressions, verbatim:
+/// Postgres infers an expression index only from the same expressions. Diesel's
+/// `on_conflict` takes columns, so this is raw SQL.
+const INSERT_CREATOR_OR_NOTHING: &str = "\
+    INSERT INTO md_creator (name, orcid, email, institution) \
+    VALUES ($1, $2, $3, $4) \
+    ON CONFLICT ((lower(coalesce(name, ''))), (coalesce(orcid, '')), \
+                 (lower(coalesce(email, ''))), (lower(coalesce(institution, '')))) \
+    DO NOTHING \
+    RETURNING id";
+
+/// Find-or-insert one creator by identity, safely against a concurrent import.
+///
+/// A plain find-then-insert races: two landings importing the same new creator
+/// both find nothing and both insert, and the second insert fails on
+/// `uniq_creator_identity` once the first commits, rolling back that landing's
+/// whole import (MDR-37). `ON CONFLICT DO NOTHING` makes the second insert wait
+/// for the first transaction instead, then yield no row, and the re-read picks
+/// up the committed creator. The first lookup stays so the common case (a
+/// known creator) doesn't spend a sequence value.
 pub fn upsert_creator(conn: &mut PgConnection, new: NewCreator) -> QueryResult<i64> {
+    use diesel::sql_types::{BigInt, Nullable, Text};
+
+    #[derive(QueryableByName)]
+    struct Id {
+        #[diesel(sql_type = BigInt)]
+        id: i64,
+    }
+
     if let Some(id) = find_creator_id(conn, &new)? {
         return Ok(id);
     }
-    Ok(insert_creator(conn, new)?.id)
+
+    let inserted = diesel::sql_query(INSERT_CREATOR_OR_NOTHING)
+        .bind::<Nullable<Text>, _>(&new.name)
+        .bind::<Nullable<Text>, _>(&new.orcid)
+        .bind::<Nullable<Text>, _>(&new.email)
+        .bind::<Nullable<Text>, _>(&new.institution)
+        .get_result::<Id>(conn)
+        .optional()?;
+
+    match inserted {
+        Some(row) => Ok(row.id),
+        None => find_creator_id(conn, &new)?.ok_or(diesel::result::Error::NotFound),
+    }
 }
 
 /// Link a creator to a simulation, or correct the rank if already linked.

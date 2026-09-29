@@ -1218,3 +1218,127 @@ fn visible_ids_are_a_subset_of_all_ids_and_ascending() {
     sorted.sort();
     assert_eq!(visible, sorted, "ids come back ascending");
 }
+
+/// MDR-37: two landings importing the same new creator at once. The first holds
+/// its insert uncommitted; the second must wait for it and return the same id,
+/// not fail on `uniq_creator_identity` (which rolled back the whole landing
+/// under the old find-then-insert).
+///
+/// Unlike the rest of this file it has to COMMIT, because the race only exists
+/// between two real transactions. It uses a name no other test uses and deletes
+/// the row at the end.
+#[test]
+fn upsert_creator_waits_for_a_concurrent_insert_instead_of_failing() {
+    use diesel::sql_types::{Integer, Nullable, Text};
+
+    let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+        eprintln!("skipping: TEST_DATABASE_URL is unset");
+        return;
+    };
+
+    #[derive(QueryableByName)]
+    struct Pid {
+        #[diesel(sql_type = Integer)]
+        pid: i32,
+    }
+    #[derive(QueryableByName)]
+    struct Wait {
+        #[diesel(sql_type = Nullable<Text>)]
+        wait_event_type: Option<String>,
+    }
+
+    let name = format!(
+        "MDR-37 race {} {}",
+        std::process::id(),
+        Utc::now().timestamp_nanos_opt().unwrap()
+    );
+    let mk = || NewCreator {
+        name: Some(name.clone()),
+        orcid: None,
+        email: None,
+        institution: None,
+    };
+
+    let mut a = PgConnection::establish(&url).expect("connect a");
+    let mut b = PgConnection::establish(&url).expect("connect b");
+    let mut watch = PgConnection::establish(&url).expect("connect watcher");
+
+    let b_pid = diesel::sql_query("SELECT pg_backend_pid() AS pid")
+        .get_result::<Pid>(&mut b)
+        .unwrap()
+        .pid;
+
+    // A inserts the new creator and keeps its transaction open.
+    diesel::sql_query("BEGIN").execute(&mut a).unwrap();
+    let id_a = ops::upsert_creator(&mut a, mk()).unwrap();
+
+    // B tries the same creator in its own transaction. It must block on A.
+    let b_thread = {
+        let new = mk();
+        std::thread::spawn(move || {
+            diesel::sql_query("BEGIN").execute(&mut b).unwrap();
+            let r = ops::upsert_creator(&mut b, new);
+            let end = if r.is_ok() { "COMMIT" } else { "ROLLBACK" };
+            diesel::sql_query(end).execute(&mut b).unwrap();
+            r
+        })
+    };
+
+    // Don't commit A until Postgres says B is waiting on a lock; otherwise B
+    // could run after A commits and pass without exercising the race.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let w = diesel::sql_query(
+            "SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1",
+        )
+        .bind::<Integer, _>(b_pid)
+        .get_result::<Wait>(&mut watch)
+        .unwrap();
+        if w.wait_event_type.as_deref() == Some("Lock") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "B never blocked on A's insert"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    diesel::sql_query("COMMIT").execute(&mut a).unwrap();
+    let id_b = b_thread.join().unwrap();
+
+    diesel::sql_query("DELETE FROM md_creator WHERE id = $1")
+        .bind::<diesel::sql_types::BigInt, _>(id_a)
+        .execute(&mut watch)
+        .unwrap();
+
+    assert_eq!(
+        id_b.expect("B must not fail on uniq_creator_identity"),
+        id_a,
+        "both landings resolve to the one committed creator"
+    );
+}
+
+/// The lookup must lowercase the way the index does. Rust lowercases 'İ'
+/// (U+0130) to "i\u{307}" but Postgres to "i", so a Rust-side lowercase never
+/// matched a stored name containing it: the second import of such a creator
+/// missed the row and failed on `uniq_creator_identity`.
+#[test]
+fn upsert_creator_finds_a_name_that_rust_and_postgres_lowercase_differently() {
+    let mut c = conn_or_skip!();
+    assert_ne!(
+        "İ".to_lowercase(),
+        "i",
+        "the premise: Rust differs from Postgres here"
+    );
+
+    let mk = || NewCreator {
+        name: Some("Özgür İlkay Şahin".into()),
+        orcid: None,
+        email: Some("OZGUR@EXAMPLE.ORG".into()),
+        institution: None,
+    };
+    let first = ops::upsert_creator(&mut c, mk()).unwrap();
+    let again = ops::upsert_creator(&mut c, mk()).unwrap();
+    assert_eq!(first, again);
+}
