@@ -596,36 +596,34 @@ fn upsert_paper(
     let volume = paper.volume as i32;
     let year = paper.year as i32;
 
-    let existing = match &paper.doi {
-        Some(doi) => ops::find_pub_id_by_doi(conn, doi)?,
-        None => ops::find_pub_id_by_metadata(
+    let new_pub = || NewPub {
+        title: paper.title.clone(),
+        authors: paper.authors.clone(),
+        journal: paper.journal.clone(),
+        volume,
+        number: paper.number.clone(),
+        year,
+        pages: paper.pages.clone(),
+        doi: paper.doi.clone(),
+    };
+
+    // With a DOI the lookup is one race-safe statement; see
+    // ops::upsert_pub_by_doi. Without one there is no unique key to conflict
+    // on, so a concurrent first sighting can still insert a duplicate row
+    // (MDR-37); it's rare, and it duplicates rather than fails.
+    let pub_id = match &paper.doi {
+        Some(_) => ops::upsert_pub_by_doi(conn, new_pub())?,
+        None => match ops::find_pub_id_by_metadata(
             conn,
             &paper.title,
             &paper.authors,
             &paper.journal,
             volume,
             year,
-        )?,
-    };
-
-    let pub_id = match existing {
-        Some(id) => id,
-        None => {
-            ops::insert_pub(
-                conn,
-                NewPub {
-                    title: paper.title.clone(),
-                    authors: paper.authors.clone(),
-                    journal: paper.journal.clone(),
-                    volume,
-                    number: paper.number.clone(),
-                    year,
-                    pages: paper.pages.clone(),
-                    doi: paper.doi.clone(),
-                },
-            )?
-            .id
-        }
+        )? {
+            Some(id) => id,
+            None => ops::insert_pub(conn, new_pub())?.id,
+        },
     };
 
     if let Some(id) = ops::find_simulation_pub_id(conn, sim_id, pub_id)? {

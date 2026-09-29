@@ -993,6 +993,41 @@ pub fn insert_pub(conn: &mut PgConnection, new: NewPub) -> QueryResult<Pub> {
         .get_result(conn)
 }
 
+/// Find-or-insert a publication that has a DOI, safely against a concurrent
+/// import.
+///
+/// `md_pub.doi` is unique (`md_repo_app_pub_doi_key`), so the old
+/// find-then-insert had the same race as `upsert_creator`: two landings citing
+/// the same new paper both missed it, both inserted, and the second failed its
+/// whole landing import once the first committed (MDR-37). `ON CONFLICT (doi)
+/// DO NOTHING` makes it wait for the first transaction and then re-read the
+/// committed row. Callers without a DOI must not use this: a NULL DOI never
+/// conflicts, so the conflict target would never fire.
+pub fn upsert_pub_by_doi(conn: &mut PgConnection, new: NewPub) -> QueryResult<i64> {
+    let Some(doi) = new.doi.clone() else {
+        return Err(diesel::result::Error::QueryBuilderError(
+            "upsert_pub_by_doi needs a DOI".into(),
+        ));
+    };
+
+    if let Some(id) = find_pub_id_by_doi(conn, &doi)? {
+        return Ok(id);
+    }
+
+    let inserted = diesel::insert_into(md_pub::table)
+        .values(&new)
+        .on_conflict(md_pub::doi)
+        .do_nothing()
+        .returning(md_pub::id)
+        .get_result::<i64>(conn)
+        .optional()?;
+
+    match inserted {
+        Some(id) => Ok(id),
+        None => find_pub_id_by_doi(conn, &doi)?.ok_or(diesel::result::Error::NotFound),
+    }
+}
+
 pub fn update_pub(
     conn: &mut PgConnection,
     rid: i64,

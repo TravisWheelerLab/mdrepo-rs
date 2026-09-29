@@ -1219,22 +1219,20 @@ fn visible_ids_are_a_subset_of_all_ids_and_ascending() {
     assert_eq!(visible, sorted, "ids come back ascending");
 }
 
-/// MDR-37: two landings importing the same new creator at once. The first holds
-/// its insert uncommitted; the second must wait for it and return the same id,
-/// not fail on `uniq_creator_identity` (which rolled back the whole landing
-/// under the old find-then-insert).
+/// Run `upsert` for the same new row in two real, overlapping transactions, the
+/// way two landings of one ticket import at once (MDR-37). A upserts and keeps
+/// its transaction open; B upserts the same row and must block on A; only once
+/// Postgres shows B waiting on a lock does A commit. Returns A's id and B's
+/// result. Committed data, so `cleanup` deletes the row afterwards.
 ///
-/// Unlike the rest of this file it has to COMMIT, because the race only exists
-/// between two real transactions. It uses a name no other test uses and deletes
-/// the row at the end.
-#[test]
-fn upsert_creator_waits_for_a_concurrent_insert_instead_of_failing() {
-    use diesel::sql_types::{Integer, Nullable, Text};
-
-    let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
-        eprintln!("skipping: TEST_DATABASE_URL is unset");
-        return;
-    };
+/// Unlike the rest of this file these tests COMMIT, because the race only
+/// exists between two real transactions. Each uses a key no other test uses.
+fn race_two_transactions(
+    url: &str,
+    upsert: fn(&mut PgConnection) -> QueryResult<i64>,
+    cleanup: &str,
+) -> (i64, QueryResult<i64>) {
+    use diesel::sql_types::{BigInt, Integer, Nullable, Text};
 
     #[derive(QueryableByName)]
     struct Pid {
@@ -1247,45 +1245,28 @@ fn upsert_creator_waits_for_a_concurrent_insert_instead_of_failing() {
         wait_event_type: Option<String>,
     }
 
-    let name = format!(
-        "MDR-37 race {} {}",
-        std::process::id(),
-        Utc::now().timestamp_nanos_opt().unwrap()
-    );
-    let mk = || NewCreator {
-        name: Some(name.clone()),
-        orcid: None,
-        email: None,
-        institution: None,
-    };
-
-    let mut a = PgConnection::establish(&url).expect("connect a");
-    let mut b = PgConnection::establish(&url).expect("connect b");
-    let mut watch = PgConnection::establish(&url).expect("connect watcher");
+    let mut a = PgConnection::establish(url).expect("connect a");
+    let mut b = PgConnection::establish(url).expect("connect b");
+    let mut watch = PgConnection::establish(url).expect("connect watcher");
 
     let b_pid = diesel::sql_query("SELECT pg_backend_pid() AS pid")
         .get_result::<Pid>(&mut b)
         .unwrap()
         .pid;
 
-    // A inserts the new creator and keeps its transaction open.
     diesel::sql_query("BEGIN").execute(&mut a).unwrap();
-    let id_a = ops::upsert_creator(&mut a, mk()).unwrap();
+    let id_a = upsert(&mut a).unwrap();
 
-    // B tries the same creator in its own transaction. It must block on A.
-    let b_thread = {
-        let new = mk();
-        std::thread::spawn(move || {
-            diesel::sql_query("BEGIN").execute(&mut b).unwrap();
-            let r = ops::upsert_creator(&mut b, new);
-            let end = if r.is_ok() { "COMMIT" } else { "ROLLBACK" };
-            diesel::sql_query(end).execute(&mut b).unwrap();
-            r
-        })
-    };
+    let b_thread = std::thread::spawn(move || {
+        diesel::sql_query("BEGIN").execute(&mut b).unwrap();
+        let r = upsert(&mut b);
+        let end = if r.is_ok() { "COMMIT" } else { "ROLLBACK" };
+        diesel::sql_query(end).execute(&mut b).unwrap();
+        r
+    });
 
-    // Don't commit A until Postgres says B is waiting on a lock; otherwise B
-    // could run after A commits and pass without exercising the race.
+    // Don't commit A until B is waiting on a lock; otherwise B could run after
+    // A commits and pass without exercising the race.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         let w = diesel::sql_query(
@@ -1307,15 +1288,76 @@ fn upsert_creator_waits_for_a_concurrent_insert_instead_of_failing() {
     diesel::sql_query("COMMIT").execute(&mut a).unwrap();
     let id_b = b_thread.join().unwrap();
 
-    diesel::sql_query("DELETE FROM md_creator WHERE id = $1")
-        .bind::<diesel::sql_types::BigInt, _>(id_a)
+    diesel::sql_query(cleanup)
+        .bind::<BigInt, _>(id_a)
         .execute(&mut watch)
         .unwrap();
 
+    (id_a, id_b)
+}
+
+/// A new creator, imported by two landings at once, resolves to one row and
+/// neither landing fails on `uniq_creator_identity`.
+#[test]
+fn upsert_creator_waits_for_a_concurrent_insert_instead_of_failing() {
+    let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+        eprintln!("skipping: TEST_DATABASE_URL is unset");
+        return;
+    };
+    let (id_a, id_b) = race_two_transactions(
+        &url,
+        |c| {
+            ops::upsert_creator(
+                c,
+                NewCreator {
+                    name: Some(format!("MDR-37 creator race {}", std::process::id())),
+                    orcid: None,
+                    email: None,
+                    institution: None,
+                },
+            )
+        },
+        "DELETE FROM md_creator WHERE id = $1",
+    );
     assert_eq!(
         id_b.expect("B must not fail on uniq_creator_identity"),
-        id_a,
-        "both landings resolve to the one committed creator"
+        id_a
+    );
+}
+
+/// A new paper with a DOI, cited by two landings at once, resolves to one row
+/// and neither landing fails on `md_repo_app_pub_doi_key`.
+#[test]
+fn upsert_pub_by_doi_waits_for_a_concurrent_insert_instead_of_failing() {
+    let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+        eprintln!("skipping: TEST_DATABASE_URL is unset");
+        return;
+    };
+    let (id_a, id_b) = race_two_transactions(
+        &url,
+        |c| {
+            ops::upsert_pub_by_doi(
+                c,
+                NewPub {
+                    title: "A race".into(),
+                    authors: "A. Author".into(),
+                    journal: "J. Tests".into(),
+                    volume: 1,
+                    number: None,
+                    year: 2026,
+                    pages: None,
+                    doi: Some(format!(
+                        "10.0000/mdr-37-pub-race-{}",
+                        std::process::id()
+                    )),
+                },
+            )
+        },
+        "DELETE FROM md_pub WHERE id = $1",
+    );
+    assert_eq!(
+        id_b.expect("B must not fail on md_repo_app_pub_doi_key"),
+        id_a
     );
 }
 
