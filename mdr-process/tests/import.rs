@@ -326,6 +326,8 @@ fn import_same_alias_twice_is_idempotent_not_duplicated() {
     let first_id =
         import::import_simulation(&mut c, &make_sim(), &ImportOpts::default())
             .expect("first import should succeed");
+    // Still a placeholder, so this is a retry of the same landing, which must
+    // stay allowed without --reprocess-simulation-id.
     let second_id =
         import::import_simulation(&mut c, &make_sim(), &ImportOpts::default())
             .expect("second import should succeed");
@@ -490,4 +492,55 @@ fn import_with_unknown_explicit_simulation_id_is_an_error() {
             "a nonexistent explicit simulation_id must not silently create a row",
         );
     assert!(err.to_string().contains("Invalid simulation ID"));
+}
+
+#[test]
+fn reimport_without_reprocess_is_refused() {
+    let mut c = conn_or_skip!();
+    let orcid = "0000-0001-import-refuse";
+    seed_user_with_orcid(&mut c, "refuse", orcid);
+
+    let first_sim = ExportSimulation {
+        original_files: vec![md_file("orig.pdb", "Structure")],
+        processed_files: vec![md_file("proc1.nc", "Processed trajectory")],
+        ..base_sim("refuse", orcid)
+    };
+    let sim_id = import::import_simulation(&mut c, &first_sim, &ImportOpts::default())
+        .expect("first import should succeed");
+    // What a verified push does; a placeholder would be let through as a retry.
+    ops::update_simulation(
+        &mut c,
+        sim_id,
+        SimulationUpdate {
+            is_placeholder: Some(false),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    // Same alias and contributor, renamed files: the shape of a submitter's
+    // supersede, which used to add proc2.nc beside proc1.nc (MDR-74).
+    let second_sim = ExportSimulation {
+        original_files: vec![md_file("orig2.pdb", "Structure")],
+        processed_files: vec![md_file("proc2.nc", "Processed trajectory")],
+        ..base_sim("refuse", orcid)
+    };
+    let err = import::import_simulation(&mut c, &second_sim, &ImportOpts::default())
+        .expect_err("a re-import without --reprocess-simulation-id must be refused");
+    let msg = err.to_string();
+    assert!(msg.contains(&format!("MDR{sim_id:08}")), "{msg}");
+    assert!(msg.contains("alias"), "{msg}");
+
+    assert!(
+        ops::find_processed_file_id(&mut c, sim_id, "proc2.nc")
+            .unwrap()
+            .is_none(),
+        "the refused import must not add rows"
+    );
+    assert!(
+        ops::find_processed_file_id(&mut c, sim_id, "proc1.nc")
+            .unwrap()
+            .is_some(),
+        "the refused import must not remove rows"
+    );
 }

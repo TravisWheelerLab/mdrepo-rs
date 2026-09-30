@@ -30,7 +30,7 @@
 //!   anion; the script wrote a cation that does not exist in these systems.
 
 use crate::types::{ExportSimulation, MdFile, ResolvedLigand};
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use chrono::Utc;
 use diesel::{PgConnection, connection::Connection};
 use libmdrepo::metadata;
@@ -169,6 +169,7 @@ fn upsert_simulation(
     let user_id = lead_contributor_id(conn, &sim.lead_contributor_orcid)?;
 
     let mut sim_id = opts.reprocess_simulation_id.map(|id| id as i64);
+    let mut matched_by = "--reprocess-simulation-id";
 
     if sim_id.is_none()
         && let Some(given) = sim.simulation_id
@@ -177,17 +178,39 @@ fn upsert_simulation(
         ops::get_simulation(conn, given)
             .map_err(|e| anyhow!("Invalid simulation ID {given}: {e}"))?;
         sim_id = Some(given);
+        matched_by = "its simulation_id";
     }
 
     if sim_id.is_none()
         && let Some(alias) = &sim.alias
     {
         sim_id = ops::find_simulation_id_by_alias(conn, alias, user_id)?;
+        matched_by = "alias and lead contributor";
     }
 
     if sim_id.is_none() {
         debug!("Searching unique_file_hash_string");
         sim_id = ops::find_simulation_id_by_hash(conn, &sim.unique_file_hash_string)?;
+        matched_by = "unique_file_hash_string";
+    }
+
+    // Only a reprocess clears the old file, replicate and uniprot rows (see
+    // import_simulation), so updating a finished simulation any other way
+    // leaves the rows the new payload no longer names beside the new ones
+    // (MDR-74). Whether that is a real supersede, and whether the original
+    // files go too, is an operator's call. A placeholder is let through: it
+    // is this landing's own earlier attempt, which ticket.rs retries until a
+    // verified push clears the flag.
+    if let Some(existing) = sim_id
+        && opts.reprocess_simulation_id.is_none()
+        && !ops::get_simulation(conn, existing)?.is_placeholder
+    {
+        bail!(
+            "This upload matches existing simulation MDR{existing:08} by \
+            {matched_by}. Replacing it needs an administrator: \
+            `mdr-process process --reprocess-simulation-id {existing}` \
+            (add --replace-original-files to drop its old uploaded files)"
+        );
     }
 
     // The script hard-codes both of these on every import: a freshly imported
