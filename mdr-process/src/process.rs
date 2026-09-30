@@ -1,6 +1,6 @@
 use crate::{
     import::{self, ImportOpts},
-    sequence,
+    psf_elements, sequence,
     ticket::dsn_for,
     types::{
         BlastResult, CheckedLigand, DoiAuthor, DoiPaper, Duration, Export,
@@ -749,6 +749,15 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
     let sampled_xtc = trajectory_dir.join("sampled.xtc");
     let thumbnail_png = trajectory_dir.join("thumbnail.png");
     let full_xtc_size = fs::metadata(&full_xtc)?.len();
+
+    // cpptraj takes a .psf atom's element from its mass, which reads a
+    // repartitioned hydrogen as helium. Everything downstream -- the ligand
+    // inference, the sequence, the thumbnail -- reads these two files.
+    let top = args.input_dir.join(args.topology_file_name);
+    if psf_elements::is_psf(&top) {
+        psf_elements::fix_psf_elements(&top, &[&full_pdb, &min_pdb])?;
+    }
+
     let is_coarse_grained = check_coarse_grained(&full_pdb, &min_pdb)?;
 
     sample_trajectory(&min_xtc, &min_pdb, &sampled_xtc, args.script_dir, args.uv)?;
