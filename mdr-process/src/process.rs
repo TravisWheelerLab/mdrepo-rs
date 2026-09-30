@@ -27,10 +27,12 @@ use std::{
     collections::{HashMap, HashSet},
     env,
     fs::{self, File},
-    io::{BufReader, Write},
+    io::{BufReader, Read, Write},
+    os::unix::process::CommandExt,
     path::{self, Path, PathBuf},
-    process::Command,
-    time::Instant,
+    process::{Command, Output, Stdio},
+    thread,
+    time::{self, Instant},
 };
 use strum::IntoEnumIterator;
 use which::which;
@@ -45,6 +47,14 @@ const BLAST_MIN_PIDENT: f64 = 100.0;
 const FS_PER_PS: f64 = 1000.0;
 const PS_PER_NS: f64 = 1000.0;
 const XTC_INFLATION_FACTOR: f64 = 1000.0;
+
+// ── Conversion time limit (MDR-71) ────────────────────────────────────────────
+/// Per trajectory, not per ticket: healthy tickets run 2h12m on average and up
+/// to 7h26m, but one conversion of MDR00004397's 16 GB XTC took ~4 min
+/// (full + minimal), so even a 40 GB trajectory should need well under an
+/// hour. Ticket 2371's damaged frame spun cpptraj for 2h52m.
+const CONVERT_TIMEOUT_SECS: u64 = 2 * 60 * 60;
+const CONVERT_TIMEOUT_ENV: &str = "MDR_CONVERT_TIMEOUT_SECS";
 
 // --------------------------------------------------
 pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
@@ -687,7 +697,15 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
                 .join(" ")
         );
 
-        let output = cmd.output()?;
+        let limit = convert_timeout()?;
+        let Some(output) = output_with_timeout(&mut cmd, limit)? else {
+            bail!(
+                "Converting {} did not finish within {}s and was killed \
+                (set {CONVERT_TIMEOUT_ENV} to change the limit): {cmd:?}",
+                args.trajectory_file_name,
+                limit.as_secs()
+            );
+        };
         if !output.status.success() {
             bail!(
                 "Command failed ({}): {cmd:?}\n{}",
@@ -2514,6 +2532,78 @@ pub fn get_unique_file_hash(meta: &Meta, input_dir: &Path) -> String {
 }
 
 // --------------------------------------------------
+// --------------------------------------------------
+fn convert_timeout() -> Result<time::Duration> {
+    match env::var(CONVERT_TIMEOUT_ENV) {
+        Ok(v) => v
+            .parse()
+            .map(time::Duration::from_secs)
+            .map_err(|e| anyhow!("{CONVERT_TIMEOUT_ENV}={v:?}: {e}")),
+        Err(_) => Ok(time::Duration::from_secs(CONVERT_TIMEOUT_SECS)),
+    }
+}
+
+// --------------------------------------------------
+/// `Command::output`, but giving up after `limit` and returning `None`.
+///
+/// The child gets a process group of its own and the whole group is killed:
+/// the cpptraj wrapper treats a dead `cpptraj` as non-fatal and hangs again
+/// at its next stage, so killing only one of them never ends the job. The
+/// cost is that a Ctrl-C at the terminal no longer reaches the group; stop a
+/// manual run's conversion by its group id (`kill -- -<pgid>`).
+fn output_with_timeout(
+    cmd: &mut Command,
+    limit: time::Duration,
+) -> Result<Option<Output>> {
+    let mut child = cmd
+        .process_group(0)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    // Drain both pipes while waiting, or a chatty child blocks on a full one.
+    let drain = |mut pipe: Box<dyn Read + Send>| {
+        thread::spawn(move || {
+            let mut buf = Vec::new();
+            pipe.read_to_end(&mut buf).map(|_| buf)
+        })
+    };
+    let stdout = drain(Box::new(child.stdout.take().expect("piped stdout")));
+    let stderr = drain(Box::new(child.stderr.take().expect("piped stderr")));
+
+    let deadline = Instant::now() + limit;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break Some(status);
+        }
+        if Instant::now() >= deadline {
+            break None;
+        }
+        thread::sleep(time::Duration::from_millis(250));
+    };
+
+    let Some(status) = status else {
+        // A negative pid addresses the group, whose id is the child's pid.
+        let group = format!("-{}", child.id());
+        let _ = Command::new("kill").args(["-KILL", "--", &group]).status();
+        let _ = child.wait();
+        // Both readers finish once every process holding the pipes is dead.
+        let _ = (stdout.join(), stderr.join());
+        return Ok(None);
+    };
+
+    let collect = |h: thread::JoinHandle<std::io::Result<Vec<u8>>>| {
+        h.join()
+            .map_err(|_| anyhow!("pipe reader panicked"))?
+            .map_err(anyhow::Error::from)
+    };
+    Ok(Some(Output {
+        status,
+        stdout: collect(stdout)?,
+        stderr: collect(stderr)?,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3956,5 +4046,44 @@ END
             ligands[0].declared_identity, None,
             "nobody declared this ligand"
         );
+    }
+
+    // ── output_with_timeout (MDR-71) ──────────────────────────────────────
+
+    #[test]
+    fn output_with_timeout_returns_output_when_the_child_finishes() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "echo out; echo err >&2"]);
+        let out = output_with_timeout(&mut cmd, time::Duration::from_secs(10))
+            .unwrap()
+            .expect("should finish in time");
+        assert!(out.status.success());
+        assert_eq!(out.stdout, b"out\n");
+        assert_eq!(out.stderr, b"err\n");
+    }
+
+    #[test]
+    fn output_with_timeout_kills_the_whole_group() {
+        // The shape of the hang: a wrapper waiting on a child that never
+        // finishes. Both have to be gone afterwards, not just the wrapper.
+        let dir = tempdir().unwrap();
+        let pidfile = dir.path().join("grandchild.pid");
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg(format!("sleep 300 & echo $! > {}; wait", pidfile.display()));
+
+        let start = Instant::now();
+        let out = output_with_timeout(&mut cmd, time::Duration::from_secs(1)).unwrap();
+        assert!(out.is_none(), "should time out");
+        assert!(start.elapsed() < time::Duration::from_secs(10));
+
+        let pid = fs::read_to_string(&pidfile).unwrap();
+        let alive = Command::new("kill")
+            .args(["-0", pid.trim()])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        assert!(!alive, "the grandchild (pid {}) survived", pid.trim());
     }
 }
