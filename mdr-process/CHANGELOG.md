@@ -11,6 +11,20 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.4.0 (2026-10-01)
+
+- **A .psf topology's elements come from its masses and bonds**, not
+  cpptraj's guess. cpptraj gives each atom the element nearest its mass, so
+  a hydrogen repartitioned to 3.024 amu was written as helium, and ions lost
+  their charges. Columns 77-80 of `full.pdb` and `minimal.pdb` are rewritten
+  before anything reads them; nothing else in those files changes. Ligands
+  inferred from them, and the files in iRODS, change for affected
+  simulations. A hydrogen is told from a heavy atom by its bonds as well as
+  its mass, so a methyl carbon at 4x repartitioning (2.939 amu) stays carbon.
+  A `.psf` that cannot be read, or an atom whose mass matches no element or
+  more than one, leaves the files as cpptraj wrote them and is never fatal;
+  the warning goes to the upload's messages, where the submitter sees it.
+
 ## 0.3.0 (2026-10-01)
 
 - **What `mol_id.py` says for the submitter becomes an upload warning.**
