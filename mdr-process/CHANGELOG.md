@@ -19,8 +19,11 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   their charges. Columns 77-80 of `full.pdb` and `minimal.pdb` are rewritten
   before anything reads them; nothing else in those files changes. Ligands
   inferred from them, and the files in iRODS, change for affected
-  simulations. An atom whose mass matches no element, or more than one, is
-  left as cpptraj wrote it, with a warning.
+  simulations. A hydrogen is told from a heavy atom by its bonds as well as
+  its mass, so a methyl carbon at 4x repartitioning (2.939 amu) stays carbon.
+  A `.psf` that cannot be read, or an atom whose mass matches no element or
+  more than one, leaves the files as cpptraj wrote them and is never fatal;
+  the warning goes to the upload's messages, where the submitter sees it.
 
 ## 0.2.0 (2026-10-01)
 
