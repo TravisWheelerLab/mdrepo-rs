@@ -86,6 +86,21 @@ pub enum Command {
 
     /// Use ticket ID to download and process
     Ticket(TicketArgs),
+
+    /// Print the polymer chains in structure files (read only)
+    Sequence(SequenceArgs),
+}
+
+// --------------------------------------------------
+#[derive(Debug, Parser)]
+pub struct SequenceArgs {
+    /// Structure files (PDB)
+    #[arg(value_name = "PDB", required = true)]
+    pub files: Vec<PathBuf>,
+
+    /// Print the FASTA that BLAST gets instead of one row per chain
+    #[arg(long)]
+    pub fasta: bool,
 }
 
 // --------------------------------------------------

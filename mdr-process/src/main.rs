@@ -3,7 +3,7 @@ use clap::Parser;
 use libmdrepo::metadata::{Meta, MetaCheckOptions};
 use log::info;
 use mdr_process::{
-    process, reprocess, ticket,
+    process, reprocess, sequence, ticket,
     types::{Cli, Command, LogLevel},
     validate,
 };
@@ -111,6 +111,47 @@ fn run(args: Cli) -> Result<()> {
                     bail!(message);
                 }
                 Ok(()) => info!("Finished"),
+            }
+            Ok(())
+        }
+        Command::Sequence(args) => {
+            // One row per chain, tab-separated; a file that cannot be read is
+            // reported on its own row and does not stop the rest.
+            if !args.fasta {
+                println!(
+                    "file\tchain_order\tchain_label\tpolymer_type\tfirst_residue\t\
+                     last_residue\tn_terminal_cap\tc_terminal_cap\tnum_residues\t\
+                     sequence\tresidues"
+                );
+            }
+            for file in &args.files {
+                let chains = match sequence::chains_from_pdb(file) {
+                    Ok(chains) => chains,
+                    Err(e) => {
+                        println!("{}\tERROR\t{e}", file.display());
+                        continue;
+                    }
+                };
+                if args.fasta {
+                    print!("{}", sequence::fasta_from_chains(&chains));
+                    continue;
+                }
+                for (i, c) in chains.iter().enumerate() {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                        file.display(),
+                        i + 1,
+                        c.label,
+                        c.polymer_type,
+                        c.first_residue,
+                        c.last_residue,
+                        c.n_terminal_cap.as_deref().unwrap_or(""),
+                        c.c_terminal_cap.as_deref().unwrap_or(""),
+                        c.residues.len(),
+                        c.sequence,
+                        c.residues.join(","),
+                    );
+                }
             }
             Ok(())
         }
