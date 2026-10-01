@@ -35,8 +35,10 @@ fn run(args: Cli) -> Result<()> {
         .init();
 
     let num_threads = args.num_threads.unwrap_or(num_cpus::get());
+    // The first line of every log says which build wrote it
     info!(
-        "Using {num_threads} thread{}",
+        "mdr-process {}: using {num_threads} thread{}",
+        mdr_process::types::VERSION,
         if num_threads == 1 { "" } else { "s" }
     );
     rayon::ThreadPoolBuilder::new()

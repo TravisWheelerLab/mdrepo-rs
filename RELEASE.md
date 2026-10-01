@@ -79,6 +79,23 @@ it**: download the asset from the release's own URL — ideally the one the
 - **Version numbers are cheap but not free.** Travis has asked before that a
   version not be spent on a change nobody is waiting for.
 
+## Versioning `mdr-process`
+
+`mdr-process` has a version but **no tags and no GitHub releases** (Ken,
+2026-10-01): only `mdr-meta` binaries are built and published. A host runs
+whatever it last built from `main` with `just mdr-process`.
+
+- **`mdr-process --version` names the build:** `mdr-process 0.2.0 (048d03d)`.
+  The commit is recorded by `mdr-process/build.rs`; `-dirty` means the build
+  had uncommitted changes, and `unknown` that there was no git. The same text
+  starts every log (`mdr-process 0.2.0 (048d03d): using 4 threads`).
+- **Bump `mdr-process/Cargo.toml` in the same PR as the change, and add a
+  `mdr-process/CHANGELOG.md` entry:** minor for any change in what it writes to
+  the database or iRODS, or in its command line; patch for everything else.
+  Then `cargo build -p mdr-process` to refresh `Cargo.lock`.
+- **Do not push a tag for it.** `release.yml` fires on `v[0-9]*`, so a
+  `v0.2.0` tag would publish `mdr-meta` under the wrong version.
+
 ## History
 
 Reconstructed from the 2026-09-04 diary entry on each of the last few releases,

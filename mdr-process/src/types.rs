@@ -43,8 +43,17 @@ pub const DEFAULT_BLAST_NUM_THREADS: usize = 2;
 pub const DEFAULT_PUSH_TRANSFER_THREADS: usize = 3;
 
 // --------------------------------------------------
+/// The version and the commit it was built from, e.g. `0.2.0 (048d03d)`.
+/// The commit comes from build.rs.
+pub const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("MDR_PROCESS_COMMIT"),
+    ")"
+);
+
 #[derive(Parser, Debug)]
-#[command(arg_required_else_help = true, version, about)]
+#[command(arg_required_else_help = true, version = VERSION, about)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
