@@ -55,3 +55,7 @@ a deploy; dependency bumps are a separate reviewable change.
   `load_canonical_meta` is load-bearing — dropping it attaches one ligand's
   structure to another's record with no error anywhere.
 - **`rustfmt.toml` is checked in.** Match it.
+- **`mdr-process` is versioned but never tagged or released** (RELEASE.md).
+  Bump `mdr-process/Cargo.toml` and add a `mdr-process/CHANGELOG.md` entry in
+  the same PR as a change: minor for DB, iRODS or CLI behaviour, patch
+  otherwise. `mdr-process --version` names the commit a host built.
