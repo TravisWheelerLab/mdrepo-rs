@@ -4,6 +4,33 @@ Notable user-facing changes to `mdr-meta`. Each entry here becomes the
 GitHub release note for that version (see `.github/workflows/release.yml`)
 -- write it before tagging, not after.
 
+## 0.3.27
+
+### A peptide, DNA or RNA ligand can be declared by its sequence
+
+A ligand that is a polymer -- a peptide bound to a protein, an aptamer --
+can now be described by its sequence instead of a SMILES or InChI:
+
+```toml
+[[ligands]]
+name = "NY-ESO-1 157-165 variant"
+sequence = "SLLMYITQV"
+sequence_type = "protein"     # protein, dna or rna
+```
+
+- **Write any residue without a standard one-letter code as its
+  chemical-component code in parentheses**, including caps at either end:
+  `(ACE)SLL(SEP)YITQV(NH2)`. This is the form RCSB uses for
+  `pdbx_seq_one_letter_code`.
+- **`sequence_type` is required.** The letters overlap -- `ACGT` is a DNA
+  strand and also the peptide Ala-Cys-Gly-Thr -- so it is never guessed.
+- **A ligand declares a structure (`smiles` and/or `inchi`) or a
+  `sequence`, not both.** A small molecule made of amino acids, such as
+  glutathione, is still declared by SMILES or InChI.
+- **Nothing you already have needs changing.** This only adds an option;
+  every file that was valid before is still valid, and `toml_version` stays
+  at `2`.
+
 ## 0.3.26
 
 ### `[[contributors]]` is now `[[creators]]`, and the old name still works
