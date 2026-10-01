@@ -161,23 +161,33 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
         make_trajectory_tarballs(&processed_dir, &processed_trajectories)?;
 
     let import_json = &processed_dir.join("import.json");
-    let (simulation, warnings, blast_elapsed) = make_import_json(ImportJsonArgs {
-        meta,
-        import_json,
-        processed_dir: &processed_dir,
-        meta_path: &meta_path,
-        input_dir: &input_dir,
-        script_dir: &script_dir,
-        blast_dir: &blast_dir,
-        uv: &uv,
-        example_trajectory,
-        all_trajectories: &processed_trajectories,
-        trajectory_tarballs: &trajectory_tarballs,
-        reprocess_simulation_id: args.reprocess_simulation_id,
-        replicates: &replicates,
-        replace_original_files: args.replace_original_files,
-        blast_num_threads: args.blast_num_threads,
-    })?;
+    // Every replicate shares the topology, so its warnings come once each.
+    let mut warnings: Vec<String> = vec![];
+    for warning in processed_trajectories.iter().flat_map(|t| &t.warnings) {
+        if !warnings.contains(warning) {
+            warnings.push(warning.clone());
+        }
+    }
+
+    let (simulation, import_warnings, blast_elapsed) =
+        make_import_json(ImportJsonArgs {
+            meta,
+            import_json,
+            processed_dir: &processed_dir,
+            meta_path: &meta_path,
+            input_dir: &input_dir,
+            script_dir: &script_dir,
+            blast_dir: &blast_dir,
+            uv: &uv,
+            example_trajectory,
+            all_trajectories: &processed_trajectories,
+            trajectory_tarballs: &trajectory_tarballs,
+            reprocess_simulation_id: args.reprocess_simulation_id,
+            replicates: &replicates,
+            replace_original_files: args.replace_original_files,
+            blast_num_threads: args.blast_num_threads,
+        })?;
+    warnings.extend(import_warnings);
 
     let mut simulation_id: Option<u32> = None;
     let mut push_elapsed = None;
@@ -754,9 +764,11 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
     // repartitioned hydrogen as helium. Everything downstream -- the ligand
     // inference, the sequence, the thumbnail -- reads these two files.
     let top = args.input_dir.join(args.topology_file_name);
-    if psf_elements::is_psf(&top) {
-        psf_elements::fix_psf_elements(&top, &[&full_pdb, &min_pdb])?;
-    }
+    let warnings = if psf_elements::is_psf(&top) {
+        psf_elements::fix_psf_elements(&top, &[&full_pdb, &min_pdb])?
+    } else {
+        vec![]
+    };
 
     let is_coarse_grained = check_coarse_grained(&full_pdb, &min_pdb)?;
 
@@ -819,6 +831,7 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
         directory_name: trajectory_dir.to_string_lossy().to_string(),
         is_coarse_grained,
         source_has_time_axis,
+        warnings,
     })
 }
 
@@ -3138,6 +3151,7 @@ END
             directory_name: rep_dir.to_string_lossy().to_string(),
             source_has_time_axis: Some(true),
             is_coarse_grained: false,
+            warnings: vec![],
         }
     }
 

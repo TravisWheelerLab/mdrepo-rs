@@ -10,22 +10,26 @@
 //! only because cpptraj falls back to the atom name when a mass is nearer no
 //! element at all.
 //!
-//! The `.psf` settles the element instead. A hydrogen is any atom under
-//! 4.6 amu. A heavy atom first has back the mass it lent its hydrogens -- each
-//! bonded hydrogen's mass over 1.008 -- and then takes the element whose
-//! standard weight is within 0.1 of that. The same release's methyl carbons,
-//! 5.963 amu beside three hydrogens of 3.024, come back to 12.011.
+//! The `.psf` settles the element instead. A hydrogen is an atom under
+//! 4.6 amu, unless it is bonded to two or more such atoms and, given back
+//! what they hold over 1.008, weighs an element: at 4x repartitioning a
+//! methyl carbon keeps only 2.939 amu. A heavy atom first has back the mass it
+//! lent its hydrogens -- each bonded hydrogen's mass over 1.008 -- and then
+//! takes the element whose standard weight is within 0.1 of that. The same
+//! release's methyl carbons, 5.963 amu beside three hydrogens of 3.024, come
+//! back to 12.011.
 //!
 //! A single-atom residue bonded to nothing, whose `.psf` charge is a whole
 //! nonzero number, is an ion, and that charge goes in columns 79-80. cpptraj
 //! writes none, so OpenBabel read the same release's Ca2+ as neutral calcium
 //! and inferred calcium hydride.
 //!
-//! This only ever corrects cpptraj's output. An atom whose mass matches no
-//! element, or two, or a PDB whose atoms cannot be found in the `.psf` in
-//! order, leaves the file exactly as cpptraj wrote it, with a warning.
+//! This only ever corrects cpptraj's output. A `.psf` that cannot be read, an
+//! atom whose mass matches no element, or two, or a PDB whose atoms cannot be
+//! found in the `.psf` in order, leaves the file exactly as cpptraj wrote it,
+//! with a warning for the submitter.
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use log::{debug, warn};
 use std::{collections::HashMap, fs, path::Path};
 
@@ -81,8 +85,8 @@ const WEIGHTS: &[(&str, f64)] = &[
 /// closest two elements above, Ni and Co, are 0.24 apart.
 const WEIGHT_TOLERANCE: f64 = 0.1;
 
-/// Below this an atom is a hydrogen, repartitioned up to four times its
-/// weight.
+/// Below this an atom may be a hydrogen, repartitioned up to four times its
+/// weight; see `settle` for the heavy atoms that fall below it.
 const HYDROGEN_MASS: f64 = 4.6;
 
 /// Below this an atom is a massless site or a Drude particle, with no element.
@@ -118,18 +122,40 @@ pub fn is_psf(path: &Path) -> bool {
 
 // --------------------------------------------------
 /// Correct the element and ion-charge columns of each PDB cpptraj wrote from
-/// the `.psf` at `psf`. See the module comment.
-pub fn fix_psf_elements(psf: &Path, pdbs: &[&Path]) -> Result<()> {
-    let text = fs::read_to_string(psf)?;
-    let atoms = parse_psf(&text).map_err(|e| anyhow!("{}: {e}", psf.display()))?;
+/// the `.psf` at `psf`, returning a warning for the submitter for each file
+/// left as cpptraj wrote it. See the module comment.
+///
+/// A `.psf` that cannot be read or parsed is a warning, not an error: cpptraj
+/// read it, and its output is what every release before this one shipped.
+pub fn fix_psf_elements(psf: &Path, pdbs: &[&Path]) -> Result<Vec<String>> {
+    let psf_name = file_name(psf);
+    let left = |what: &str, e: &str| {
+        let msg = format!(
+            r#"Elements in {what} were left as cpptraj guessed them from the masses in "{psf_name}" (a repartitioned hydrogen reads as helium, and ions have no charge): {e}"#
+        );
+        warn!("{msg}");
+        msg
+    };
+    let all = pdbs
+        .iter()
+        .map(|p| file_name(p))
+        .collect::<Vec<_>>()
+        .join(" and ");
+
+    let atoms = match fs::read(psf)
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .map_err(|e| e.to_string())
+        .and_then(|text| parse_psf(&text))
+    {
+        Ok(atoms) => atoms,
+        Err(e) => return Ok(vec![left(&all, &e)]),
+    };
     let settled = match settle(&atoms) {
         Ok(settled) => settled,
-        Err(e) => {
-            warn!("Leaving cpptraj's elements for {}: {e}", psf.display());
-            return Ok(());
-        }
+        Err(e) => return Ok(vec![left(&all, &e)]),
     };
 
+    let mut warnings = vec![];
     for pdb in pdbs {
         let text = fs::read_to_string(pdb)?;
         match rewrite(&text, &atoms, &settled) {
@@ -145,12 +171,19 @@ pub fn fix_psf_elements(psf: &Path, pdbs: &[&Path]) -> Result<()> {
                     fs::rename(&tmp, pdb)?;
                 }
             }
-            Err(e) => {
-                warn!(r#"Leaving cpptraj's elements in "{}": {e}"#, pdb.display())
-            }
+            Err(e) => warnings.push(left(&file_name(pdb), &e)),
         }
     }
-    Ok(())
+    Ok(warnings)
+}
+
+/// A path's last component, which is all a submitter can place: the full
+/// path is a scratch directory on the processing host.
+fn file_name(path: &Path) -> String {
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
 }
 
 // --------------------------------------------------
@@ -214,16 +247,54 @@ pub fn parse_psf(text: &str) -> Result<PsfAtoms, String> {
 /// be settled.
 pub fn settle(atoms: &PsfAtoms) -> Result<Vec<Settled>, String> {
     let m = &atoms.masses;
-    let mut lent = vec![0.0; m.len()];
     let mut bonded = vec![0usize; m.len()];
+    let mut neighbours = vec![vec![]; m.len()];
     for &(i, j) in &atoms.bonds {
-        for (a, h) in [(i, j), (j, i)] {
-            bonded[a] += 1;
-            if m[a] >= HYDROGEN_MASS && m[h] < HYDROGEN_MASS {
+        bonded[i] += 1;
+        bonded[j] += 1;
+        neighbours[i].push(j);
+        neighbours[j].push(i);
+    }
+
+    // Light enough to be a hydrogen. Not every such atom is one: a methyl
+    // carbon lends its three hydrogens 3 x 3.024 amu at 4x repartitioning
+    // and keeps 2.939, and methane's at 3x keeps 3.947.
+    let light = |i: usize| (VIRTUAL_MASS..HYDROGEN_MASS).contains(&m[i]);
+    let is_h: Vec<bool> = (0..m.len())
+        .map(|i| {
+            if !light(i) {
+                return false;
+            }
+            // Such a carbon is bonded to two or more light atoms and, given
+            // back what they hold over 1.008, weighs an element. A hydrogen is
+            // bonded to one heavy atom, or, in a rigid CHARMM water, to its
+            // oxygen and one other hydrogen, which lends it nothing.
+            let lighter: Vec<usize> = neighbours[i]
+                .iter()
+                .copied()
+                .filter(|&j| light(j))
+                .collect();
+            let mass =
+                m[i] + lighter.iter().map(|&j| m[j] - HYDROGEN_WEIGHT).sum::<f64>();
+            !(lighter.len() >= 2
+                && WEIGHTS[1..]
+                    .iter()
+                    .any(|(_, w)| (w - mass).abs() <= WEIGHT_TOLERANCE))
+        })
+        .collect();
+
+    // What each heavy atom lent its hydrogens, and a virtual site's mass,
+    // which a force field takes from the atom it sits on.
+    let mut lent = vec![0.0; m.len()];
+    for (a, near) in neighbours.iter().enumerate() {
+        if is_h[a] || m[a] < VIRTUAL_MASS {
+            continue;
+        }
+        for &h in near {
+            if is_h[h] {
+                lent[a] += m[h] - HYDROGEN_WEIGHT;
+            } else if m[h] < VIRTUAL_MASS {
                 lent[a] += m[h];
-                if m[h] >= VIRTUAL_MASS {
-                    lent[a] -= HYDROGEN_WEIGHT;
-                }
             }
         }
     }
@@ -237,7 +308,7 @@ pub fn settle(atoms: &PsfAtoms) -> Result<Vec<Settled>, String> {
     for i in 0..m.len() {
         let element = if m[i] < VIRTUAL_MASS {
             ""
-        } else if m[i] < HYDROGEN_MASS {
+        } else if is_h[i] {
             "H"
         } else {
             let mass = m[i] + lent[i];
@@ -550,9 +621,103 @@ mod tests {
         fs::write(&top, psf(&["CG 1 BEAD BB P5 0.0 72.0"], &[]))?;
         let text = pdb(&[("BB", "BEAD", "GE")]);
         fs::write(&pdb_path, &text)?;
-        fix_psf_elements(&top, &[&pdb_path])?;
+        let warnings = fix_psf_elements(&top, &[&pdb_path])?;
         assert_eq!(fs::read_to_string(&pdb_path)?, text);
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0].contains(r#"full.pdb were left"#),
+            "{warnings:?}"
+        );
+        assert!(warnings[0].contains(r#""cg.psf""#), "{warnings:?}");
+        assert!(!warnings[0].contains(&*dir.path().to_string_lossy()));
         Ok(())
+    }
+
+    #[test]
+    fn a_psf_that_cannot_be_parsed_is_a_warning_not_an_error() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let pdb_path = dir.path().join("full.pdb");
+        let text = pdb(&CPPTRAJ);
+        fs::write(&pdb_path, &text)?;
+
+        let short_atom =
+            "PSF\n\n         1 !NATOM\n         1 LIG 1 LIG C1\n".to_string();
+        let short_bonds = psf(
+            &[
+                "LIG 1 LIG C1 CG331 -0.27 12.011",
+                "LIG 1 LIG H1 HGA3 0.09 1.008",
+            ],
+            &[(1, 2)],
+        )
+        .replace("1 !NBOND", "2 !NBOND");
+        for (i, bad) in [short_atom, short_bonds, "not a psf".to_string()]
+            .iter()
+            .enumerate()
+        {
+            let top = dir.path().join(format!("bad{i}.psf"));
+            fs::write(&top, bad)?;
+            let warnings = fix_psf_elements(&top, &[&pdb_path])?;
+            assert_eq!(warnings.len(), 1, "{bad}");
+            assert_eq!(fs::read_to_string(&pdb_path)?, text);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_non_utf8_remark_does_not_stop_the_fix() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let top = dir.path().join("sys.psf");
+        let mut bytes = psf(&["ION 1 CAL CAL CAL 2.00 40.08"], &[]).into_bytes();
+        let at = bytes.windows(4).position(|w| w == b"test").unwrap();
+        bytes[at] = 0xE9; // Latin-1 e-acute
+        fs::write(&top, bytes)?;
+        let pdb_path = dir.path().join("full.pdb");
+        fs::write(&pdb_path, pdb(&[("CAL", "CAL", "CA")]))?;
+        assert!(fix_psf_elements(&top, &[&pdb_path])?.is_empty());
+        assert_eq!(columns(&fs::read_to_string(&pdb_path)?), ["CA2+"]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_heavily_repartitioned_methyl_carbon_is_carbon() {
+        // 4x: H 4.032, so CH3 keeps 12.011 - 3 x 3.024 = 2.939 and CH2
+        // 12.011 - 2 x 3.024 = 5.963, bonded to a carbon with no hydrogens.
+        let atoms = parse_psf(&psf(
+            &[
+                "LIG 1 LIG C1 CG331 -0.27 2.939",
+                "LIG 1 LIG H11 HGA3 0.09 4.032",
+                "LIG 1 LIG H12 HGA3 0.09 4.032",
+                "LIG 1 LIG H13 HGA3 0.09 4.032",
+                "LIG 1 LIG C2 CG321 -0.18 5.963",
+                "LIG 1 LIG H21 HGA2 0.09 4.032",
+                "LIG 1 LIG H22 HGA2 0.09 4.032",
+                "LIG 1 LIG C3 CG301 0.00 12.011",
+            ],
+            &[(1, 2), (1, 3), (1, 4), (1, 5), (5, 6), (5, 7), (5, 8)],
+        ))
+        .unwrap();
+        let elements: Vec<_> =
+            settle(&atoms).unwrap().iter().map(|s| s.element).collect();
+        assert_eq!(elements, ["C", "H", "H", "H", "C", "H", "H", "C"]);
+    }
+
+    #[test]
+    fn methane_at_3x_is_carbon() {
+        // 12.011 - 4 x 2.016 = 3.947
+        let atoms = parse_psf(&psf(
+            &[
+                "LIG 1 CH4 C1 CG331 -0.36 3.947",
+                "LIG 1 CH4 H1 HGA3 0.09 3.024",
+                "LIG 1 CH4 H2 HGA3 0.09 3.024",
+                "LIG 1 CH4 H3 HGA3 0.09 3.024",
+                "LIG 1 CH4 H4 HGA3 0.09 3.024",
+            ],
+            &[(1, 2), (1, 3), (1, 4), (1, 5)],
+        ))
+        .unwrap();
+        let elements: Vec<_> =
+            settle(&atoms).unwrap().iter().map(|s| s.element).collect();
+        assert_eq!(elements, ["C", "H", "H", "H", "H"]);
     }
 
     #[test]

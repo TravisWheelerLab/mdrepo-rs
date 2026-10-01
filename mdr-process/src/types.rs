@@ -362,6 +362,10 @@ pub struct ProcessedTrajectory {
     /// full.xtc a fabricated spacing is indistinguishable from a real one.
     pub source_has_time_axis: Option<bool>,
     pub is_coarse_grained: bool,
+
+    /// For the submitter: what this replicate's processing could not do
+    /// and left as it was, e.g. a `.psf` whose elements could not be read.
+    pub warnings: Vec<String>,
 }
 
 // --------------------------------------------------
