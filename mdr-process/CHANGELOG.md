@@ -11,6 +11,17 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.3.0 (2026-10-01)
+
+- **A .psf topology's elements come from its masses and bonds**, not
+  cpptraj's guess. cpptraj gives each atom the element nearest its mass, so
+  a hydrogen repartitioned to 3.024 amu was written as helium, and ions lost
+  their charges. Columns 77-80 of `full.pdb` and `minimal.pdb` are rewritten
+  before anything reads them; nothing else in those files changes. Ligands
+  inferred from them, and the files in iRODS, change for affected
+  simulations. An atom whose mass matches no element, or more than one, is
+  left as cpptraj wrote it, with a warning.
+
 ## 0.2.0 (2026-10-01)
 
 The first numbered version; every build before this said 0.1.0.
