@@ -288,24 +288,28 @@ pub struct DownloadUploadedFileUpdate {
 pub struct Ligand {
     pub id: i64,
     pub name: String,
-    pub smiles: String,
+    /// Null for a polymer ligand, which has `chain_id` instead (md-repo-app
+    /// 0286; exactly one of the two is set).
+    pub smiles: Option<String>,
     pub inchi: Option<String>,
     pub inchikey: Option<String>,
     pub declared_identity: Option<String>,
     pub identity_software: Option<String>,
     pub simulation_id: i64,
+    pub chain_id: Option<i64>,
 }
 
 #[derive(Debug, Insertable, Deserialize)]
 #[diesel(table_name = md_ligand)]
 pub struct NewLigand {
     pub name: String,
-    pub smiles: String,
+    pub smiles: Option<String>,
     pub inchi: Option<String>,
     pub inchikey: Option<String>,
     pub declared_identity: Option<String>,
     pub identity_software: Option<String>,
     pub simulation_id: i64,
+    pub chain_id: Option<i64>,
 }
 
 #[derive(Debug, AsChangeset, Default, Deserialize)]
@@ -318,6 +322,86 @@ pub struct LigandUpdate {
     pub declared_identity: Option<String>,
     pub identity_software: Option<String>,
     pub simulation_id: Option<i64>,
+}
+
+// ── md_polymer ────────────────────────────────────────────────────────────────
+
+/// Each distinct protein, DNA or RNA sequence, once (md-repo-app 0283).
+/// Unique on (`polymer_type`, `residues_hash`).
+#[derive(
+    Debug, Queryable, Selectable, Identifiable, Serialize, Deserialize, ToSchema,
+)]
+#[diesel(table_name = md_polymer)]
+pub struct Polymer {
+    pub id: i64,
+    pub polymer_type: String,
+    pub sequence: String,
+    pub residues: Vec<String>,
+    pub residues_hash: String,
+    pub num_residues: i32,
+    pub reference_db: Option<String>,
+    pub reference_accession: Option<String>,
+}
+
+#[derive(Debug, Insertable)]
+#[diesel(table_name = md_polymer)]
+pub struct NewPolymer {
+    pub polymer_type: String,
+    pub sequence: String,
+    pub residues: Vec<String>,
+    pub residues_hash: String,
+    pub num_residues: i32,
+    pub reference_db: Option<String>,
+    pub reference_accession: Option<String>,
+}
+
+// ── md_chain ──────────────────────────────────────────────────────────────────
+
+/// One polymer molecule in one simulation (md-repo-app 0283)
+#[derive(
+    Debug,
+    Queryable,
+    Selectable,
+    Identifiable,
+    Associations,
+    Serialize,
+    Deserialize,
+    ToSchema,
+)]
+#[diesel(table_name = md_chain)]
+#[diesel(belongs_to(Simulation))]
+#[diesel(belongs_to(Polymer))]
+pub struct Chain {
+    pub id: i64,
+    pub chain_order: i32,
+    pub chain_label: String,
+    pub source: String,
+    pub first_residue: Option<i32>,
+    pub last_residue: Option<i32>,
+    pub n_terminal_cap: Option<String>,
+    pub c_terminal_cap: Option<String>,
+    pub match_method: Option<String>,
+    pub reference_start: Option<i32>,
+    pub reference_end: Option<i32>,
+    pub reference_identity: Option<f64>,
+    pub reference_coverage: Option<f64>,
+    pub simulation_id: i64,
+    pub polymer_id: i64,
+}
+
+#[derive(Debug, Insertable)]
+#[diesel(table_name = md_chain)]
+pub struct NewChain {
+    pub chain_order: i32,
+    pub chain_label: String,
+    pub source: String,
+    pub first_residue: Option<i32>,
+    pub last_residue: Option<i32>,
+    pub n_terminal_cap: Option<String>,
+    pub c_terminal_cap: Option<String>,
+    pub match_method: Option<String>,
+    pub simulation_id: i64,
+    pub polymer_id: i64,
 }
 
 // ── md_pdb ────────────────────────────────────────────────────────────────────

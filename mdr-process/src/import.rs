@@ -29,14 +29,15 @@
 //! - **A bare `Cl` solute becomes `Cl-`, not the script's `Cl+`.** Chloride is an
 //!   anion; the script wrote a cation that does not exist in these systems.
 
-use crate::types::{ExportSimulation, MdFile, ResolvedLigand};
+use crate::types::{ExportSimulation, ImportChain, MdFile, ResolvedLigand};
 use anyhow::{Result, anyhow, bail};
 use chrono::Utc;
 use diesel::{PgConnection, connection::Connection};
 use libmdrepo::metadata;
 use log::debug;
 use mdr_db::{models::*, ops};
-use std::path::Path;
+use sha2::{Digest, Sha256};
+use std::{collections::HashMap, path::Path};
 
 /// Uploads made under this ORCID are attributed to the fixed `mdrepo_admin`
 /// account rather than a specific contributor.
@@ -124,8 +125,19 @@ pub fn import_simulation(
         for (rank, creator) in sim.creators.iter().enumerate() {
             upsert_creator(conn, sim_id, creator, rank as i32 + 1)?;
         }
+        // Chains are replaced on every import, not only a reprocess: they
+        // are measured from this run's full.pdb, never merged with an earlier
+        // run's. The polymer ligands pointing at them go first.
+        let n = ops::delete_chains_for_simulation(conn, sim_id)?;
+        if n > 0 {
+            debug!("Removed {n} previous chain(s)");
+        }
+        let mut chain_ids = HashMap::new();
+        for chain in &sim.chains {
+            chain_ids.insert(chain.chain_order, insert_chain(conn, sim_id, chain)?);
+        }
         for ligand in &sim.ligands {
-            upsert_ligand(conn, sim_id, ligand)?;
+            upsert_ligand(conn, sim_id, ligand, &chain_ids)?;
         }
         for solute in &sim.solutes {
             upsert_solute(conn, sim_id, solute)?;
@@ -242,7 +254,8 @@ fn upsert_simulation(
                 rmsf_values: Some(Some(sim.rmsf_values.clone())),
                 forcefield: Some(sim.forcefield.clone()),
                 forcefield_comments: Some(sim.forcefield_comments.clone()),
-                fasta_sequence: Some(Some(sim.fasta_sequence.clone())),
+                // Empty for a DNA- or RNA-only structure: no protein chains
+                fasta_sequence: Some(non_empty(&sim.fasta_sequence)),
                 num_replicates: Some(Some(sim.num_replicates as i32)),
                 temperature: Some(Some(sim.temperature_kelvin as i32)),
                 protonation_method: Some(sim.protonation_method.clone()),
@@ -280,7 +293,7 @@ fn upsert_simulation(
             rmsf_values: Some(sim.rmsf_values.clone()),
             forcefield: sim.forcefield.clone(),
             forcefield_comments: sim.forcefield_comments.clone(),
-            fasta_sequence: Some(sim.fasta_sequence.clone()),
+            fasta_sequence: non_empty(&sim.fasta_sequence),
             num_replicates: Some(sim.num_replicates as i32),
             temperature: Some(sim.temperature_kelvin as i32),
             protonation_method: sim.protonation_method.clone(),
@@ -509,13 +522,52 @@ fn upsert_ligand(
     conn: &mut PgConnection,
     sim_id: i64,
     ligand: &ResolvedLigand,
+    chain_ids: &HashMap<u32, i64>,
 ) -> Result<i64> {
-    if let Some(id) = ops::find_ligand_id(conn, sim_id, &ligand.name)? {
+    let existing = ops::find_ligand_id(conn, sim_id, &ligand.name)?;
+
+    // A polymer ligand: a new row pointing at its chain. Any row of the same
+    // name left from an earlier import goes, since a row is a SMILES or a
+    // chain and an update cannot move it from one to the other.
+    if let Some(order) = ligand.chain_order {
+        let chain_id = *chain_ids.get(&order).ok_or_else(|| {
+            anyhow!(
+                r#"Ligand "{}" names chain {order}, which is not in the import"#,
+                ligand.name
+            )
+        })?;
+        if let Some(id) = existing {
+            ops::delete_ligand(conn, id)?;
+        }
+        return Ok(ops::insert_ligand(
+            conn,
+            NewLigand {
+                name: ligand.name.clone(),
+                smiles: None,
+                inchi: None,
+                inchikey: None,
+                declared_identity: ligand.declared_identity.clone(),
+                identity_software: None,
+                simulation_id: sim_id,
+                chain_id: Some(chain_id),
+            },
+        )?
+        .id);
+    }
+
+    let smiles = ligand.smiles.clone().ok_or_else(|| {
+        anyhow!(
+            r#"Ligand "{}" has neither a SMILES nor a chain"#,
+            ligand.name
+        )
+    })?;
+
+    if let Some(id) = existing {
         ops::update_ligand(
             conn,
             id,
             LigandUpdate {
-                smiles: Some(ligand.smiles.clone()),
+                smiles: Some(smiles),
                 inchi: ligand.inchi.clone(),
                 inchikey: ligand.inchikey.clone(),
                 declared_identity: ligand.declared_identity.clone(),
@@ -530,12 +582,65 @@ fn upsert_ligand(
         conn,
         NewLigand {
             name: ligand.name.clone(),
-            smiles: ligand.smiles.clone(),
+            smiles: Some(smiles),
             inchi: ligand.inchi.clone(),
             inchikey: ligand.inchikey.clone(),
             declared_identity: ligand.declared_identity.clone(),
             identity_software: ligand.identity_software.clone(),
             simulation_id: sim_id,
+            chain_id: None,
+        },
+    )?
+    .id)
+}
+
+// --------------------------------------------------
+fn non_empty(text: &str) -> Option<String> {
+    (!text.trim().is_empty()).then(|| text.to_string())
+}
+
+// --------------------------------------------------
+/// `md_polymer.residues_hash`: the lower-case hex SHA-256 of the residue codes
+/// joined by commas (`ALA,GLY,SER`). Any other writer of md_polymer (the
+/// full.pdb backfill) must hash the same way, or one sequence gets two rows.
+pub fn residues_hash(residues: &[String]) -> String {
+    format!("{:x}", Sha256::digest(residues.join(",").as_bytes()))
+}
+
+// --------------------------------------------------
+/// Insert one chain, and its polymer if the polymer is new. Returns the
+/// chain's id.
+fn insert_chain(
+    conn: &mut PgConnection,
+    sim_id: i64,
+    chain: &ImportChain,
+) -> Result<i64> {
+    let polymer_id = ops::find_or_insert_polymer(
+        conn,
+        &NewPolymer {
+            polymer_type: chain.polymer_type.clone(),
+            sequence: chain.sequence.clone(),
+            residues: chain.residues.clone(),
+            residues_hash: residues_hash(&chain.residues),
+            num_residues: i32::try_from(chain.residues.len())?,
+            reference_db: None,
+            reference_accession: None,
+        },
+    )?;
+
+    Ok(ops::insert_chain(
+        conn,
+        NewChain {
+            chain_order: i32::try_from(chain.chain_order)?,
+            chain_label: chain.chain_label.clone(),
+            source: chain.source.clone(),
+            first_residue: chain.first_residue,
+            last_residue: chain.last_residue,
+            n_terminal_cap: chain.n_terminal_cap.clone(),
+            c_terminal_cap: chain.c_terminal_cap.clone(),
+            match_method: None,
+            simulation_id: sim_id,
+            polymer_id,
         },
     )?
     .id)

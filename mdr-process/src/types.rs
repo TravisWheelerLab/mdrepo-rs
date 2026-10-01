@@ -522,9 +522,17 @@ pub struct Export {
 pub struct ResolvedLigand {
     pub name: String,
 
-    /// Always present: `md_ligand.smiles` is NOT NULL. Derived from the InChI
-    /// when the submitter gave only that.
-    pub smiles: String,
+    /// Present for a small molecule, derived from the InChI when the
+    /// submitter gave only that. None for a polymer ligand, which has
+    /// `chain_order` instead; `md_ligand` requires exactly one (md-repo-app
+    /// 0286).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smiles: Option<String>,
+
+    /// For a peptide, DNA or RNA ligand declared by sequence: the
+    /// `chain_order` of its entry in `ExportSimulation::chains`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_order: Option<u32>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inchi: Option<String>,
@@ -636,6 +644,11 @@ pub struct ExportSimulation {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub ligands: Vec<ResolvedLigand>,
 
+    /// Polymer chains for `md_chain`/`md_polymer`, in `chain_order`. Absent
+    /// in import files written before 2026-10-01.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chains: Vec<ImportChain>,
+
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub solutes: Vec<metadata::Solute>,
 
@@ -647,6 +660,42 @@ pub struct ExportSimulation {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_coarse_grained: Option<bool>,
+}
+
+// --------------------------------------------------
+/// One polymer chain as the import writes it: an `md_chain` row and the
+/// `md_polymer` row it points at
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct ImportChain {
+    /// 1, 2, 3, ... in file order, a declared chain in the place of its atoms
+    pub chain_order: u32,
+
+    /// The chain letter as written, possibly blank
+    pub chain_label: String,
+
+    /// `structure`: cut from full.pdb by the splitter. `declared`: a blob
+    /// residue matched to a ligand's declared sequence by composition.
+    pub source: String,
+
+    /// `protein`, `dna` or `rna`
+    pub polymer_type: String,
+
+    /// One letter per residue
+    pub sequence: String,
+
+    /// Chemical-component codes, caps excluded
+    pub residues: Vec<String>,
+
+    /// Residue numbers as written; None for a declared chain
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_residue: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_residue: Option<i32>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n_terminal_cap: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub c_terminal_cap: Option<String>,
 }
 
 // --------------------------------------------------

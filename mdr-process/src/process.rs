@@ -4,11 +4,11 @@ use crate::{
     ticket::dsn_for,
     types::{
         BlastResult, CheckedLigand, DoiAuthor, DoiPaper, Duration, Export,
-        ExportSimulation, ImportJsonArgs, ImportResult, InferredLigand, MdFile,
-        PdbEntry, PdbResponse, ProcessArgs, ProcessResult, ProcessTrajectoryArgs,
-        ProcessedTarball, ProcessedTrajectory, ProcessedTrajectoryType, PushOutcome,
-        ResolvedLigand, RmsdRmsf, RunImportArgs, Server, UniprotDb, UniprotEntry,
-        UniprotResponse,
+        ExportSimulation, ImportChain, ImportJsonArgs, ImportResult, InferredLigand,
+        MdFile, PdbEntry, PdbResponse, ProcessArgs, ProcessResult,
+        ProcessTrajectoryArgs, ProcessedTarball, ProcessedTrajectory,
+        ProcessedTrajectoryType, PushOutcome, ResolvedLigand, RmsdRmsf, RunImportArgs,
+        Server, UniprotDb, UniprotEntry, UniprotResponse,
     },
     validate,
 };
@@ -1185,21 +1185,217 @@ pub fn blast_uniprot(
 }
 
 // --------------------------------------------------
-/// Write `sequence.fa` from `full_pdb`, one record per chain. See
-/// `sequence.rs` for how chains are found.
-pub fn get_sequence(full_pdb: &Path, processed_dir: &Path) -> Result<PathBuf> {
+/// Write `sequence.fa`, one record per protein chain. See `sequence.rs` for how
+/// chains are found. The file is empty when the structure has polymer chains
+/// but no protein (DNA or RNA only), and BLAST is then skipped.
+pub fn get_sequence(
+    chains: &[sequence::Chain],
+    processed_dir: &Path,
+) -> Result<PathBuf> {
     let sequence_file = processed_dir.join("sequence.fa");
 
     if file_exists(&sequence_file) {
         debug!("Sequence file exists");
     } else {
         debug!("Creating sequence file");
-        let fasta = sequence::fasta_from_pdb(full_pdb)?;
-        fs::write(&sequence_file, fasta)
+        fs::write(&sequence_file, sequence::fasta_from_chains(chains))
             .map_err(|e| anyhow!("{}: {e}", sequence_file.display()))?;
     }
 
     Ok(sequence_file)
+}
+
+// --------------------------------------------------
+/// The import's chains: the splitter's, plus one `declared` chain for each
+/// ligand declared by sequence that matches a blob residue rather than a
+/// chain, all numbered in file order. Also returns, by the ligand's index in
+/// the TOML, the `chain_order` each sequence ligand points at.
+///
+/// A sequence ligand is matched (design doc, "The TOML: a ligand declared by
+/// sequence") to:
+///   1. a chain the splitter found with the same residues (87701's peptide);
+///   2. else a molecule outside every chain whose heavy atoms are what the
+///      sequence needs (DDD's `LIG`): see `sequence::find_blobs`;
+///   3. else nothing, and the import is refused naming the sequence.
+pub fn place_chains(
+    structure_chains: &[sequence::Chain],
+    ligands: Option<&Vec<metadata::Ligand>>,
+    full_pdb: &Path,
+) -> Result<(Vec<ImportChain>, HashMap<usize, u32>)> {
+    // (first atom, chain, the ligand it is for)
+    let mut placed: Vec<(usize, ImportChain, Option<usize>)> = structure_chains
+        .iter()
+        .map(|c| {
+            let chain = ImportChain {
+                chain_order: 0,
+                chain_label: c.label.clone(),
+                source: "structure".to_string(),
+                polymer_type: c.polymer_type.to_string(),
+                sequence: c.sequence.clone(),
+                residues: c.residues.clone(),
+                first_residue: Some(c.first_residue),
+                last_residue: Some(c.last_residue),
+                n_terminal_cap: c.n_terminal_cap.clone(),
+                c_terminal_cap: c.c_terminal_cap.clone(),
+            };
+            (c.first_atom, chain, None)
+        })
+        .collect();
+
+    let mut pdb_text: Option<String> = None;
+    let mut used_blobs: HashSet<usize> = HashSet::new();
+    for (num, ligand) in ligands.into_iter().flatten().enumerate() {
+        let (Some(seq), Some(seq_type)) = (&ligand.sequence, ligand.sequence_type)
+        else {
+            continue;
+        };
+        let declared = declared_chain(seq, seq_type)
+            .map_err(|e| anyhow!(r#"ligands[{}] "{}": {e}"#, num + 1, ligand.name))?;
+
+        // 1. A chain the splitter found
+        if let Some(slot) = placed.iter_mut().find(|(_, c, owner)| {
+            owner.is_none()
+                && c.source == "structure"
+                && c.polymer_type == declared.polymer_type
+                && c.residues == declared.residues
+        }) {
+            debug!(
+                r#"Ligand "{}" is chain {}"#,
+                ligand.name, slot.1.chain_label
+            );
+            slot.2 = Some(num);
+            continue;
+        }
+
+        // 2. A blob residue of the right composition
+        if seq_type != metadata::SequenceType::Protein {
+            bail!(
+                r#"ligands[{}] "{}": no chain in the structure has the sequence {seq}, and matching a {seq_type} written as one residue is not supported yet"#,
+                num + 1,
+                ligand.name
+            );
+        }
+        let expected = sequence::expected_peptide_formula(
+            &declared.residues,
+            declared.n_terminal_cap.as_deref(),
+            declared.c_terminal_cap.as_deref(),
+        )
+        .map_err(|e| anyhow!(r#"ligands[{}] "{}": {e}"#, num + 1, ligand.name))?;
+        if pdb_text.is_none() {
+            pdb_text = Some(read_file(full_pdb)?);
+        }
+        let blobs = sequence::find_blobs(pdb_text.as_deref().unwrap_or(""), &expected)?;
+        let Some(blob) = blobs.iter().find(|b| !used_blobs.contains(&b.first_atom))
+        else {
+            bail!(
+                r#"ligands[{}] "{}": no chain in the structure has the sequence {seq}, and no other molecule has its heavy atoms ({})"#,
+                num + 1,
+                ligand.name,
+                sequence::formula_text(&expected)
+            );
+        };
+        if blobs.len() > 1 {
+            debug!(
+                r#"Ligand "{}": {} molecules match; using the first unused"#,
+                ligand.name,
+                blobs.len()
+            );
+        }
+        debug!(
+            r#"Ligand "{}" is residue {} ({}), by composition"#,
+            ligand.name,
+            blob.name,
+            sequence::formula_text(&expected)
+        );
+        used_blobs.insert(blob.first_atom);
+        let chain = ImportChain {
+            chain_label: blob.chain_label.clone(),
+            ..declared
+        };
+        placed.push((blob.first_atom, chain, Some(num)));
+    }
+
+    placed.sort_by_key(|(first_atom, _, _)| *first_atom);
+    let mut ligand_chain = HashMap::new();
+    let chains = placed
+        .into_iter()
+        .enumerate()
+        .map(|(i, (_, mut chain, owner))| {
+            chain.chain_order = i as u32 + 1;
+            if let Some(num) = owner {
+                ligand_chain.insert(num, chain.chain_order);
+            }
+            chain
+        })
+        .collect();
+    Ok((chains, ligand_chain))
+}
+
+/// A `declared` chain from a TOML sequence: caps at either end split off,
+/// one-letter codes turned into component codes
+fn declared_chain(seq: &str, seq_type: metadata::SequenceType) -> Result<ImportChain> {
+    use metadata::{SequenceItem, SequenceType};
+    let items = metadata::parse_sequence(seq)
+        .ok_or_else(|| anyhow!("invalid sequence {seq}"))?;
+    let last = items.len() - 1;
+    let mut n_cap = None;
+    let mut c_cap = None;
+    let mut residues = vec![];
+    let mut letters = String::new();
+    for (i, item) in items.iter().enumerate() {
+        match (item, seq_type) {
+            (SequenceItem::Code(code), SequenceType::Protein)
+                if i == 0 && last > 0 && ["ACE", "FOR"].contains(&code.as_str()) =>
+            {
+                n_cap = Some(code.clone());
+            }
+            (SequenceItem::Code(code), SequenceType::Protein)
+                if i == last
+                    && last > 0
+                    && ["NME", "NH2", "NHE", "NMA", "CT3"].contains(&code.as_str()) =>
+            {
+                c_cap = Some(code.clone());
+            }
+            (SequenceItem::Code(code), SequenceType::Protein) => {
+                let code = sequence::canonical(code);
+                letters.push(sequence::one_letter(&code).unwrap_or('X'));
+                residues.push(code);
+            }
+            (SequenceItem::Letter(l), SequenceType::Protein) => {
+                let code = sequence::amino_acid_code(*l)
+                    .ok_or_else(|| anyhow!("{l} is not a standard amino acid; write the residue as its component code in parentheses"))?;
+                letters.push(*l);
+                residues.push(code.to_string());
+            }
+            (SequenceItem::Letter(l), SequenceType::Dna) => {
+                letters.push(*l);
+                residues.push(format!("D{l}"));
+            }
+            (SequenceItem::Letter(l), SequenceType::Rna) => {
+                letters.push(*l);
+                residues.push(l.to_string());
+            }
+            (SequenceItem::Code(code), _) => {
+                letters.push('X');
+                residues.push(code.clone());
+            }
+        }
+    }
+    if residues.is_empty() {
+        bail!("the sequence {seq} has caps but no residues");
+    }
+    Ok(ImportChain {
+        chain_order: 0,
+        chain_label: String::new(),
+        source: "declared".to_string(),
+        polymer_type: seq_type.to_string(),
+        sequence: letters,
+        residues,
+        first_residue: None,
+        last_residue: None,
+        n_terminal_cap: n_cap,
+        c_terminal_cap: c_cap,
+    })
 }
 
 // --------------------------------------------------
@@ -1319,8 +1515,17 @@ pub fn make_import_json(
     let structure_hash =
         get_file_hash(&args.input_dir.join(&args.meta.structure_file_name))?;
 
-    let fasta_sequence_file =
-        get_sequence(&args.example_trajectory.full_pdb, args.processed_dir)?;
+    let full_pdb = &args.example_trajectory.full_pdb;
+    let structure_chains = sequence::chains_from_pdb(full_pdb)?;
+    if structure_chains.is_empty() {
+        bail!(
+            r#"Failed to find a protein, DNA or RNA chain in structure "{}""#,
+            full_pdb.display()
+        );
+    }
+    let fasta_sequence_file = get_sequence(&structure_chains, args.processed_dir)?;
+    let (chains, ligand_chains) =
+        place_chains(&structure_chains, args.meta.ligands.as_ref(), full_pdb)?;
 
     let rmsd_rmsf = get_all_rmsd_rmsf(
         args.example_trajectory,
@@ -1337,12 +1542,24 @@ pub fn make_import_json(
         args.processed_dir,
     )?;
 
-    let inferred_ligands = get_inferred_ligands(
-        &args.example_trajectory.min_pdb,
-        args.processed_dir,
-        args.script_dir,
-        args.uv,
-    )?;
+    // Inferred ligands are only compared with declared structures, so when
+    // every declared ligand is a sequence there is nothing to compare, and
+    // RDKit is spared the peptide (it timed out on 154 of DDD's 733).
+    let all_sequences =
+        args.meta.ligands.as_ref().is_some_and(|l| {
+            !l.is_empty() && l.iter().all(metadata::Ligand::is_sequence)
+        });
+    let inferred_ligands = if all_sequences {
+        debug!("Every declared ligand is a sequence; not inferring ligands");
+        vec![]
+    } else {
+        get_inferred_ligands(
+            &args.example_trajectory.min_pdb,
+            args.processed_dir,
+            args.script_dir,
+            args.uv,
+        )?
+    };
 
     let unique_file_hash_string = get_unique_file_hash(&args.meta, args.input_dir);
 
@@ -1358,6 +1575,7 @@ pub fn make_import_json(
     let (ligands, ligand_warnings) = resolve_ligands(
         args.meta.ligands.as_ref(),
         inferred_ligands,
+        &ligand_chains,
         args.script_dir,
         args.uv,
     )?;
@@ -1440,6 +1658,7 @@ pub fn make_import_json(
         original_files,
         processed_files,
         ligands,
+        chains,
         solutes: args.meta.solutes.unwrap_or_default(),
         papers,
         is_embargoed: args.meta.is_embargoed,
@@ -1483,6 +1702,7 @@ pub fn make_import_json(
 fn resolve_ligands(
     given_ligands: Option<&Vec<metadata::Ligand>>,
     inferred_ligands: Vec<InferredLigand>,
+    ligand_chains: &HashMap<usize, u32>,
     script_dir: &Path,
     uv: &Path,
 ) -> Result<(Vec<ResolvedLigand>, Vec<String>)> {
@@ -1495,6 +1715,10 @@ fn resolve_ligands(
 
         if !inferred_ligands.is_empty() {
             for (ligand_num, given_ligand) in given_ligands.iter().enumerate() {
+                // A sequence was matched to a chain in place_chains
+                if given_ligand.is_sequence() {
+                    continue;
+                }
                 let mut found_match = false;
                 for inferred in &inferred_ligands {
                     let check = check_ligand(given_ligand, inferred, script_dir, uv)?;
@@ -1527,6 +1751,8 @@ fn resolve_ligands(
                 // there is nothing to put here; resolution derives it.
                 smiles: Some(ligand.structure.smiles),
                 inchi: None,
+                sequence: None,
+                sequence_type: None,
             });
         }
     }
@@ -1543,24 +1769,52 @@ fn resolve_ligands(
         })
         .collect();
 
-    let resolved = validate::resolve_ligand_identity(&ligands, script_dir, uv)?;
+    // Only structures go to the resolver, which answers by position for the
+    // list it is given; a sequence has no structure to resolve, and takes its
+    // chain from place_chains instead.
+    let structures: Vec<metadata::Ligand> = ligands
+        .iter()
+        .filter(|l| !l.is_sequence())
+        .cloned()
+        .collect();
+    let mut resolved =
+        validate::resolve_ligand_identity(&structures, script_dir, uv)?.into_iter();
 
-    Ok((
-        ligands
-            .into_iter()
-            .zip(resolved)
-            .zip(declared_identity)
-            .map(|((given, identity), declared_identity)| ResolvedLigand {
+    let out = ligands
+        .into_iter()
+        .enumerate()
+        .zip(declared_identity)
+        .map(|((num, given), declared_identity)| {
+            if given.is_sequence() {
+                let chain_order = *ligand_chains.get(&num).ok_or_else(|| {
+                    anyhow!(r#"Ligand "{}" was not matched to a chain"#, given.name)
+                })?;
+                return Ok(ResolvedLigand {
+                    name: given.name,
+                    smiles: None,
+                    chain_order: Some(chain_order),
+                    inchi: None,
+                    inchikey: None,
+                    declared_identity,
+                    identity_software: None,
+                });
+            }
+            let identity = resolved.next().ok_or_else(|| {
+                anyhow!("No resolved identity for \"{}\"", given.name)
+            })?;
+            Ok(ResolvedLigand {
                 name: given.name,
-                smiles: identity.smiles,
+                smiles: Some(identity.smiles),
+                chain_order: None,
                 inchi: identity.inchi,
                 inchikey: identity.inchikey,
                 declared_identity,
                 identity_software: identity.identity_software,
             })
-            .collect(),
-        warnings,
-    ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok((out, warnings))
 }
 
 // --------------------------------------------------
@@ -1741,6 +1995,30 @@ pub fn get_uniprot_entries(
         .map(|id| id.to_uppercase())
         .collect();
     let mut warnings = vec![];
+
+    // No protein chains (a DNA or RNA system): nothing for blastp. Declared
+    // IDs are still fetched, unchecked.
+    if read_file(fasta_sequence_file)?.trim().is_empty() {
+        if !uniprot_ids.is_empty() {
+            warnings.push(format!(
+                "No protein chains, so the Uniprot IDs were not checked: {}",
+                uniprot_ids.join(", ")
+            ));
+        }
+        uniprot_ids.sort();
+        uniprot_ids.dedup();
+        let entries = uniprot_ids
+            .iter()
+            .filter_map(|id| match get_uniprot_entry(id) {
+                Ok(entry) => Some(entry),
+                Err(e) => {
+                    warnings.push(e.to_string());
+                    None
+                }
+            })
+            .collect();
+        return Ok((entries, warnings));
+    }
 
     if uniprot_ids.is_empty() {
         // There are no given Uniprot IDs, so search
@@ -3179,6 +3457,8 @@ END
             name: "ethanol".to_string(),
             smiles: None,
             inchi: Some("InChI=1S/C2H6O/c1-2-3/h3H,2H2,1H3".to_string()),
+            sequence: None,
+            sequence_type: None,
         }
     }
 
@@ -3249,10 +3529,12 @@ END
 
         let given = vec![inchi_only_ligand()];
         let (resolved, _) =
-            resolve_ligands(Some(&given), vec![], script_dir, &uv).unwrap();
+            resolve_ligands(Some(&given), vec![], &HashMap::new(), script_dir, &uv)
+                .unwrap();
 
         assert_eq!(
-            resolved[0].smiles, "CCO",
+            resolved[0].smiles.as_deref(),
+            Some("CCO"),
             "resolution must fill the missing notation, not refuse the ligand"
         );
         assert_eq!(resolved[0].declared_identity.as_deref(), Some("inchi"));
@@ -3977,20 +4259,29 @@ END
                 name: "from-smiles".into(),
                 smiles: Some("CC=O".into()),
                 inchi: None,
+                sequence: None,
+                sequence_type: None,
             },
             metadata::Ligand {
                 name: "from-inchi".into(),
                 smiles: None,
                 inchi: Some("InChI=1S/C2H4O/c1-2-3/h2H,1H3".into()),
+                sequence: None,
+                sequence_type: None,
             },
         ];
 
         let (ligands, _) =
-            resolve_ligands(Some(&given), vec![], script_dir, &uv).unwrap();
+            resolve_ligands(Some(&given), vec![], &HashMap::new(), script_dir, &uv)
+                .unwrap();
 
         // Both now carry both notations...
         assert!(ligands.iter().all(|l| l.inchi.is_some()));
-        assert!(ligands.iter().all(|l| !l.smiles.is_empty()));
+        assert!(
+            ligands
+                .iter()
+                .all(|l| l.smiles.as_ref().is_some_and(|s| !s.is_empty()))
+        );
 
         // ...and each still remembers which one it arrived with.
         assert_eq!(ligands[0].declared_identity.as_deref(), Some("smiles"));
@@ -4037,7 +4328,8 @@ END
             },
         }];
 
-        let (ligands, _) = resolve_ligands(None, inferred, script_dir, &uv).unwrap();
+        let (ligands, _) =
+            resolve_ligands(None, inferred, &HashMap::new(), script_dir, &uv).unwrap();
 
         assert_eq!(ligands.len(), 1);
         assert_eq!(ligands[0].name, "acetaldehyde");
@@ -4085,5 +4377,125 @@ END
             .unwrap()
             .success();
         assert!(!alive, "the grandchild (pid {}) survived", pid.trim());
+    }
+
+    // ---- place_chains: ligands declared by sequence ----
+
+    /// One PDB line with an element, in the standard columns
+    fn pdb_atom(
+        serial: usize,
+        name: &str,
+        res: &str,
+        num: i32,
+        x: f64,
+        el: &str,
+    ) -> String {
+        format!(
+            "ATOM  {serial:>5} {name:<4} {res:>3} A{num:>4}    {x:>8.3}{:>8.3}{:>8.3}  1.00  0.00          {el:>2}  ",
+            0.0, 0.0
+        )
+    }
+
+    /// MET-ALA bonded, then `ligand` lines; written to a temp full.pdb
+    fn complex(dir: &Path, ligand: Vec<String>) -> PathBuf {
+        let mut lines = vec![];
+        let mut serial = 0;
+        for (i, res) in ["MET", "ALA"].iter().enumerate() {
+            for (name, dx, el) in [("N", 0.0, "N"), ("CA", 1.2, "C"), ("C", 2.47, "C")]
+            {
+                serial += 1;
+                lines.push(pdb_atom(
+                    serial,
+                    name,
+                    res,
+                    i as i32 + 1,
+                    3.8 * i as f64 + dx,
+                    el,
+                ));
+            }
+        }
+        lines.extend(ligand);
+        let path = dir.join("full.pdb");
+        fs::write(&path, lines.join("\n") + "\nEND\n").unwrap();
+        path
+    }
+
+    fn sequence_ligand(seq: &str) -> metadata::Ligand {
+        metadata::Ligand {
+            name: "peptide".to_string(),
+            smiles: None,
+            inchi: None,
+            sequence: Some(seq.to_string()),
+            sequence_type: Some(metadata::SequenceType::Protein),
+        }
+    }
+
+    #[test]
+    fn a_declared_peptide_is_matched_to_its_blob_by_composition() {
+        // Gly-Gly as one residue LIG, as DDD writes a peptide
+        let dir = tempfile::tempdir().unwrap();
+        let blob = [
+            ("N", "N"),
+            ("CA", "C"),
+            ("C", "C"),
+            ("O", "O"),
+            ("N1", "N"),
+            ("CA1", "C"),
+            ("C1", "C"),
+            ("O1", "O"),
+            ("OXT", "O"),
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, (n, el))| pdb_atom(100 + i, n, "LIG", 120, 40.0 + i as f64, el))
+        .collect();
+        let pdb = complex(dir.path(), blob);
+        let structure = sequence::chains_from_pdb(&pdb).unwrap();
+        assert_eq!(structure.len(), 1, "LIG is not a chain by itself");
+
+        let ligands = vec![sequence_ligand("GG")];
+        let (chains, by_ligand) =
+            place_chains(&structure, Some(&ligands), &pdb).unwrap();
+        assert_eq!(chains.len(), 2);
+        assert_eq!(
+            (chains[0].chain_order, chains[0].source.as_str()),
+            (1, "structure")
+        );
+        assert_eq!(
+            (chains[1].chain_order, chains[1].source.as_str()),
+            (2, "declared")
+        );
+        assert_eq!(chains[1].residues, ["GLY", "GLY"]);
+        assert_eq!(chains[1].first_residue, None);
+        assert_eq!(by_ligand.get(&0), Some(&2));
+
+        let wrong = vec![sequence_ligand("GA")];
+        let err = place_chains(&structure, Some(&wrong), &pdb)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("C5 N2 O3"), "{err}");
+    }
+
+    #[test]
+    fn a_declared_peptide_the_splitter_found_is_that_chain() {
+        let dir = tempfile::tempdir().unwrap();
+        let pdb = complex(dir.path(), vec![]);
+        let structure = sequence::chains_from_pdb(&pdb).unwrap();
+        let ligands = vec![sequence_ligand("MA")];
+        let (chains, by_ligand) =
+            place_chains(&structure, Some(&ligands), &pdb).unwrap();
+        assert_eq!(chains.len(), 1);
+        assert_eq!(by_ligand.get(&0), Some(&1));
+    }
+
+    #[test]
+    fn declared_caps_and_codes() {
+        let c = declared_chain("(ACE)S(SEP)A(NH2)", metadata::SequenceType::Protein)
+            .unwrap();
+        assert_eq!(c.residues, ["SER", "SEP", "ALA"]);
+        assert_eq!(c.sequence, "SSA");
+        assert_eq!(c.n_terminal_cap.as_deref(), Some("ACE"));
+        assert_eq!(c.c_terminal_cap.as_deref(), Some("NH2"));
+        assert!(declared_chain("SXA", metadata::SequenceType::Protein).is_err());
     }
 }

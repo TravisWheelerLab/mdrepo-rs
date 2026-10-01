@@ -707,12 +707,13 @@ fn find_sim_scoped_children_by_natural_key() {
         &mut c,
         NewLigand {
             name: "ATP".into(),
-            smiles: "C1=NC2=C(C(=N1)N)N=CN2".into(),
+            smiles: Some("C1=NC2=C(C(=N1)N)N=CN2".into()),
             inchi: None,
             inchikey: None,
             declared_identity: Some("smiles".into()),
             identity_software: None,
             simulation_id: sim,
+            chain_id: None,
         },
     )
     .unwrap()

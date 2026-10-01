@@ -706,6 +706,67 @@ pub fn delete_ligand(conn: &mut PgConnection, rid: i64) -> QueryResult<usize> {
     diesel::delete(md_ligand::table.find(rid)).execute(conn)
 }
 
+// ── md_polymer / md_chain ─────────────────────────────────────────────────────
+
+/// The id of the polymer with this type and residue hash, inserting it first if
+/// it is new. Polymers are shared across simulations and never updated here:
+/// a row that already exists is returned as it is.
+pub fn find_or_insert_polymer(
+    conn: &mut PgConnection,
+    new: &NewPolymer,
+) -> QueryResult<i64> {
+    use crate::schema::md_polymer::dsl::*;
+    let inserted = diesel::insert_into(md_polymer)
+        .values(new)
+        .on_conflict((polymer_type, residues_hash))
+        .do_nothing()
+        .returning(id)
+        .get_result::<i64>(conn)
+        .optional()?;
+    match inserted {
+        Some(rid) => Ok(rid),
+        None => md_polymer
+            .filter(polymer_type.eq(&new.polymer_type))
+            .filter(residues_hash.eq(&new.residues_hash))
+            .select(id)
+            .first(conn),
+    }
+}
+
+pub fn get_polymer(conn: &mut PgConnection, rid: i64) -> QueryResult<Polymer> {
+    md_polymer::table
+        .find(rid)
+        .select(Polymer::as_select())
+        .first(conn)
+}
+
+pub fn get_chain(conn: &mut PgConnection, rid: i64) -> QueryResult<Chain> {
+    md_chain::table
+        .find(rid)
+        .select(Chain::as_select())
+        .first(conn)
+}
+
+pub fn insert_chain(conn: &mut PgConnection, new: NewChain) -> QueryResult<Chain> {
+    diesel::insert_into(md_chain::table)
+        .values(&new)
+        .returning(Chain::as_returning())
+        .get_result(conn)
+}
+
+/// A simulation's chains in `chain_order`
+pub fn list_chains_for_simulation(
+    conn: &mut PgConnection,
+    sim_id: i64,
+) -> QueryResult<Vec<Chain>> {
+    use crate::schema::md_chain::dsl::*;
+    md_chain
+        .filter(simulation_id.eq(sim_id))
+        .order(chain_order.asc())
+        .select(Chain::as_select())
+        .load(conn)
+}
+
 // ── md_pdb ────────────────────────────────────────────────────────────────────
 
 fn pdb_query(search: Option<&str>) -> md_pdb::BoxedQuery<'static, Pg> {
@@ -2570,6 +2631,30 @@ pub fn delete_replicates_for_simulation(
     use crate::schema::md_replicate::dsl as r;
 
     diesel::delete(r::md_replicate.filter(r::simulation_id.eq(sim_id))).execute(conn)
+}
+
+/// Delete a simulation's `md_chain` rows, and first the polymer ligands that
+/// point at them. Used on every import, so a reprocess replaces the chains.
+///
+/// A polymer ligand is deleted rather than unlinked because `md_ligand` must
+/// carry a SMILES or a chain (md-repo-app 0286), and the import writes it
+/// again from the same metadata. The `md_polymer` rows are shared across
+/// simulations and are left alone. Returns the number of chains deleted.
+pub fn delete_chains_for_simulation(
+    conn: &mut PgConnection,
+    sim_id: i64,
+) -> QueryResult<usize> {
+    use crate::schema::md_chain::dsl as c;
+    use crate::schema::md_ligand::dsl as l;
+
+    diesel::delete(
+        l::md_ligand
+            .filter(l::simulation_id.eq(sim_id))
+            .filter(l::chain_id.is_not_null()),
+    )
+    .execute(conn)?;
+
+    diesel::delete(c::md_chain.filter(c::simulation_id.eq(sim_id))).execute(conn)
 }
 
 /// Delete a simulation's `md_simulation_uniprot` links. Used on the reprocess

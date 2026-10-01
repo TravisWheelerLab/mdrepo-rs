@@ -277,16 +277,37 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
     let (_, ligands_res) =
         ops::list_ligands(conn, None, Some(sim_id), true, None, None)?;
 
-    let ligands = (!ligands_res.is_empty()).then(|| {
-        ligands_res
-            .into_iter()
-            .map(|val| metadata::Ligand {
-                name: val.name,
-                smiles: Some(val.smiles),
-                inchi: val.inchi,
-            })
-            .collect::<Vec<_>>()
-    });
+    // A polymer ligand has no SMILES: it is written back as the sequence of
+    // the chain it points at, as the submitter declared it.
+    let mut ligands = vec![];
+    for val in ligands_res {
+        let (sequence, sequence_type) = match val.chain_id {
+            None => (None, None),
+            Some(chain_id) => {
+                let chain = ops::get_chain(conn, chain_id)?;
+                let polymer = ops::get_polymer(conn, chain.polymer_id)?;
+                let seq_type: metadata::SequenceType = polymer
+                    .polymer_type
+                    .parse()
+                    .map_err(|e: String| anyhow!(e))?;
+                let seq = metadata::format_sequence(
+                    seq_type,
+                    &polymer.residues,
+                    chain.n_terminal_cap.as_deref(),
+                    chain.c_terminal_cap.as_deref(),
+                );
+                (Some(seq), Some(seq_type))
+            }
+        };
+        ligands.push(metadata::Ligand {
+            name: val.name,
+            smiles: val.smiles,
+            inchi: val.inchi,
+            sequence,
+            sequence_type,
+        });
+    }
+    let ligands = (!ligands.is_empty()).then_some(ligands);
 
     let (_, solutes_res) =
         ops::list_solutes(conn, None, Some(sim_id), true, None, None)?;

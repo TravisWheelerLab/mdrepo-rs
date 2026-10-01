@@ -576,6 +576,8 @@ impl Meta {
                         .to_string(),
                 ),
                 inchi: None,
+                sequence: None,
+                sequence_type: None,
             }]),
             solutes: Some(vec![
                 Solute {
@@ -820,6 +822,163 @@ pub struct Ligand {
     #[validate(custom(function = "is_valid_inchi"))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inchi: Option<String>,
+
+    /// A peptide, DNA or RNA ligand is declared by its sequence instead of a
+    /// structure (2026-10-01; agreed by Travis 2026-09-30): one letter per
+    /// residue, with any other residue or cap as its chemical-component code
+    /// in parentheses, as RCSB writes `pdbx_seq_one_letter_code`:
+    /// `(ACE)SLL(SEP)YITQV(NH2)`. Exclusive with `smiles` and `inchi`, and
+    /// needs `sequence_type`. A small molecule is never declared this way,
+    /// even one made of amino acids (glutathione).
+    #[validate(custom(function = "is_valid_sequence"))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<String>,
+
+    /// Required with `sequence`, because the letters overlap: `ACGT` is a
+    /// DNA strand and also a peptide (Ala-Cys-Gly-Thr).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sequence_type: Option<SequenceType>,
+}
+
+/// What a ligand declared by sequence is
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SequenceType {
+    Protein,
+    Dna,
+    Rna,
+}
+
+impl std::str::FromStr for SequenceType {
+    type Err = String;
+
+    /// `protein`, `dna` or `rna`, as `md_polymer.polymer_type` stores it
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "protein" => Ok(SequenceType::Protein),
+            "dna" => Ok(SequenceType::Dna),
+            "rna" => Ok(SequenceType::Rna),
+            _ => Err(format!("not a sequence type: {s:?}")),
+        }
+    }
+}
+
+impl std::fmt::Display for SequenceType {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(match self {
+            SequenceType::Protein => "protein",
+            SequenceType::Dna => "dna",
+            SequenceType::Rna => "rna",
+        })
+    }
+}
+
+/// One position in a declared sequence: a one-letter code, or a component
+/// code written in parentheses
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SequenceItem {
+    Letter(char),
+    Code(String),
+}
+
+/// The positions of a declared sequence, in order. `None` if it is not in the
+/// form `is_valid_sequence` accepts.
+pub fn parse_sequence(sequence: &str) -> Option<Vec<SequenceItem>> {
+    let mut items = vec![];
+    let mut chars = sequence.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            'A'..='Z' => items.push(SequenceItem::Letter(c)),
+            '(' => {
+                let mut code = String::new();
+                let mut closed = false;
+                for c in chars.by_ref() {
+                    if c == ')' {
+                        closed = true;
+                        break;
+                    }
+                    code.push(c);
+                }
+                let valid = closed
+                    && (1..=5).contains(&code.len())
+                    && code
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
+                if !valid {
+                    return None;
+                }
+                items.push(SequenceItem::Code(code));
+            }
+            _ => return None,
+        }
+    }
+    (!items.is_empty()).then_some(items)
+}
+
+/// A declared sequence written back from residue codes: the inverse of
+/// `parse_sequence`. A standard residue is its letter and anything else its
+/// code in parentheses, with the caps at either end.
+pub fn format_sequence(
+    sequence_type: SequenceType,
+    residues: &[String],
+    n_cap: Option<&str>,
+    c_cap: Option<&str>,
+) -> String {
+    let letter = |code: &str| -> Option<char> {
+        let protein = [
+            ("ALA", 'A'),
+            ("ARG", 'R'),
+            ("ASN", 'N'),
+            ("ASP", 'D'),
+            ("CYS", 'C'),
+            ("GLN", 'Q'),
+            ("GLU", 'E'),
+            ("GLY", 'G'),
+            ("HIS", 'H'),
+            ("ILE", 'I'),
+            ("LEU", 'L'),
+            ("LYS", 'K'),
+            ("MET", 'M'),
+            ("PHE", 'F'),
+            ("PRO", 'P'),
+            ("SER", 'S'),
+            ("THR", 'T'),
+            ("TRP", 'W'),
+            ("TYR", 'Y'),
+            ("VAL", 'V'),
+            ("SEC", 'U'),
+            ("PYL", 'O'),
+        ];
+        let dna = [
+            ("DA", 'A'),
+            ("DC", 'C'),
+            ("DG", 'G'),
+            ("DT", 'T'),
+            ("DU", 'U'),
+            ("DI", 'I'),
+        ];
+        let rna = [("A", 'A'), ("C", 'C'), ("G", 'G'), ("U", 'U'), ("I", 'I')];
+        let table: &[(&str, char)] = match sequence_type {
+            SequenceType::Protein => &protein,
+            SequenceType::Dna => &dna,
+            SequenceType::Rna => &rna,
+        };
+        table.iter().find(|(c, _)| *c == code).map(|(_, l)| *l)
+    };
+    let mut out = String::new();
+    if let Some(cap) = n_cap {
+        out.push_str(&format!("({cap})"));
+    }
+    for code in residues {
+        match letter(code) {
+            Some(l) => out.push(l),
+            None => out.push_str(&format!("({code})")),
+        }
+    }
+    if let Some(cap) = c_cap {
+        out.push_str(&format!("({cap})"));
+    }
+    out
 }
 
 impl Ligand {
@@ -830,6 +989,7 @@ impl Ligand {
         self.smiles
             .as_deref()
             .or(self.inchi.as_deref())
+            .or(self.sequence.as_deref())
             .unwrap_or("<no structure declared>")
     }
 
@@ -842,8 +1002,13 @@ impl Ligand {
             (true, true) => Some("both"),
             (true, false) => Some("smiles"),
             (false, true) => Some("inchi"),
-            (false, false) => None,
+            (false, false) => self.sequence.is_some().then_some("sequence"),
         }
+    }
+
+    /// Is this ligand a polymer, declared by sequence?
+    pub fn is_sequence(&self) -> bool {
+        self.sequence.is_some()
     }
 }
 
@@ -1047,12 +1212,55 @@ fn format_validation_error(err: &ValidationError) -> String {
 /// path (`mdr-process`'s `load_canonical_meta`) rather than in this pure check.
 /// So `mdr-meta check` reports a missing or malformed value and says nothing
 /// about agreement -- that split is deliberate, not an oversight.
+///
+/// A ligand declared by `sequence` instead has no structure, and must say
+/// what kind of polymer it is.
 pub fn ligand_declares_identity(
     ligand: &Ligand,
 ) -> std::result::Result<(), ValidationError> {
-    if ligand.smiles.is_none() && ligand.inchi.is_none() {
-        return Err(ValidationError::new("no_ligand_structure")
-            .with_message(Borrowed("must declare either smiles or inchi")));
+    let structure = ligand.smiles.is_some() || ligand.inchi.is_some();
+    let fail = |code: &'static str, msg: &'static str| {
+        Err(ValidationError::new(code).with_message(Borrowed(msg)))
+    };
+    match (
+        structure,
+        ligand.sequence.is_some(),
+        ligand.sequence_type.is_some(),
+    ) {
+        (false, false, true) => fail(
+            "type_without_sequence",
+            "sequence_type is set but sequence is not",
+        ),
+        (false, false, false) => {
+            fail("no_ligand_structure", "must declare either smiles or inchi")
+        }
+        (true, true, _) => fail(
+            "structure_and_sequence",
+            "must declare a structure (smiles or inchi) or a sequence, not both",
+        ),
+        (_, true, false) => fail(
+            "sequence_without_type",
+            "a sequence needs sequence_type (protein, dna or rna)",
+        ),
+        (_, false, true) => fail(
+            "type_without_sequence",
+            "sequence_type is set but sequence is not",
+        ),
+        _ => Ok(()),
+    }
+}
+
+// --------------------------------------------------
+/// A declared ligand sequence: upper-case one-letter codes, and component
+/// codes of 1-5 upper-case letters or digits in parentheses
+pub fn is_valid_sequence(sequence: &str) -> std::result::Result<(), ValidationError> {
+    if parse_sequence(sequence).is_none() {
+        return Err(
+            ValidationError::new("invalid_sequence").with_message(Borrowed(
+                "must be upper-case one-letter codes, with any other residue as \
+             its component code in parentheses, e.g. (ACE)SLL(SEP)YITQV(NH2)",
+            )),
+        );
     }
     Ok(())
 }
@@ -1558,8 +1766,9 @@ mod tests {
     }
 
     use super::{
-        AdditionalFile, DateTime, Ligand, Meta, MetaCheckOptions, Summary, Utc,
-        is_valid_inchi, is_valid_smiles,
+        AdditionalFile, DateTime, Ligand, Meta, MetaCheckOptions, SequenceItem,
+        SequenceType, Summary, Utc, format_sequence, is_valid_inchi, is_valid_smiles,
+        parse_sequence,
     };
     use crate::constants;
     use anyhow::Result;
@@ -1991,6 +2200,8 @@ mod tests {
                 name: "ethane".to_string(),
                 smiles,
                 inchi,
+                sequence: None,
+                sequence_type: None,
             };
             assert!(ligand.validate().is_ok(), "rejected {ligand:?}");
         }
@@ -2002,9 +2213,103 @@ mod tests {
             name: "mystery".to_string(),
             smiles: None,
             inchi: None,
+            sequence: None,
+            sequence_type: None,
         };
         let err = ligand.validate().unwrap_err();
         assert!(err.errors().contains_key("__all__"));
+    }
+
+    // --- ligands declared by sequence (2026-10-01) ---
+
+    fn peptide(sequence: Option<&str>, sequence_type: Option<SequenceType>) -> Ligand {
+        Ligand {
+            name: "NY-ESO-1 157-165 variant".to_string(),
+            smiles: None,
+            inchi: None,
+            sequence: sequence.map(str::to_string),
+            sequence_type,
+        }
+    }
+
+    #[test]
+    fn test_ligand_declared_by_sequence_is_accepted() {
+        for seq in ["SLLMYITQV", "(ACE)SLL(SEP)YITQV(NH2)", "ACGT"] {
+            let ligand = peptide(Some(seq), Some(SequenceType::Protein));
+            assert!(ligand.validate().is_ok(), "rejected {seq}");
+            assert_eq!(ligand.declared_identity(), Some("sequence"));
+        }
+    }
+
+    #[test]
+    fn test_ligand_sequence_rules() {
+        let messages = |l: Ligand| {
+            let mut meta = Meta::example();
+            meta.ligands = Some(vec![l]);
+            meta.check(None)
+        };
+        let has = |l: Ligand, want: &str| {
+            let got = messages(l);
+            assert!(
+                got.iter().any(|m| m.contains(want)),
+                "{want:?} not in {got:?}"
+            );
+        };
+        has(peptide(Some("SLL"), None), "needs sequence_type");
+        has(
+            peptide(None, Some(SequenceType::Dna)),
+            "sequence_type is set",
+        );
+        has(
+            Ligand {
+                smiles: Some("CCO".to_string()),
+                ..peptide(Some("SLL"), Some(SequenceType::Protein))
+            },
+            "not both",
+        );
+        for bad in ["sll", "S L", "(ACE", "()", "(TOOLONG)", "S(sep)"] {
+            has(
+                peptide(Some(bad), Some(SequenceType::Protein)),
+                "upper-case",
+            );
+        }
+    }
+
+    #[test]
+    fn test_sequence_type_is_lower_case_in_toml() {
+        let l: Ligand = toml::from_str(
+            "name = \"p\"\nsequence = \"ACGU\"\nsequence_type = \"rna\"\n",
+        )
+        .unwrap();
+        assert_eq!(l.sequence_type, Some(SequenceType::Rna));
+        assert!(
+            toml::from_str::<Ligand>(
+                "name = \"p\"\nsequence = \"A\"\nsequence_type = \"peptide\"\n"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn test_format_sequence_inverts_parse() {
+        let residues: Vec<String> =
+            ["SER", "LEU", "SEP", "VAL"].map(String::from).into();
+        let text =
+            format_sequence(SequenceType::Protein, &residues, Some("ACE"), Some("NH2"));
+        assert_eq!(text, "(ACE)SL(SEP)V(NH2)");
+        assert_eq!(
+            parse_sequence(&text).unwrap(),
+            vec![
+                SequenceItem::Code("ACE".into()),
+                SequenceItem::Letter('S'),
+                SequenceItem::Letter('L'),
+                SequenceItem::Code("SEP".into()),
+                SequenceItem::Letter('V'),
+                SequenceItem::Code("NH2".into()),
+            ]
+        );
+        let dna: Vec<String> = ["DA", "DC", "DG"].map(String::from).into();
+        assert_eq!(format_sequence(SequenceType::Dna, &dna, None, None), "ACG");
     }
 
     #[test]
@@ -2016,6 +2321,8 @@ mod tests {
             name: "mystery".to_string(),
             smiles: None,
             inchi: None,
+            sequence: None,
+            sequence_type: None,
         }]);
         let messages = meta.check(None);
         assert!(
@@ -2032,6 +2339,8 @@ mod tests {
             name: "x".to_string(),
             smiles: smiles.map(String::from),
             inchi: inchi.map(String::from),
+            sequence: None,
+            sequence_type: None,
         };
         assert_eq!(with(Some("CC"), None).declared_identity(), Some("smiles"));
         assert_eq!(
@@ -2203,6 +2512,8 @@ mod tests {
             name: "mystery".into(),
             smiles: None,
             inchi: None,
+            sequence: None,
+            sequence_type: None,
         };
 
         assert_eq!(naked.identity(), "<no structure declared>");

@@ -242,6 +242,8 @@ impl MetaV1 {
                 // v1 had no inchi; nothing to carry forward.
                 smiles: Some(v.smiles.clone()),
                 inchi: None,
+                sequence: None,
+                sequence_type: None,
             })
             .collect();
 

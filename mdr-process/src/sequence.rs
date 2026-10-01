@@ -18,11 +18,17 @@
 //!   1. its backbone is bonded to that residue's: C(i) to N(i+1), or O3'(i) to
 //!      P(i+1), within 1.9 A, whatever either residue is called and whether
 //!      it is written as ATOM or HETATM; or
-//!   2. both are amino acids, or both nucleotides, with the same chain letter,
-//!      and the numbering jumps forward: a missing loop stays one chain
-//!      (agreed by Travis 2026-09-30); or
-//!   3. both are coarse-grained amino acids (no N or C), the numbering runs
+//!   2. both are named amino acids, or both named nucleotides, with the same
+//!      chain letter, and the numbering jumps forward: a missing loop stays
+//!      one chain (agreed by Travis 2026-09-30); or
+//!   3. both are named coarse-grained amino acids (no N or C), the numbering runs
 //!      on, and CA(i) to CA(i+1) is within 4.2 A.
+//!
+//! Rules 2 and 3 join residues that are not bonded, so they need the NAMES to
+//! say amino acid or nucleotide (`one_letter`, or a nucleotide name). Atom
+//! names are not enough: DDD writes a whole peptide ligand as one residue
+//! `LIG` with atoms N, CA, C, ..., and a numbering gap before it would
+//! otherwise join it to the protein.
 //!
 //! A chain letter change always starts a new chain, and so does numbering
 //! that goes backwards or repeats unless rule 1 holds. pdbrust and this
@@ -58,7 +64,11 @@
 //! the alternate-location flag in the standard; processed files never use it.
 
 use anyhow::{Result, anyhow, bail};
-use std::{collections::HashMap, fmt, path::Path};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fmt,
+    path::Path,
+};
 
 /// C(i)-N(i+1) is 1.33 A and O3'(i)-P(i+1) 1.61 A; the same atoms unbonded do
 /// not come within 2.5 A. The same cutoff as `mol_id._LINK_CUTOFF`.
@@ -111,6 +121,9 @@ pub struct Chain {
     pub last_residue: i32,
     pub n_terminal_cap: Option<String>,
     pub c_terminal_cap: Option<String>,
+    /// Index of the chain's first atom in the file, for ordering it among
+    /// declared chains; not stored
+    pub first_atom: usize,
 }
 
 // --------------------------------------------------
@@ -124,22 +137,12 @@ enum Kind {
     Other,
 }
 
-impl Kind {
-    /// Amino acids and nucleotides are polymer residues; DNA and RNA are one
-    /// family for the missing-loop rule
-    fn family(self) -> Option<u8> {
-        match self {
-            Kind::Amino => Some(0),
-            Kind::Nucleic { .. } => Some(1),
-            _ => None,
-        }
-    }
-}
-
 // --------------------------------------------------
 /// One residue as it appears in the file, with the atoms the rules need
 #[derive(Debug)]
 struct Residue {
+    first_atom: usize,
+    heavy: Formula,
     chain_id: String,
     number: i32,
     ins_code: char,
@@ -155,8 +158,10 @@ struct Residue {
 }
 
 impl Residue {
-    fn new(atom: &PdbAtom) -> Self {
+    fn new(index: usize, atom: &PdbAtom) -> Self {
         Residue {
+            first_atom: index,
+            heavy: Formula::new(),
             chain_id: atom.chain_id.clone(),
             number: atom.res_seq,
             ins_code: atom.ins_code,
@@ -181,6 +186,9 @@ impl Residue {
 
     fn add(&mut self, atom: &PdbAtom) {
         self.num_atoms += 1;
+        if !matches!(atom.element.as_str(), "H" | "D") {
+            *self.heavy.entry(atom.element.clone()).or_insert(0) += 1;
+        }
         let name = atom.name.replace('*', "'");
         let slot = match name.as_str() {
             "N" => &mut self.n,
@@ -201,6 +209,18 @@ impl Residue {
         // First one wins
         if slot.is_none() {
             *slot = Some(atom.xyz);
+        }
+    }
+
+    /// The polymer family from the residue name alone (amino acid or
+    /// nucleotide), for the rules that join residues without a bond
+    fn named_family(&self) -> Option<u8> {
+        if nucleic_by_name(&self.name).is_some() {
+            Some(1)
+        } else if one_letter(&canonical(&self.name)).is_some() {
+            Some(0)
+        } else {
+            None
         }
     }
 
@@ -239,6 +259,8 @@ struct PdbAtom {
     res_seq: i32,
     ins_code: char,
     xyz: [f64; 3],
+    /// Columns 77-78, or the leading letters of the atom name when blank
+    element: String,
 }
 
 /// The ATOM and HETATM records of the first MODEL, in file order
@@ -261,8 +283,18 @@ fn read_atoms(text: &str) -> Result<Vec<PdbAtom>> {
             .trim()
             .parse::<i32>()
             .map_err(|e| anyhow!("line {}: residue number: {e}: {line:?}", i + 1))?;
+        let name = col(12, 16).trim().to_uppercase();
+        let element = match col(76, 78).trim() {
+            "" => name
+                .trim_start_matches(|c: char| c.is_ascii_digit())
+                .chars()
+                .take(1)
+                .collect(),
+            e => e.to_uppercase(),
+        };
         atoms.push(PdbAtom {
-            name: col(12, 16).trim().to_uppercase(),
+            element,
+            name,
             res_name: col(16, 21).trim().to_uppercase(),
             chain_id: col(21, 22).to_string(),
             res_seq,
@@ -276,11 +308,11 @@ fn read_atoms(text: &str) -> Result<Vec<PdbAtom>> {
 /// Group atoms into residues, in file order
 fn residues(atoms: &[PdbAtom]) -> Vec<Residue> {
     let mut out: Vec<Residue> = vec![];
-    for atom in atoms {
+    for (i, atom) in atoms.iter().enumerate() {
         match out.last_mut() {
             Some(res) if res.is_same(atom) => res.add(atom),
             _ => {
-                let mut res = Residue::new(atom);
+                let mut res = Residue::new(i, atom);
                 res.add(atom);
                 out.push(res);
             }
@@ -304,8 +336,9 @@ fn joins(prev: &Residue, cur: &Residue) -> bool {
         return true;
     }
 
-    let (pk, ck) = (prev.kind(), cur.kind());
-    if pk.family().is_none() || pk.family() != ck.family() {
+    // Rules 2 and 3 need both residues named as polymer residues
+    let (pf, cf) = (prev.named_family(), cur.named_family());
+    if pf.is_none() || pf != cf {
         return false;
     }
 
@@ -348,28 +381,59 @@ pub fn chains_from_pdb(pdb: &Path) -> Result<Vec<Chain>> {
 
 /// The polymer chains in PDB text
 pub fn chains_from_text(text: &str) -> Result<Vec<Chain>> {
-    let residues: Vec<Residue> = residues(&read_atoms(text)?)
-        .into_iter()
-        .filter(|r| !matches!(r.kind(), Kind::Water | Kind::Ion))
-        .collect();
+    Ok(Structure::read(text)?.chains)
+}
 
-    let mut runs: Vec<&[Residue]> = vec![];
-    let mut start = 0;
-    for i in 1..residues.len() {
-        if !joins(&residues[i - 1], &residues[i]) {
-            runs.push(&residues[start..i]);
-            start = i;
+/// A structure's residues, and the chains made of them
+struct Structure {
+    residues: Vec<Residue>,
+    chains: Vec<Chain>,
+    /// For each residue, whether it is in one of `chains` (caps included)
+    in_chain: Vec<bool>,
+}
+
+impl Structure {
+    fn read(text: &str) -> Result<Structure> {
+        let residues = residues(&read_atoms(text)?);
+        let polymer: Vec<usize> = (0..residues.len())
+            .filter(|&i| !matches!(residues[i].kind(), Kind::Water | Kind::Ion))
+            .collect();
+
+        let mut runs: Vec<&[usize]> = vec![];
+        let mut start = 0;
+        for i in 1..polymer.len() {
+            if !joins(&residues[polymer[i - 1]], &residues[polymer[i]]) {
+                runs.push(&polymer[start..i]);
+                start = i;
+            }
         }
-    }
-    if start < residues.len() {
-        runs.push(&residues[start..]);
-    }
+        if start < polymer.len() {
+            runs.push(&polymer[start..]);
+        }
 
-    Ok(runs.into_iter().filter_map(make_chain).collect())
+        let mut chains = vec![];
+        let mut in_chain = vec![false; residues.len()];
+        for run in runs {
+            let run_residues: Vec<&Residue> =
+                run.iter().map(|&i| &residues[i]).collect();
+            if let Some(chain) = make_chain(&run_residues) {
+                for &i in run {
+                    in_chain[i] = true;
+                }
+                chains.push(chain);
+            }
+        }
+
+        Ok(Structure {
+            residues,
+            chains,
+            in_chain,
+        })
+    }
 }
 
 /// A chain from one run of joined residues, or `None` if it is not a polymer
-fn make_chain(run: &[Residue]) -> Option<Chain> {
+fn make_chain(run: &[&Residue]) -> Option<Chain> {
     let mut body = run;
     let mut n_cap = None;
     let mut c_cap = None;
@@ -441,7 +505,183 @@ fn make_chain(run: &[Residue]) -> Option<Chain> {
         last_residue: body[body.len() - 1].number,
         n_terminal_cap: n_cap,
         c_terminal_cap: c_cap,
+        first_atom: run[0].first_atom,
     })
+}
+
+// --------------------------------------------------
+/// Heavy atoms by element, e.g. {C: 26, N: 8, O: 7}
+pub type Formula = BTreeMap<String, u32>;
+
+/// Show a formula as `C26 N8 O7`
+pub fn formula_text(formula: &Formula) -> String {
+    formula
+        .iter()
+        .map(|(e, n)| format!("{}{n}", e[..1].to_string() + &e[1..].to_lowercase()))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Heavy atoms of each standard amino acid as a free molecule (C, N, O, S,
+/// Se), from the chemical component dictionary
+fn amino_acid_heavy_atoms(code: &str) -> Option<[(&'static str, u32); 5]> {
+    let (c, n, o, s, se) = match code {
+        "ALA" => (3, 1, 2, 0, 0),
+        "ARG" => (6, 4, 2, 0, 0),
+        "ASN" => (4, 2, 3, 0, 0),
+        "ASP" => (4, 1, 4, 0, 0),
+        "CYS" => (3, 1, 2, 1, 0),
+        "GLN" => (5, 2, 3, 0, 0),
+        "GLU" => (5, 1, 4, 0, 0),
+        "GLY" => (2, 1, 2, 0, 0),
+        "HIS" => (6, 3, 2, 0, 0),
+        "ILE" => (6, 1, 2, 0, 0),
+        "LEU" => (6, 1, 2, 0, 0),
+        "LYS" => (6, 2, 2, 0, 0),
+        "MET" => (5, 1, 2, 1, 0),
+        "PHE" => (9, 1, 2, 0, 0),
+        "PRO" => (5, 1, 2, 0, 0),
+        "SER" => (3, 1, 3, 0, 0),
+        "THR" => (4, 1, 3, 0, 0),
+        "TRP" => (11, 2, 2, 0, 0),
+        "TYR" => (9, 1, 3, 0, 0),
+        "VAL" => (5, 1, 2, 0, 0),
+        "SEC" => (3, 1, 2, 0, 1),
+        "PYL" => (12, 3, 3, 0, 0),
+        _ => return None,
+    };
+    Some([("C", c), ("N", n), ("O", o), ("S", s), ("SE", se)])
+}
+
+/// The three-letter code for a standard one-letter amino acid
+pub fn amino_acid_code(letter: char) -> Option<&'static str> {
+    Some(match letter {
+        'A' => "ALA",
+        'R' => "ARG",
+        'N' => "ASN",
+        'D' => "ASP",
+        'C' => "CYS",
+        'Q' => "GLN",
+        'E' => "GLU",
+        'G' => "GLY",
+        'H' => "HIS",
+        'I' => "ILE",
+        'L' => "LEU",
+        'K' => "LYS",
+        'M' => "MET",
+        'F' => "PHE",
+        'P' => "PRO",
+        'S' => "SER",
+        'T' => "THR",
+        'W' => "TRP",
+        'Y' => "TYR",
+        'V' => "VAL",
+        'U' => "SEC",
+        'O' => "PYL",
+        _ => return None,
+    })
+}
+
+/// The heavy atoms a peptide of `residues` must have, written as one blob:
+/// the free amino acids, less one O for each peptide bond (the water lost
+/// there), plus the caps. Fails for a residue whose composition is not known
+/// here; DNA and RNA are not handled yet.
+pub fn expected_peptide_formula(
+    residues: &[String],
+    n_cap: Option<&str>,
+    c_cap: Option<&str>,
+) -> Result<Formula> {
+    let mut formula = Formula::new();
+    let add = |e: &str, n: i64, formula: &mut Formula| {
+        let v = formula.entry(e.to_string()).or_insert(0);
+        *v = u32::try_from(i64::from(*v) + n).unwrap_or(0);
+    };
+    for code in residues {
+        let atoms = amino_acid_heavy_atoms(code).ok_or_else(|| {
+            anyhow!("no composition known for residue {code}, so it cannot be checked")
+        })?;
+        for (e, n) in atoms {
+            add(e, i64::from(n), &mut formula);
+        }
+    }
+    add("O", -(residues.len() as i64 - 1).max(0), &mut formula);
+    // Each cap is joined by an amide bond, which also loses a water
+    match n_cap {
+        None => {}
+        Some("ACE") => {
+            add("C", 2, &mut formula);
+            add("O", 1, &mut formula);
+        }
+        Some("FOR") => {
+            add("C", 1, &mut formula);
+            add("O", 1, &mut formula);
+        }
+        Some(cap) => bail!("no composition known for the N-terminal cap {cap}"),
+    }
+    match c_cap {
+        None => {}
+        Some("NME") | Some("NMA") => {
+            add("C", 1, &mut formula);
+            add("N", 1, &mut formula);
+            add("O", -1, &mut formula);
+        }
+        Some("NH2") | Some("NHE") => {
+            add("N", 1, &mut formula);
+            add("O", -1, &mut formula);
+        }
+        Some(cap) => bail!("no composition known for the C-terminal cap {cap}"),
+    }
+    formula.retain(|_, n| *n > 0);
+    Ok(formula)
+}
+
+/// A molecule outside every chain whose heavy atoms match a declared sequence
+#[derive(Debug, Clone, PartialEq)]
+pub struct Blob {
+    /// The residue name it is written under (DDD's `LIG`)
+    pub name: String,
+    pub chain_label: String,
+    /// Index of its first atom in the file
+    pub first_atom: usize,
+}
+
+/// The molecules in `text` outside every chain whose heavy-atom composition
+/// equals `expected`, in file order. A molecule is a run of consecutive
+/// residues with the same name and chain letter that are not water, so a
+/// residue whose writer split one atom off under another number (1mf4's
+/// `O.co`, residue 12 beside residue 120) is still read whole.
+pub fn find_blobs(text: &str, expected: &Formula) -> Result<Vec<Blob>> {
+    let structure = Structure::read(text)?;
+    let mut blobs = vec![];
+    let mut i = 0;
+    let res = &structure.residues;
+    while i < res.len() {
+        if structure.in_chain[i] || res[i].kind() == Kind::Water {
+            i += 1;
+            continue;
+        }
+        let mut formula = res[i].heavy.clone();
+        let mut j = i + 1;
+        while j < res.len()
+            && !structure.in_chain[j]
+            && res[j].name == res[i].name
+            && res[j].chain_id == res[i].chain_id
+        {
+            for (e, n) in &res[j].heavy {
+                *formula.entry(e.clone()).or_insert(0) += n;
+            }
+            j += 1;
+        }
+        if &formula == expected {
+            blobs.push(Blob {
+                name: res[i].name.clone(),
+                chain_label: res[i].chain_id.clone(),
+                first_atom: res[i].first_atom,
+            });
+        }
+        i = j;
+    }
+    Ok(blobs)
 }
 
 // --------------------------------------------------
@@ -1010,5 +1250,112 @@ mod tests {
         let got = fixture("palmitoyl_cysteine_peptide.pdb");
         assert_eq!(residues_of(&got[0]), ["ALA", "CYP", "ALA"]);
         assert_eq!(got[0].sequence, "AXA");
+    }
+
+    // ---- Composition: a peptide written as one residue ----
+
+    fn formula(pairs: &[(&str, u32)]) -> Formula {
+        pairs.iter().map(|(e, n)| (e.to_string(), *n)).collect()
+    }
+
+    fn codes(names: &str) -> Vec<String> {
+        names.split(' ').map(String::from).collect()
+    }
+
+    #[test]
+    fn vafrs_has_the_heavy_atoms_of_1mf4s_lig() {
+        // 1mf4's LIG: 41 heavy atoms, counted by hand from the contributor's
+        // file, its stray O.co included.
+        let got = expected_peptide_formula(&codes("VAL ALA PHE ARG SER"), None, None)
+            .unwrap();
+        assert_eq!(got, formula(&[("C", 26), ("N", 8), ("O", 7)]));
+        assert_eq!(formula_text(&got), "C26 N8 O7");
+    }
+
+    #[test]
+    fn caps_change_the_formula() {
+        let ala2 = codes("ALA ALA");
+        let plain = expected_peptide_formula(&ala2, None, None).unwrap();
+        assert_eq!(plain, formula(&[("C", 6), ("N", 2), ("O", 3)]));
+        let capped = expected_peptide_formula(&ala2, Some("ACE"), Some("NME")).unwrap();
+        assert_eq!(capped, formula(&[("C", 9), ("N", 3), ("O", 3)]));
+        let amide = expected_peptide_formula(&ala2, None, Some("NH2")).unwrap();
+        assert_eq!(amide, formula(&[("C", 6), ("N", 3), ("O", 2)]));
+        assert!(expected_peptide_formula(&codes("SEP ALA"), None, None).is_err());
+    }
+
+    /// A blob residue: `atoms` as (name, element), all one residue name
+    fn blob(
+        s: &mut i32,
+        res: &str,
+        num: i32,
+        atoms: &[(&str, &str)],
+        x0: f64,
+    ) -> Vec<String> {
+        atoms
+            .iter()
+            .enumerate()
+            .map(|(i, (name, el))| {
+                *s += 1;
+                let mut line = atom(*s, name, res, "A", num, [x0 + i as f64, 5.0, 0.0]);
+                line.replace_range(76..78, &format!("{el:>2}"));
+                line
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_blob_split_across_two_residue_numbers_is_read_whole() {
+        // Gly-Gly as one residue, C4 N2 O3, with one O written under another
+        // number, as 1mf4's O.co is.
+        let mut s = 0;
+        let mut lines = chain(&mut s, "MET ALA", "A", 1, 0.0);
+        let atoms = [
+            ("N", "N"),
+            ("CA", "C"),
+            ("C", "C"),
+            ("O", "O"),
+            ("N1", "N"),
+            ("CA1", "C"),
+            ("C1", "C"),
+            ("O1", "O"),
+        ];
+        lines.extend(blob(&mut s, "LIG", 120, &atoms, 20.0));
+        lines.extend(blob(&mut s, "LIG", 12, &[("O.co", "O")], 30.0));
+        let text = lines.join("\n") + "\nEND\n";
+        let want = expected_peptide_formula(&codes("GLY GLY"), None, None).unwrap();
+        let got = find_blobs(&text, &want).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].name, "LIG");
+        // The protein chain is unaffected, and is not a blob candidate
+        assert_eq!(chains_from_text(&text).unwrap().len(), 1);
+        let none = expected_peptide_formula(&codes("GLY ALA"), None, None).unwrap();
+        assert!(find_blobs(&text, &none).unwrap().is_empty());
+    }
+
+    #[test]
+    fn dna_only_structure_has_chains_and_an_empty_fasta() {
+        // The no-protein case: chains for md_chain, nothing for blastp.
+        let mut s = 0;
+        let mut lines = vec![];
+        for (i, res) in ["DA5", "DC", "DG3"].iter().enumerate() {
+            lines.extend(nucleotide(&mut s, res, i as i32 + 1, 3.8 * i as f64, false));
+        }
+        let got = chains(&lines);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].polymer_type, PolymerType::Dna);
+        assert_eq!(fasta_from_chains(&got), "");
+    }
+
+    #[test]
+    fn a_peptide_blob_after_a_numbering_gap_is_not_joined_to_the_protein() {
+        // DDD's LIG has backbone atom names but is not a named amino acid, so
+        // the missing-loop rule does not apply to it.
+        let mut s = 0;
+        let mut lines = chain(&mut s, "MET ALA", "A", 1, 0.0);
+        lines.extend(chain(&mut s, "LIG", "A", 200, 40.0));
+        let got = chains(&lines);
+        assert_eq!(got.len(), 1);
+        assert_eq!(residues_of(&got[0]), ["MET", "ALA"]);
     }
 }

@@ -34,7 +34,7 @@ use mdr_db::models::*;
 use mdr_db::ops;
 use mdr_process::import::{self, ImportOpts};
 use mdr_process::types::{
-    ExportSimulation, MdFile, PdbEntry, ResolvedLigand, UniprotEntry,
+    ExportSimulation, ImportChain, MdFile, PdbEntry, ResolvedLigand, UniprotEntry,
 };
 
 /// A connection whose work always rolls back, or `None` when the test DB
@@ -134,6 +134,7 @@ fn base_sim(key: &str, orcid: &str) -> ExportSimulation {
         processed_files: vec![],
         replicates: vec![],
         ligands: vec![],
+        chains: vec![],
         solutes: vec![],
         papers: vec![],
         is_embargoed: None,
@@ -184,7 +185,8 @@ fn import_new_simulation_creates_all_related_rows() {
         replicates: vec!["traj1.xtc".into()],
         ligands: vec![ResolvedLigand {
             name: "TestLigand".into(),
-            smiles: "CC".into(),
+            smiles: Some("CC".into()),
+            chain_order: None,
             inchi: Some("InChI=1S/C2H6/c1-2/h1-2H3".into()),
             inchikey: Some("OTMSDBZUPAUEDD-UHFFFAOYSA-N".into()),
             declared_identity: Some("smiles".into()),
@@ -313,7 +315,8 @@ fn import_same_alias_twice_is_idempotent_not_duplicated() {
         }],
         ligands: vec![ResolvedLigand {
             name: "IdempotentLigand".into(),
-            smiles: "CC".into(),
+            smiles: Some("CC".into()),
+            chain_order: None,
             inchi: Some("InChI=1S/C2H6/c1-2/h1-2H3".into()),
             inchikey: Some("OTMSDBZUPAUEDD-UHFFFAOYSA-N".into()),
             declared_identity: Some("smiles".into()),
@@ -543,4 +546,129 @@ fn reimport_without_reprocess_is_refused() {
             .is_some(),
         "the refused import must not remove rows"
     );
+}
+
+// --------------------------------------------------
+/// The two chains of a DDD-style complex: the protein the splitter found, and a
+/// peptide ligand declared by sequence and matched to a blob residue.
+fn chains_and_peptide() -> (Vec<ImportChain>, Vec<ResolvedLigand>) {
+    let chain = |order: u32, source: &str, seq: &str, residues: &[&str]| ImportChain {
+        chain_order: order,
+        chain_label: "A".into(),
+        source: source.into(),
+        polymer_type: "protein".into(),
+        sequence: seq.into(),
+        residues: residues.iter().map(|r| r.to_string()).collect(),
+        first_residue: (source == "structure").then_some(1),
+        last_residue: (source == "structure").then_some(residues.len() as i32),
+        n_terminal_cap: None,
+        c_terminal_cap: None,
+    };
+    let chains = vec![
+        chain(1, "structure", "NLYQ", &["ASN", "LEU", "TYR", "GLN"]),
+        chain(2, "declared", "VAFRS", &["VAL", "ALA", "PHE", "ARG", "SER"]),
+    ];
+    let ligands = vec![
+        ResolvedLigand {
+            name: "VAFRS peptide".into(),
+            smiles: None,
+            chain_order: Some(2),
+            inchi: None,
+            inchikey: None,
+            declared_identity: Some("sequence".into()),
+            identity_software: None,
+        },
+        ResolvedLigand {
+            name: "ethanol".into(),
+            smiles: Some("CCO".into()),
+            chain_order: None,
+            inchi: None,
+            inchikey: None,
+            declared_identity: Some("smiles".into()),
+            identity_software: None,
+        },
+    ];
+    (chains, ligands)
+}
+
+#[test]
+fn import_writes_chains_polymers_and_a_peptide_ligand() {
+    let mut c = conn_or_skip!();
+    let orcid = "0000-0002-0000-0094";
+    seed_user_with_orcid(&mut c, "mdr94", orcid);
+    let (chains, ligands) = chains_and_peptide();
+    let sim = ExportSimulation {
+        chains,
+        ligands,
+        ..base_sim("mdr94", orcid)
+    };
+
+    let sim_id =
+        import::import_simulation(&mut c, &sim, &ImportOpts::default()).unwrap();
+
+    let got = ops::list_chains_for_simulation(&mut c, sim_id).unwrap();
+    assert_eq!(got.len(), 2);
+    assert_eq!(
+        (
+            got[0].chain_order,
+            got[0].source.as_str(),
+            got[0].first_residue
+        ),
+        (1, "structure", Some(1))
+    );
+    assert_eq!(
+        (got[1].chain_order, got[1].source.as_str()),
+        (2, "declared")
+    );
+    let peptide = ops::get_polymer(&mut c, got[1].polymer_id).unwrap();
+    assert_eq!(peptide.sequence, "VAFRS");
+    assert_eq!(peptide.num_residues, 5);
+    assert_eq!(
+        peptide.residues_hash,
+        import::residues_hash(&peptide.residues)
+    );
+
+    let (_, ligs) =
+        ops::list_ligands(&mut c, None, Some(sim_id), true, None, None).unwrap();
+    let by_name = |n: &str| ligs.iter().find(|l| l.name == n).unwrap();
+    assert_eq!(by_name("VAFRS peptide").chain_id, Some(got[1].id));
+    assert_eq!(by_name("VAFRS peptide").smiles, None);
+    assert_eq!(by_name("ethanol").smiles.as_deref(), Some("CCO"));
+    assert_eq!(by_name("ethanol").chain_id, None);
+}
+
+#[test]
+fn reimporting_replaces_chains_and_shares_polymers() {
+    let mut c = conn_or_skip!();
+    let orcid = "0000-0002-0000-0095";
+    seed_user_with_orcid(&mut c, "mdr94b", orcid);
+    let (chains, ligands) = chains_and_peptide();
+    let sim = ExportSimulation {
+        chains,
+        ligands,
+        ..base_sim("mdr94b", orcid)
+    };
+
+    let first =
+        import::import_simulation(&mut c, &sim, &ImportOpts::default()).unwrap();
+    let before = ops::list_chains_for_simulation(&mut c, first).unwrap();
+    let opts = ImportOpts {
+        reprocess_simulation_id: Some(first as u64),
+        ..Default::default()
+    };
+    let again = import::import_simulation(&mut c, &sim, &opts).unwrap();
+    assert_eq!(again, first);
+
+    let after = ops::list_chains_for_simulation(&mut c, first).unwrap();
+    assert_eq!(after.len(), 2, "replaced, not added to");
+    assert_ne!(after[1].id, before[1].id);
+    assert_eq!(
+        after[1].polymer_id, before[1].polymer_id,
+        "one polymer row per sequence"
+    );
+    let (_, ligs) =
+        ops::list_ligands(&mut c, None, Some(first), true, None, None).unwrap();
+    assert_eq!(ligs.len(), 2);
+    let peptide = ligs.iter().find(|l| l.chain_id.is_some()).unwrap();
+    assert_eq!(peptide.chain_id, Some(after[1].id));
 }

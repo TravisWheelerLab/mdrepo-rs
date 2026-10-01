@@ -90,12 +90,48 @@ diesel::table! {
     md_ligand (id) {
         id -> Int8,
         name -> Text,
-        smiles -> Text,
+        smiles -> Nullable<Text>,
         inchi -> Nullable<Text>,
         inchikey -> Nullable<Text>,
         declared_identity -> Nullable<Text>,
         identity_software -> Nullable<Text>,
         simulation_id -> Int8,
+        chain_id -> Nullable<Int8>,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    md_polymer (id) {
+        id -> Int8,
+        polymer_type -> Varchar,
+        sequence -> Text,
+        residues -> Array<Varchar>,
+        residues_hash -> Varchar,
+        num_residues -> Int4,
+        reference_db -> Nullable<Varchar>,
+        reference_accession -> Nullable<Varchar>,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    md_chain (id) {
+        id -> Int8,
+        chain_order -> Int4,
+        chain_label -> Varchar,
+        source -> Varchar,
+        first_residue -> Nullable<Int4>,
+        last_residue -> Nullable<Int4>,
+        n_terminal_cap -> Nullable<Varchar>,
+        c_terminal_cap -> Nullable<Varchar>,
+        match_method -> Nullable<Varchar>,
+        reference_start -> Nullable<Int4>,
+        reference_end -> Nullable<Int4>,
+        reference_identity -> Nullable<Float8>,
+        reference_coverage -> Nullable<Float8>,
+        simulation_id -> Int8,
+        polymer_id -> Int8,
     }
 }
 
@@ -383,6 +419,7 @@ diesel::table! {
 }
 
 diesel::allow_tables_to_appear_in_same_query!(
+    md_chain,
     md_collection,
     md_creator,
     md_external_link,
@@ -392,6 +429,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     md_frontend_download_instance_uploaded_files,
     md_ligand,
     md_pdb,
+    md_polymer,
     md_processed_file,
     md_pub,
     md_replicate,
