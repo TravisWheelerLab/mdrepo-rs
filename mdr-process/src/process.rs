@@ -1571,9 +1571,9 @@ pub fn make_import_json(
         args.meta.ligands.as_ref().is_some_and(|l| {
             !l.is_empty() && l.iter().all(metadata::Ligand::is_sequence)
         });
-    let inferred_ligands = if all_sequences {
+    let (inferred_ligands, ligand_notes) = if all_sequences {
         debug!("Every declared ligand is a sequence; not inferring ligands");
-        vec![]
+        (vec![], vec![])
     } else {
         get_inferred_ligands(
             &args.example_trajectory.min_pdb,
@@ -1603,6 +1603,7 @@ pub fn make_import_json(
     )?;
 
     let mut warnings = uniprot_warnings;
+    warnings.extend(ligand_notes);
     warnings.extend(ligand_warnings);
 
     let mut pdb = None;
@@ -1760,6 +1761,8 @@ fn resolve_ligands(
                     ));
                 }
             }
+        } else {
+            warnings.extend(unverifiable_ligands(given_ligands));
         }
     } else {
         for ligand in inferred_ligands {
@@ -2191,13 +2194,38 @@ pub fn check_ligand(
 }
 
 // --------------------------------------------------
+/// A warning for each declared structure when `mol_id.py` found no ligand in
+/// the structure, so there is nothing to check it against. That used to pass
+/// in silence, and is how a ligand dropped as a chain residue would have gone
+/// unnoticed. A sequence is matched to a chain instead, and is not checked.
+fn unverifiable_ligands(given: &[metadata::Ligand]) -> Vec<String> {
+    given
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| !l.is_sequence())
+        .map(|(num, l)| {
+            format!(
+                "Unable to verify ligand [{num}] ({}): no ligand was found in \
+                 the structure",
+                l.identity()
+            )
+        })
+        .collect()
+}
+
+// --------------------------------------------------
+/// The ligands `mol_id.py` infers from `min_pdb`, and what it said about them
+/// for the submitter: a residue passed over as part of a polymer chain, a
+/// ligand recorded as released from one. Both are kept in `processed_dir`, so
+/// a rerun that finds them reports the same notes.
 pub fn get_inferred_ligands(
     min_pdb: &Path,
     processed_dir: &Path,
     script_dir: &Path,
     uv: &Path,
-) -> Result<Vec<InferredLigand>> {
+) -> Result<(Vec<InferredLigand>, Vec<String>)> {
     let out_file = processed_dir.join("inferred_ligands.json");
+    let notes_file = processed_dir.join("ligand_notes.json");
     if file_exists(&out_file) {
         debug!("Inferred ligands file exists");
     } else {
@@ -2219,20 +2247,46 @@ pub fn get_inferred_ligands(
 
         debug!("{}", str::from_utf8(&output.stdout)?);
 
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        fs::write(
+            &notes_file,
+            serde_json::to_string_pretty(&parse_mol_id_notes(&stderr))?,
+        )?;
+
         // The script throws an exception when no ligands are found
         // But the simulation may just be in APO form, so report and move on
         if !output.status.success() {
-            debug!("{}", str::from_utf8(&output.stderr)?);
+            debug!("{stderr}");
         }
     }
+
+    // A processed directory from before mol_id.py had notes has none.
+    let notes: Vec<String> = if file_exists(&notes_file) {
+        serde_json::from_str(&fs::read_to_string(&notes_file)?)?
+    } else {
+        vec![]
+    };
 
     if file_exists(&out_file) {
         let contents = fs::read_to_string(&out_file)?;
         let ligands: Vec<InferredLigand> = serde_json::from_str(&contents)?;
-        Ok(ligands)
+        Ok((ligands, notes))
     } else {
-        Ok(vec![])
+        Ok((vec![], notes))
     }
+}
+
+// --------------------------------------------------
+/// `mol_id.py`'s notes for the submitter, one `[mdrepo] note=` line each on
+/// its stderr. A version of it that writes none gives none.
+fn parse_mol_id_notes(stderr: &str) -> Vec<String> {
+    const MARKER: &str = "[mdrepo] note=";
+    stderr
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix(MARKER))
+        .map(|note| note.trim().to_string())
+        .filter(|note| !note.is_empty())
+        .collect()
 }
 
 // --------------------------------------------------
@@ -3507,6 +3561,51 @@ END
     /// Its sibling is `upsert_ligand` in import.rs, which fails the same ligand
     /// with "reached import with no SMILES". That one needs a database, so it
     /// is not asserted here.
+    #[test]
+    fn a_declared_structure_with_nothing_inferred_is_a_warning() {
+        let given = vec![
+            metadata::Ligand {
+                name: "ethanol".into(),
+                smiles: Some("CCO".into()),
+                inchi: None,
+                sequence: None,
+                sequence_type: None,
+            },
+            metadata::Ligand {
+                name: "VAFRS".into(),
+                smiles: None,
+                inchi: None,
+                sequence: Some("VAFRS".into()),
+                sequence_type: Some(metadata::SequenceType::Protein),
+            },
+        ];
+        let warnings = unverifiable_ligands(&given);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].starts_with("Unable to verify ligand [0] ("));
+        assert!(warnings[0].ends_with("no ligand was found in the structure"));
+    }
+
+    #[test]
+    fn mol_id_notes_are_read_from_their_lines_on_stderr() {
+        let stderr = "\
+/opt/x/MDAnalysis/topology/PDBParser.py:350: UserWarning: Element information is missing
+[mdrepo] note=Residue CGU 6 is joined into a polymer chain, so it was not taken for a ligand.
+mol_id: No ligand-like residue found in minimal.pdb
+  [mdrepo] note=The ligand C20H28O was found covalently bound to residue LYR 2 at NZ.
+[mdrepo] note=
+";
+        assert_eq!(
+            parse_mol_id_notes(stderr),
+            [
+                "Residue CGU 6 is joined into a polymer chain, so it was not \
+                 taken for a ligand.",
+                "The ligand C20H28O was found covalently bound to residue LYR \
+                 2 at NZ.",
+            ]
+        );
+        assert!(parse_mol_id_notes("mol_id: something else\n").is_empty());
+    }
+
     #[test]
     fn an_inchi_only_ligand_cannot_be_compared_today() {
         let inferred: InferredLigand = serde_json::from_str(
