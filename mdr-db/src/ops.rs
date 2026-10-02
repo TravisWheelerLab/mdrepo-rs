@@ -1128,8 +1128,8 @@ pub fn get_all_simulation_ids(conn: &mut PgConnection) -> QueryResult<Vec<i64>> 
 /// built on this function inherits the list-endpoint rule, not the detail one.
 ///
 /// Two more copies of this predicate exist in SQL, both named `VISIBLE_SIM`:
-/// in `utils/python/export_mapping_file.py` and in
-/// `utils/python/export_public_metadata.py`, where it re-checks visibility
+/// in `simulation-processing/python/export_mapping_file.py` and in
+/// `simulation-processing/python/export_public_metadata.py`, where it re-checks visibility
 /// after the export rather than selecting rows. Change one, change all four.
 pub fn get_visible_simulation_ids(conn: &mut PgConnection) -> QueryResult<Vec<i64>> {
     use crate::schema::md_simulation::dsl::*;
