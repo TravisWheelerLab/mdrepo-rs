@@ -13,11 +13,12 @@
 -- at the end, which every file row references.
 --
 -- This snapshot (2026-10-09): the 2026-10-01 snapshot (staging's schema at
--- 0285 plus md-repo-app 0286) with 0287-0289 applied (`sqlmigrate
+-- 0285 plus md-repo-app 0286) with 0287-0291 applied (`sqlmigrate
 -- md_repo_app` each: md_polymer's UniProt reference, hit and match_method,
--- raw API responses on md_uniprot and md_pdb), dumped from the postgres:16
--- test container. Then 0290 by hand: md_polymer_uniprot_hit allows `pdb` as
--- well as `aligned` with a hit, written as pg_dump writes an IN list.
+-- `pdb` as a match method, raw API responses on md_uniprot and md_pdb, and
+-- 0291's drop of the old md_polymer.reference_db/_accession and md_chain
+-- match_method/reference_* columns), dumped from the postgres:16 test
+-- container.
 --
 --
 -- PostgreSQL database dump
@@ -25,8 +26,8 @@
 
 \restrict hlZkwoOcPLdZ80R3vcSFzaYKrsgSjH8y8xru9dXVvrSMeu3pZmBxSZinX9ihYLX
 
--- Dumped from database version 16.14 (Debian 16.14-1.pgdg13+1)
--- Dumped by pg_dump version 16.14 (Debian 16.14-1.pgdg13+1)
+-- Dumped from database version 16.15 (Debian 16.15-1.pgdg13+2)
+-- Dumped by pg_dump version 16.15 (Debian 16.15-1.pgdg13+2)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -1042,15 +1043,9 @@ CREATE TABLE public.md_chain (
     last_residue integer,
     n_terminal_cap character varying(5),
     c_terminal_cap character varying(5),
-    match_method character varying(16),
-    reference_start integer,
-    reference_end integer,
-    reference_identity double precision,
-    reference_coverage double precision,
     simulation_id bigint NOT NULL,
     polymer_id bigint NOT NULL,
     CONSTRAINT md_chain_chain_order CHECK ((chain_order > 0)),
-    CONSTRAINT md_chain_match_method CHECK (((match_method IS NULL) OR ((match_method)::text = ANY (ARRAY[('pdb'::character varying)::text, ('declared'::character varying)::text, ('aligned'::character varying)::text, ('none'::character varying)::text])))),
     CONSTRAINT md_chain_source CHECK (((source)::text = ANY (ARRAY[('structure'::character varying)::text, ('declared'::character varying)::text])))
 );
 
@@ -1263,8 +1258,6 @@ CREATE TABLE public.md_polymer (
     residues character varying(5)[] NOT NULL,
     residues_hash character varying(64) NOT NULL,
     num_residues integer NOT NULL,
-    reference_db character varying(16),
-    reference_accession character varying(32),
     identity double precision,
     match_method character varying(16),
     query_end integer,
@@ -1274,10 +1267,8 @@ CREATE TABLE public.md_polymer (
     uniprot_id bigint,
     CONSTRAINT md_polymer_num_residues CHECK (((num_residues > 0) AND (num_residues = cardinality(residues)) AND (num_residues = char_length(sequence)))),
     CONSTRAINT md_polymer_polymer_type CHECK (((polymer_type)::text = ANY (ARRAY[('protein'::character varying)::text, ('dna'::character varying)::text, ('rna'::character varying)::text]))),
-    CONSTRAINT md_polymer_reference_db CHECK (((reference_db IS NULL) OR ((reference_db)::text = ANY (ARRAY[('uniprot'::character varying)::text, ('rnacentral'::character varying)::text])))),
-    CONSTRAINT md_polymer_reference_pair CHECK ((((reference_accession IS NULL) AND (reference_db IS NULL)) OR ((reference_accession IS NOT NULL) AND (reference_db IS NOT NULL)))),
     CONSTRAINT md_polymer_residues_hash_format CHECK (((residues_hash)::text ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT md_polymer_uniprot_hit CHECK ((((identity IS NULL) AND (query_end IS NULL) AND (query_start IS NULL) AND (reference_end IS NULL) AND (reference_start IS NULL) AND (uniprot_id IS NULL) AND ((match_method IS NULL) OR ((match_method)::text = 'none'::text))) OR ((identity IS NOT NULL) AND ((match_method)::text = ANY ((ARRAY['pdb'::character varying, 'aligned'::character varying])::text[])) AND (match_method IS NOT NULL) AND (query_end IS NOT NULL) AND (query_start IS NOT NULL) AND (reference_end IS NOT NULL) AND (reference_start IS NOT NULL) AND (uniprot_id IS NOT NULL) AND (query_start >= 1) AND (query_end >= query_start) AND (query_end <= num_residues) AND (reference_start >= 1) AND (reference_end >= reference_start) AND (identity >= (0.0)::double precision) AND (identity <= (100.0)::double precision))))
+    CONSTRAINT md_polymer_uniprot_hit CHECK ((((identity IS NULL) AND (query_end IS NULL) AND (query_start IS NULL) AND (reference_end IS NULL) AND (reference_start IS NULL) AND (uniprot_id IS NULL) AND ((match_method IS NULL) OR ((match_method)::text = 'none'::text))) OR ((identity IS NOT NULL) AND ((match_method)::text = ANY (ARRAY[('pdb'::character varying)::text, ('aligned'::character varying)::text])) AND (match_method IS NOT NULL) AND (query_end IS NOT NULL) AND (query_start IS NOT NULL) AND (reference_end IS NOT NULL) AND (reference_start IS NOT NULL) AND (uniprot_id IS NOT NULL) AND (query_start >= 1) AND (query_end >= query_start) AND (query_end <= num_residues) AND (reference_start >= 1) AND (reference_end >= reference_start) AND (identity >= (0.0)::double precision) AND (identity <= (100.0)::double precision))))
 );
 
 
@@ -3299,13 +3290,6 @@ CREATE INDEX md_pdb_title_trgm ON public.md_pdb USING gin (upper((title)::text) 
 
 
 --
--- Name: md_polymer_accession_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX md_polymer_accession_idx ON public.md_polymer USING btree (reference_accession);
-
-
---
 -- Name: md_polymer_uniprot_id_8936d3e7; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4425,6 +4409,7 @@ ALTER TABLE ONLY public.socialaccount_socialaccount
 --
 
 \unrestrict hlZkwoOcPLdZ80R3vcSFzaYKrsgSjH8y8xru9dXVvrSMeu3pZmBxSZinX9ihYLX
+
 
 
 -- The two file-type lookups need their rows: every file row references one.

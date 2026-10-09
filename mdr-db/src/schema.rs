@@ -100,12 +100,10 @@ diesel::table! {
     }
 }
 
-// md_polymer.reference_db/_accession and md_chain.match_method/
-// reference_start/_end/_identity/_coverage are still in the database after
-// md-repo-app 0289 but are left out here on purpose: a later migration drops
-// them, and a binary that names them would fail every import from then on.
 // The UniProt reference is md_polymer's (uniprot_id .. identity, 0289),
-// decided from the residues alone.
+// decided from the residues alone; a chain has none of its own. The columns
+// it replaced (md_polymer.reference_db/_accession, md_chain.match_method/
+// reference_*) were dropped in md-repo-app 0291.
 diesel::table! {
     use diesel::sql_types::*;
     md_polymer (id) {
