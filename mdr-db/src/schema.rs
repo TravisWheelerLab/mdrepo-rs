@@ -100,11 +100,11 @@ diesel::table! {
     }
 }
 
-// md_polymer.reference_db/_accession and md_chain.reference_start/_end/
-// _identity/_coverage are still in the database after md-repo-app 0287 but are
-// left out here on purpose: a later migration drops them, and a binary that
-// names them would fail every import from then on. 0287 replaced them with
-// md_polymer's UniProt hit (uniprot_id .. identity).
+// md_polymer.reference_db/_accession and md_chain.reference_identity/_coverage
+// are still in the database after md-repo-app 0288 but are left out here on
+// purpose: a later migration drops them, and a binary that names them would
+// fail every import from then on. The UniProt reference is on md_chain
+// (uniprot_id .. identity, 0288), not the shared polymer.
 diesel::table! {
     use diesel::sql_types::*;
     md_polymer (id) {
@@ -114,12 +114,6 @@ diesel::table! {
         residues -> Array<Varchar>,
         residues_hash -> Varchar,
         num_residues -> Int4,
-        uniprot_id -> Nullable<Int8>,
-        query_start -> Nullable<Int4>,
-        query_end -> Nullable<Int4>,
-        reference_start -> Nullable<Int4>,
-        reference_end -> Nullable<Int4>,
-        identity -> Nullable<Float8>,
     }
 }
 
@@ -135,8 +129,14 @@ diesel::table! {
         n_terminal_cap -> Nullable<Varchar>,
         c_terminal_cap -> Nullable<Varchar>,
         match_method -> Nullable<Varchar>,
+        reference_start -> Nullable<Int4>,
+        reference_end -> Nullable<Int4>,
         simulation_id -> Int8,
         polymer_id -> Int8,
+        uniprot_id -> Nullable<Int8>,
+        query_start -> Nullable<Int4>,
+        query_end -> Nullable<Int4>,
+        identity -> Nullable<Float8>,
     }
 }
 

@@ -742,20 +742,6 @@ pub fn find_or_insert_polymer(
     }
 }
 
-/// Set a polymer's UniProt hit, replacing any it had. The polymer row is shared
-/// by every simulation with the same residues, so the last import to find a
-/// hit decides it.
-pub fn set_polymer_reference(
-    conn: &mut PgConnection,
-    rid: i64,
-    hit: &PolymerReference,
-) -> QueryResult<Polymer> {
-    diesel::update(md_polymer::table.find(rid))
-        .set(hit)
-        .returning(Polymer::as_returning())
-        .get_result(conn)
-}
-
 pub fn get_polymer(conn: &mut PgConnection, rid: i64) -> QueryResult<Polymer> {
     md_polymer::table
         .find(rid)

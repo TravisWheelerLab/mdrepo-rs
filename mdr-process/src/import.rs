@@ -639,6 +639,12 @@ fn insert_chain(
             match_method: None,
             simulation_id: sim_id,
             polymer_id,
+            uniprot_id: None,
+            query_start: None,
+            query_end: None,
+            reference_start: None,
+            reference_end: None,
+            identity: None,
         },
     )?
     .id)
