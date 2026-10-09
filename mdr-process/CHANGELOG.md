@@ -26,6 +26,10 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
 - `reference::lookup_polymers` is that batch; the import's per-simulation
   lookup now goes through it too. UniProt entries are fetched 8 at a time
   with two retries.
+- The backfill caches UniProt entries in `<work_dir>/uniprot/` (fetch
+  time and UniProt's JSON), so the real run over its dry run's work folder
+  reuses them, and its BLAST files, and writes what the dry run reported.
+  Imports do not cache.
 
 ## 0.6.0 (2026-10-09)
 

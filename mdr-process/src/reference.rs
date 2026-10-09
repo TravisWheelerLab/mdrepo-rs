@@ -33,12 +33,12 @@
 //! would stick.
 
 use crate::{
-    process::{blast_db, get_uniprot_entry, run_blastp},
+    process::{blast_db, get_uniprot_entry, run_blastp, uniprot_entry_from_json},
     types::{ImportChain, PolymerHit, PolymerLookup, UniprotDb, UniprotEntry},
 };
 use anyhow::{Result, anyhow};
 use libmdrepo::common::file_exists;
-use log::debug;
+use log::{debug, info, warn};
 use rayon::prelude::*;
 use regex::Regex;
 use serde::Deserialize;
@@ -178,7 +178,7 @@ pub fn lookup_chains(
     }
 
     let (lookups, warnings) =
-        lookup_polymers(&queries, blast_dir, processed_dir, num_threads)?;
+        lookup_polymers(&queries, blast_dir, processed_dir, num_threads, None)?;
 
     for chain in chains.iter_mut() {
         let i = keys
@@ -195,13 +195,15 @@ pub fn lookup_chains(
 /// Steps 1-4 for many polymers at once, each against its own declared PDB
 /// ID: the PDB index is read once, BLAST runs once over every polymer that
 /// needs it (its files go in `work_dir`), and each UniProt entry is fetched
-/// once. Returns a lookup per query, None where it could not be finished
+/// once (or read from `uniprot_cache`, see `fetch_entries`). Returns a
+/// lookup per query, None where it could not be finished
 /// (left untried), and warnings.
 pub fn lookup_polymers(
     queries: &[PolymerQuery],
     blast_dir: &Path,
     work_dir: &Path,
     num_threads: usize,
+    uniprot_cache: Option<&Path>,
 ) -> Result<(Vec<Option<PolymerLookup>>, Vec<String>)> {
     let mut warnings = vec![];
     let mut lookups: Vec<Option<PolymerLookup>> = vec![None; queries.len()];
@@ -254,7 +256,10 @@ pub fn lookup_polymers(
             candidates.insert(i, c);
         }
     }
-    let uniprot = fetch_entries(candidates.values().map(|c| c.accession.as_str()));
+    let uniprot = fetch_entries(
+        candidates.values().map(|c| c.accession.as_str()),
+        uniprot_cache,
+    );
 
     let mut to_blast = vec![];
     for &i in &wanted {
@@ -278,7 +283,8 @@ pub fn lookup_polymers(
             .map(|&i| (format!("p{i}"), queries[i].sequence.as_str()))
             .collect();
         let found = blast_candidates(&blast_queries, blast_dir, work_dir, num_threads)?;
-        let uniprot = fetch_entries(found.values().map(|c| c.accession.as_str()));
+        let uniprot =
+            fetch_entries(found.values().map(|c| c.accession.as_str()), uniprot_cache);
         for &i in &to_blast {
             let Some(candidate) = found.get(&format!("p{i}")) else {
                 // 4. Nothing passed
@@ -307,21 +313,36 @@ pub fn lookup_polymers(
 }
 
 /// Each accession's UniProt entry, fetched once, several at a time, with
-/// two retries; or why it could not be had
+/// two retries; or why it could not be had. With `cache`, an entry already
+/// there (`<accession>.json`: when it was fetched, and UniProt's JSON) is
+/// read instead of fetched, and a fetched one is saved, so a later run
+/// sees the same entries: a backfill's real run writes what its dry run
+/// reported.
 fn fetch_entries<'a>(
     accessions: impl Iterator<Item = &'a str>,
+    cache: Option<&Path>,
 ) -> HashMap<String, std::result::Result<UniprotEntry, String>> {
     let mut accessions: Vec<&str> = accessions.collect();
     accessions.sort_unstable();
     accessions.dedup();
     let fetch = |acc: &str| {
+        if let Some(entry) = cache.and_then(|dir| read_cached(dir, acc)) {
+            return Ok(entry);
+        }
         let mut last = String::new();
         for attempt in 0..3 {
             if attempt > 0 {
                 std::thread::sleep(std::time::Duration::from_secs(2 * attempt));
             }
             match get_uniprot_entry(acc) {
-                Ok(entry) => return Ok(entry),
+                Ok(entry) => {
+                    if let Some(dir) = cache
+                        && let Err(e) = write_cached(dir, &entry)
+                    {
+                        warn!("UniProt cache {}: {e}", dir.display());
+                    }
+                    return Ok(entry);
+                }
                 Err(e) => last = e.to_string(),
             }
         }
@@ -342,7 +363,46 @@ fn fetch_entries<'a>(
             .map(|acc| (acc.to_string(), fetch(acc)))
             .collect(),
     };
+    info!(
+        "{} UniProt entries{}",
+        results.len(),
+        cache.map_or(String::new(), |d| format!(" (cache {})", d.display()))
+    );
     results.into_iter().collect()
+}
+
+/// A cached entry: when it was fetched, and UniProt's JSON
+#[derive(serde::Serialize, Deserialize)]
+struct Cached {
+    fetched_at: chrono::DateTime<chrono::Utc>,
+    response: serde_json::Value,
+}
+
+fn cache_file(dir: &Path, accession: &str) -> std::path::PathBuf {
+    dir.join(format!("{accession}.json"))
+}
+
+fn read_cached(dir: &Path, accession: &str) -> Option<UniprotEntry> {
+    let text = fs::read_to_string(cache_file(dir, accession)).ok()?;
+    let cached: Cached = serde_json::from_str(&text).ok()?;
+    uniprot_entry_from_json(accession, cached.response, cached.fetched_at).ok()
+}
+
+/// Written to a temporary name and renamed, so a reader never sees half
+fn write_cached(dir: &Path, entry: &UniprotEntry) -> Result<()> {
+    let (Some(response), Some(fetched_at)) = (&entry.response, entry.fetched_at) else {
+        return Ok(());
+    };
+    fs::create_dir_all(dir)?;
+    let file = cache_file(dir, &entry.uniprot_id);
+    let tmp = file.with_extension(format!("json.{}", std::process::id()));
+    let cached = Cached {
+        fetched_at,
+        response: response.clone(),
+    };
+    fs::write(&tmp, serde_json::to_vec(&cached)?)?;
+    fs::rename(&tmp, &file)?;
+    Ok(())
 }
 
 fn none() -> PolymerLookup {
@@ -1067,6 +1127,28 @@ mod tests {
             ..candidate
         };
         assert_eq!(make_hit(&past, "ACDE", &uniprot), None);
+    }
+
+    /// An entry in the cache is read, not fetched (Q99999 does not exist,
+    /// so a fetch would fail), and comes back as it was saved
+    #[test]
+    fn uniprot_cache_is_read_back() {
+        let dir = tempdir().unwrap();
+        let raw = serde_json::json!({
+            "proteinDescription": {"recommendedName": {"fullName": {"value": "Cached protein"}}},
+            "sequence": {"value": "MACDE"},
+            "entryAudit": {"entryVersion": 7}
+        });
+        let fetched_at = chrono::Utc::now();
+        let entry = uniprot_entry_from_json("Q99999", raw.clone(), fetched_at).unwrap();
+        write_cached(dir.path(), &entry).unwrap();
+
+        let got = fetch_entries(["Q99999"].into_iter(), Some(dir.path()));
+        let back = got["Q99999"].as_ref().unwrap();
+        assert_eq!(back, &entry);
+        assert_eq!(back.entry_version, Some(7));
+        assert_eq!(back.response, Some(raw));
+        assert_eq!(back.fetched_at, Some(fetched_at));
     }
 
     /// A mutant (one mismatch) passes; 1ktt's two chains read as one fail
