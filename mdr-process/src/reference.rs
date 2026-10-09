@@ -39,6 +39,7 @@ use crate::{
 use anyhow::{Result, anyhow};
 use libmdrepo::common::file_exists;
 use log::debug;
+use rayon::prelude::*;
 use regex::Regex;
 use serde::Deserialize;
 use std::{
@@ -47,6 +48,9 @@ use std::{
     io::{BufRead, BufReader},
     path::Path,
 };
+
+/// UniProt entries fetched at once by a batch
+const UNIPROT_FETCHES: usize = 8;
 
 /// Shorter chains get `none` (question a, Ken, 2026-10-09)
 pub const MIN_RESIDUES: usize = 20;
@@ -133,9 +137,21 @@ pub struct PolymerBlastHit {
 }
 
 // --------------------------------------------------
-/// Look up every distinct polymer among `chains` and set each chain's
-/// `reference`. `pdb_id` is the simulation's declared PDB ID. Returns
-/// warnings for the submitter.
+/// One polymer to look up: what it is, and the declared PDB ID of the
+/// simulation that decides it
+#[derive(Debug, Clone, PartialEq)]
+pub struct PolymerQuery {
+    pub polymer_type: String,
+    pub num_residues: usize,
+    pub sequence: String,
+    pub breaks: Vec<usize>,
+    pub pdb_id: Option<String>,
+}
+
+// --------------------------------------------------
+/// Look up every distinct polymer among one simulation's `chains` and set
+/// each chain's `reference`. `pdb_id` is the simulation's declared PDB ID.
+/// Returns warnings for the submitter.
 pub fn lookup_chains(
     chains: &mut [ImportChain],
     pdb_id: Option<&str>,
@@ -143,63 +159,27 @@ pub fn lookup_chains(
     processed_dir: &Path,
     num_threads: usize,
 ) -> Result<Vec<String>> {
-    let mut warnings = vec![];
-
     // Distinct polymers, in chain order: (type, residues) is md_polymer's
     // key. The first chain of each gives the sequence and the breaks.
-    let mut polymers: Vec<&ImportChain> = vec![];
+    let mut keys: Vec<(String, Vec<String>)> = vec![];
+    let mut queries: Vec<PolymerQuery> = vec![];
     for chain in chains.iter() {
-        if !polymers.iter().any(|p| same_polymer(p, chain)) {
-            polymers.push(chain);
+        let key = (chain.polymer_type.clone(), chain.residues.clone());
+        if !keys.contains(&key) {
+            keys.push(key);
+            queries.push(PolymerQuery {
+                polymer_type: chain.polymer_type.clone(),
+                num_residues: chain.residues.len(),
+                sequence: chain.sequence.clone(),
+                breaks: chain.breaks.clone(),
+                pdb_id: pdb_id.map(str::to_string),
+            });
         }
     }
 
-    let mut lookups: Vec<Option<PolymerLookup>> = vec![None; polymers.len()];
-    let mut wanted = vec![];
-    for (i, polymer) in polymers.iter().enumerate() {
-        if polymer.polymer_type == "protein" && polymer.residues.len() >= MIN_RESIDUES {
-            wanted.push(i);
-        } else {
-            lookups[i] = Some(none());
-        }
-    }
+    let (lookups, warnings) =
+        lookup_polymers(&queries, blast_dir, processed_dir, num_threads)?;
 
-    if !wanted.is_empty() {
-        let seqres = blast_dir.join(PDB_SEQRES);
-        let sifts = blast_dir.join(PDB_SIFTS);
-        if !(seqres.is_file() && sifts.is_file()) {
-            warnings.push(format!(
-                "The UniProt references of the chains were not looked up: no PDB \
-                 index ({} and {})",
-                seqres.display(),
-                sifts.display()
-            ));
-        } else {
-            let queries: Vec<(&str, &[usize])> = polymers
-                .iter()
-                .map(|p| (p.sequence.as_str(), p.breaks.as_slice()))
-                .collect();
-            let found = find_references(
-                &wanted,
-                &queries,
-                pdb_id,
-                &seqres,
-                &sifts,
-                blast_dir,
-                processed_dir,
-                num_threads,
-                &mut warnings,
-            )?;
-            for (i, lookup) in found {
-                lookups[i] = lookup;
-            }
-        }
-    }
-
-    let keys: Vec<(String, Vec<String>)> = polymers
-        .iter()
-        .map(|p| (p.polymer_type.clone(), p.residues.clone()))
-        .collect();
     for chain in chains.iter_mut() {
         let i = keys
             .iter()
@@ -211,97 +191,158 @@ pub fn lookup_chains(
     Ok(warnings)
 }
 
-fn same_polymer(a: &ImportChain, b: &ImportChain) -> bool {
-    a.polymer_type == b.polymer_type && a.residues == b.residues
-}
-
 // --------------------------------------------------
-/// Steps 2-4 for the polymers at `wanted` (indexes into `queries`, each a
-/// sequence and its breaks). A polymer missing from the result was not
-/// finished and stays untried.
-#[allow(clippy::too_many_arguments)]
-fn find_references(
-    wanted: &[usize],
-    queries: &[(&str, &[usize])],
-    pdb_id: Option<&str>,
-    seqres: &Path,
-    sifts: &Path,
+/// Steps 1-4 for many polymers at once, each against its own declared PDB
+/// ID: the PDB index is read once, BLAST runs once over every polymer that
+/// needs it (its files go in `work_dir`), and each UniProt entry is fetched
+/// once. Returns a lookup per query, None where it could not be finished
+/// (left untried), and warnings.
+pub fn lookup_polymers(
+    queries: &[PolymerQuery],
     blast_dir: &Path,
-    processed_dir: &Path,
+    work_dir: &Path,
     num_threads: usize,
-    warnings: &mut Vec<String>,
-) -> Result<HashMap<usize, Option<PolymerLookup>>> {
-    let mut found = HashMap::new();
-    let mut entries: HashMap<String, UniprotEntry> = HashMap::new();
+) -> Result<(Vec<Option<PolymerLookup>>, Vec<String>)> {
+    let mut warnings = vec![];
+    let mut lookups: Vec<Option<PolymerLookup>> = vec![None; queries.len()];
 
-    // 2. The declared PDB entry
-    let mut to_blast = vec![];
-    let entry = match pdb_id {
-        Some(pdb_id) => {
-            let chains = entry_chains(seqres, pdb_id)?;
-            if chains.is_empty() {
-                debug!("PDB {pdb_id} has no protein chains in the index");
-            }
-            let pairs: HashSet<(String, String)> = chains
-                .iter()
-                .map(|(chain, _)| (pdb_id.to_lowercase(), chain.clone()))
-                .collect();
-            let segments = sifts_segments(sifts, &pairs)?;
-            Some((pdb_id.to_lowercase(), chains, segments))
+    // 1. Not protein, or short
+    let mut wanted = vec![];
+    for (i, q) in queries.iter().enumerate() {
+        if q.polymer_type == "protein" && q.num_residues >= MIN_RESIDUES {
+            wanted.push(i);
+        } else {
+            lookups[i] = Some(none());
         }
-        None => None,
-    };
-    for &i in wanted {
-        let (sequence, breaks) = queries[i];
-        let candidate = entry.as_ref().and_then(|(pdb, chains, segments)| {
-            pdb_candidate(sequence, breaks, pdb, chains, segments)
-        });
-        let Some(candidate) = candidate else {
+    }
+    if wanted.is_empty() {
+        return Ok((lookups, warnings));
+    }
+
+    let seqres = blast_dir.join(PDB_SEQRES);
+    let sifts = blast_dir.join(PDB_SIFTS);
+    if !(seqres.is_file() && sifts.is_file()) {
+        warnings.push(format!(
+            "The UniProt references of the chains were not looked up: no PDB \
+             index ({} and {})",
+            seqres.display(),
+            sifts.display()
+        ));
+        return Ok((lookups, warnings));
+    }
+
+    // 2. The declared PDB entries, read in one pass each
+    let pdb_ids: HashSet<String> = wanted
+        .iter()
+        .filter_map(|&i| queries[i].pdb_id.as_ref().map(|p| p.to_lowercase()))
+        .collect();
+    let entries = entries_chains(&seqres, &pdb_ids)?;
+    let pairs: HashSet<(String, String)> = entries
+        .iter()
+        .flat_map(|(pdb, chains)| chains.iter().map(|(c, _)| (pdb.clone(), c.clone())))
+        .collect();
+    let segments = sifts_segments(&sifts, &pairs)?;
+
+    let mut candidates: HashMap<usize, Candidate> = HashMap::new();
+    for &i in &wanted {
+        let q = &queries[i];
+        if let Some(pdb) = q.pdb_id.as_ref().map(|p| p.to_lowercase())
+            && let Some(chains) = entries.get(&pdb)
+            && let Some(c) =
+                pdb_candidate(&q.sequence, &q.breaks, &pdb, chains, &segments)
+        {
+            candidates.insert(i, c);
+        }
+    }
+    let uniprot = fetch_entries(candidates.values().map(|c| c.accession.as_str()));
+
+    let mut to_blast = vec![];
+    for &i in &wanted {
+        let Some(candidate) = candidates.get(&i) else {
             to_blast.push(i);
             continue;
         };
-        match resolve(&candidate, sequence, &mut entries) {
-            Ok(Some(hit)) => {
-                found.insert(i, Some(lookup(&candidate, hit)));
-            }
-            Ok(None) => to_blast.push(i),
-            Err(e) => warnings.push(not_recorded(&candidate, e)),
+        match &uniprot[&candidate.accession] {
+            Ok(entry) => match make_hit(candidate, &queries[i].sequence, entry) {
+                Some(hit) => lookups[i] = Some(lookup(candidate, hit)),
+                None => to_blast.push(i),
+            },
+            Err(e) => warnings.push(not_recorded(candidate, e)),
         }
     }
 
-    // 3. BLAST
+    // 3. BLAST, once for all
     if !to_blast.is_empty() {
         let blast_queries: Vec<(String, &str)> = to_blast
             .iter()
-            .map(|&i| (format!("p{i}"), queries[i].0))
+            .map(|&i| (format!("p{i}"), queries[i].sequence.as_str()))
             .collect();
-        let candidates =
-            blast_candidates(&blast_queries, blast_dir, processed_dir, num_threads)?;
+        let found = blast_candidates(&blast_queries, blast_dir, work_dir, num_threads)?;
+        let uniprot = fetch_entries(found.values().map(|c| c.accession.as_str()));
         for &i in &to_blast {
-            let Some(candidate) = candidates.get(&format!("p{i}")) else {
+            let Some(candidate) = found.get(&format!("p{i}")) else {
                 // 4. Nothing passed
-                found.insert(i, Some(none()));
+                lookups[i] = Some(none());
                 continue;
             };
-            match resolve(candidate, queries[i].0, &mut entries) {
-                Ok(Some(hit)) => {
-                    found.insert(i, Some(lookup(candidate, hit)));
-                }
-                Ok(None) => {
-                    debug!(
-                        "{}'s range {}-{} is past its sequence; no reference",
-                        candidate.accession,
-                        candidate.reference_start,
-                        candidate.reference_end
-                    );
-                    found.insert(i, Some(none()));
-                }
+            match &uniprot[&candidate.accession] {
+                Ok(entry) => match make_hit(candidate, &queries[i].sequence, entry) {
+                    Some(hit) => lookups[i] = Some(lookup(candidate, hit)),
+                    None => {
+                        debug!(
+                            "{}'s range {}-{} is past its sequence; no reference",
+                            candidate.accession,
+                            candidate.reference_start,
+                            candidate.reference_end
+                        );
+                        lookups[i] = Some(none());
+                    }
+                },
                 Err(e) => warnings.push(not_recorded(candidate, e)),
             }
         }
     }
 
-    Ok(found)
+    Ok((lookups, warnings))
+}
+
+/// Each accession's UniProt entry, fetched once, several at a time, with
+/// two retries; or why it could not be had
+fn fetch_entries<'a>(
+    accessions: impl Iterator<Item = &'a str>,
+) -> HashMap<String, std::result::Result<UniprotEntry, String>> {
+    let mut accessions: Vec<&str> = accessions.collect();
+    accessions.sort_unstable();
+    accessions.dedup();
+    let fetch = |acc: &str| {
+        let mut last = String::new();
+        for attempt in 0..3 {
+            if attempt > 0 {
+                std::thread::sleep(std::time::Duration::from_secs(2 * attempt));
+            }
+            match get_uniprot_entry(acc) {
+                Ok(entry) => return Ok(entry),
+                Err(e) => last = e.to_string(),
+            }
+        }
+        Err(last)
+    };
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(UNIPROT_FETCHES)
+        .build();
+    let results: Vec<(String, std::result::Result<UniprotEntry, String>)> = match pool {
+        Ok(pool) => pool.install(|| {
+            accessions
+                .par_iter()
+                .map(|acc| (acc.to_string(), fetch(acc)))
+                .collect()
+        }),
+        Err(_) => accessions
+            .iter()
+            .map(|acc| (acc.to_string(), fetch(acc)))
+            .collect(),
+    };
+    results.into_iter().collect()
 }
 
 fn none() -> PolymerLookup {
@@ -318,7 +359,7 @@ fn lookup(candidate: &Candidate, hit: PolymerHit) -> PolymerLookup {
     }
 }
 
-fn not_recorded(candidate: &Candidate, e: anyhow::Error) -> String {
+fn not_recorded(candidate: &Candidate, e: &str) -> String {
     format!(
         "A chain's UniProt reference ({}, by {}) was not recorded: {e}",
         candidate.accession, candidate.match_method
@@ -326,22 +367,6 @@ fn not_recorded(candidate: &Candidate, e: anyhow::Error) -> String {
 }
 
 // --------------------------------------------------
-/// Fetch the candidate's UniProt entry (once per accession) and make the hit.
-/// None when the range does not fit the entry's sequence: SIFTS read against
-/// an older UniProt release than the one served now.
-fn resolve(
-    candidate: &Candidate,
-    sequence: &str,
-    entries: &mut HashMap<String, UniprotEntry>,
-) -> Result<Option<PolymerHit>> {
-    if !entries.contains_key(&candidate.accession) {
-        let entry = get_uniprot_entry(&candidate.accession)?;
-        entries.insert(candidate.accession.clone(), entry);
-    }
-    let uniprot = &entries[&candidate.accession];
-    Ok(make_hit(candidate, sequence, uniprot))
-}
-
 /// The hit for a candidate whose UniProt entry is in hand. A PDB match's
 /// identity is the share of its residue pairs where ours equals UniProt's.
 /// None when a range does not fit the sequences: SIFTS read against an
@@ -388,34 +413,55 @@ pub fn make_hit(
 /// The protein chains of one PDB entry in `pdb_seqres.txt`, as (chain ID,
 /// sequence), in chain ID order
 pub fn entry_chains(seqres: &Path, pdb_id: &str) -> Result<Vec<(String, String)>> {
-    let file = File::open(seqres).map_err(|e| anyhow!("{}: {e}", seqres.display()))?;
-    let prefix = format!("{}_", pdb_id.to_lowercase());
+    let pdb = pdb_id.to_lowercase();
+    let ids: HashSet<String> = [pdb.clone()].into_iter().collect();
+    Ok(entries_chains(seqres, &ids)?
+        .remove(&pdb)
+        .unwrap_or_default())
+}
 
-    // `>101m_A mol:protein length:154  MYOGLOBIN`, then the sequence. The
-    // file is in PDB ID order, so the entry's records are together.
-    let mut found: Vec<(String, String)> = vec![];
-    let mut current: Option<usize> = None;
+/// The protein chains of each of `pdb_ids` (lower case) in
+/// `pdb_seqres.txt`, read in one pass: by PDB ID, (chain ID, sequence) in
+/// chain ID order. An ID with no protein chain is absent.
+pub fn entries_chains(
+    seqres: &Path,
+    pdb_ids: &HashSet<String>,
+) -> Result<HashMap<String, Vec<(String, String)>>> {
+    let mut found: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    if pdb_ids.is_empty() {
+        return Ok(found);
+    }
+    let file = File::open(seqres).map_err(|e| anyhow!("{}: {e}", seqres.display()))?;
+
+    // `>101m_A mol:protein length:154  MYOGLOBIN`, then the sequence
+    let mut current: Option<(String, usize)> = None;
     for line in BufReader::new(file).lines() {
         let line = line.map_err(|e| anyhow!("{}: {e}", seqres.display()))?;
         if let Some(header) = line.strip_prefix('>') {
             current = None;
             let mut fields = header.split_whitespace();
-            let id = fields.next().unwrap_or("").to_lowercase();
-            if let Some(chain) = id.strip_prefix(&prefix) {
-                if fields.next() == Some("mol:protein") {
-                    // Keep the chain ID as written: SIFTS's is case-sensitive
-                    let written = &header[prefix.len()..prefix.len() + chain.len()];
-                    found.push((written.to_string(), String::new()));
-                    current = Some(found.len() - 1);
-                }
-            } else if !found.is_empty() {
-                break;
+            let id = fields.next().unwrap_or("");
+            if fields.next() != Some("mol:protein") {
+                continue;
             }
-        } else if let Some(i) = current {
-            found[i].1.push_str(line.trim());
+            // Keep the chain ID as written: SIFTS's is case-sensitive
+            if let Some((pdb, chain)) = id.split_once('_') {
+                let pdb = pdb.to_lowercase();
+                if pdb_ids.contains(&pdb) {
+                    let chains = found.entry(pdb.clone()).or_default();
+                    chains.push((chain.to_string(), String::new()));
+                    current = Some((pdb, chains.len() - 1));
+                }
+            }
+        } else if let Some((pdb, i)) = &current
+            && let Some(chains) = found.get_mut(pdb)
+        {
+            chains[*i].1.push_str(line.trim());
         }
     }
-    found.sort();
+    for chains in found.values_mut() {
+        chains.sort();
+    }
     Ok(found)
 }
 
@@ -575,7 +621,7 @@ pub fn pdb_candidate(
 /// Step 3: BLAST `queries` (FASTA ID, sequence) against Swiss-Prot, then
 /// those with no passing hit against TrEMBL. Returns the best passing hit by
 /// FASTA ID. A Swiss-Prot hit that passes is never weighed against TrEMBL.
-fn blast_candidates(
+pub fn blast_candidates(
     queries: &[(String, &str)],
     blast_dir: &Path,
     processed_dir: &Path,

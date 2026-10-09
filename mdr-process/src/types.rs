@@ -98,6 +98,44 @@ pub enum Command {
 
     /// Print the polymer chains in structure files (read only)
     Sequence(SequenceArgs),
+
+    /// Fill md_chain, md_polymer and the polymers' UniProt references for
+    /// simulations imported before mdr-process wrote them
+    BackfillChains(BackfillArgs),
+}
+
+// --------------------------------------------------
+#[derive(Debug, Parser)]
+pub struct BackfillArgs {
+    /// TSV with a header: simulation_id, pdb_id (may be blank), structure
+    /// (a local copy of the processed PDB)
+    #[arg(value_name = "TSV")]
+    pub input: PathBuf,
+
+    /// Server to write to; required unless --dry-run
+    #[arg(short, long, value_name = "SERVER")]
+    pub server: Option<Server>,
+
+    /// Look everything up and write the report, but read and write no
+    /// database
+    #[arg(short, long)]
+    pub dry_run: bool,
+
+    /// The report: one row per chain
+    #[arg(short, long, value_name = "FILE")]
+    pub out: PathBuf,
+
+    /// Directory for the BLAST files
+    #[arg(short, long, value_name = "DIR")]
+    pub work_dir: PathBuf,
+
+    /// BLAST databases and PDB index (default: $MDREPO_WORK_DIR/blast)
+    #[arg(long, value_name = "DIR")]
+    pub blast_dir: Option<PathBuf>,
+
+    /// Threads for each `blastp` search (`-num_threads`)
+    #[arg(long, value_name = "N", default_value_t = DEFAULT_BLAST_NUM_THREADS)]
+    pub blast_num_threads: usize,
 }
 
 // --------------------------------------------------
