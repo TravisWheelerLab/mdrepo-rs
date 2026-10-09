@@ -339,10 +339,17 @@ pub struct Polymer {
     pub residues: Vec<String>,
     pub residues_hash: String,
     pub num_residues: i32,
-    pub reference_db: Option<String>,
-    pub reference_accession: Option<String>,
+    pub uniprot_id: Option<i64>,
+    pub match_method: Option<String>,
+    pub query_start: Option<i32>,
+    pub query_end: Option<i32>,
+    pub reference_start: Option<i32>,
+    pub reference_end: Option<i32>,
+    pub identity: Option<f64>,
 }
 
+/// A new polymer has not been looked up yet; `ops::set_polymer_reference`
+/// records the result.
 #[derive(Debug, Insertable)]
 #[diesel(table_name = md_polymer)]
 pub struct NewPolymer {
@@ -351,8 +358,22 @@ pub struct NewPolymer {
     pub residues: Vec<String>,
     pub residues_hash: String,
     pub num_residues: i32,
-    pub reference_db: Option<String>,
-    pub reference_accession: Option<String>,
+}
+
+/// A polymer's UniProt hit (md-repo-app 0289), decided from its residues
+/// alone. The CHECK md_polymer_uniprot_hit wants all of it or none of it, so
+/// there are no optional fields. `query_*` are 1-based positions in the
+/// polymer's sequence, `reference_*` in the UniProt one; `identity` is a
+/// percent.
+#[derive(Debug, Clone, PartialEq, AsChangeset)]
+#[diesel(table_name = md_polymer)]
+pub struct PolymerReference {
+    pub uniprot_id: i64,
+    pub query_start: i32,
+    pub query_end: i32,
+    pub reference_start: i32,
+    pub reference_end: i32,
+    pub identity: f64,
 }
 
 // ── md_chain ──────────────────────────────────────────────────────────────────
@@ -380,11 +401,6 @@ pub struct Chain {
     pub last_residue: Option<i32>,
     pub n_terminal_cap: Option<String>,
     pub c_terminal_cap: Option<String>,
-    pub match_method: Option<String>,
-    pub reference_start: Option<i32>,
-    pub reference_end: Option<i32>,
-    pub reference_identity: Option<f64>,
-    pub reference_coverage: Option<f64>,
     pub simulation_id: i64,
     pub polymer_id: i64,
 }
@@ -399,7 +415,6 @@ pub struct NewChain {
     pub last_residue: Option<i32>,
     pub n_terminal_cap: Option<String>,
     pub c_terminal_cap: Option<String>,
-    pub match_method: Option<String>,
     pub simulation_id: i64,
     pub polymer_id: i64,
 }
@@ -415,14 +430,23 @@ pub struct Pdb {
     pub pdb_id: String,
     pub classification: Option<String>,
     pub title: Option<String>,
+    /// PDBe's molecules response, raw (POST /pdb/entry/molecules/)
+    pub response: Option<serde_json::Value>,
+    /// PDBe's SIFTS UniProt mappings, raw (GET /mappings/uniprot/<id>)
+    pub entities_response: Option<serde_json::Value>,
+    pub fetched_at: Option<DateTime<Utc>>,
 }
 
+/// `upsert_pdb` keeps the stored responses when these are `None`.
 #[derive(Debug, Insertable, Deserialize)]
 #[diesel(table_name = md_pdb)]
 pub struct NewPdb {
     pub pdb_id: String,
     pub classification: Option<String>,
     pub title: Option<String>,
+    pub response: Option<serde_json::Value>,
+    pub entities_response: Option<serde_json::Value>,
+    pub fetched_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, AsChangeset, Default, Deserialize)]
@@ -962,8 +986,13 @@ pub struct Uniprot {
     pub name: String,
     pub amino_length: i32,
     pub sequence: String,
+    /// UniProt's entry, raw
+    pub response: Option<serde_json::Value>,
+    pub entry_version: Option<i32>,
+    pub fetched_at: Option<DateTime<Utc>>,
 }
 
+/// `upsert_uniprot` keeps the stored response when these are `None`.
 #[derive(Debug, Insertable, Deserialize)]
 #[diesel(table_name = md_uniprot)]
 pub struct NewUniprot {
@@ -971,6 +1000,9 @@ pub struct NewUniprot {
     pub name: String,
     pub amino_length: i32,
     pub sequence: String,
+    pub response: Option<serde_json::Value>,
+    pub entry_version: Option<i32>,
+    pub fetched_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, AsChangeset, Default, Deserialize)]

@@ -623,8 +623,6 @@ fn insert_chain(
             residues: chain.residues.clone(),
             residues_hash: residues_hash(&chain.residues),
             num_residues: i32::try_from(chain.residues.len())?,
-            reference_db: None,
-            reference_accession: None,
         },
     )?;
 
@@ -638,7 +636,6 @@ fn insert_chain(
             last_residue: chain.last_residue,
             n_terminal_cap: chain.n_terminal_cap.clone(),
             c_terminal_cap: chain.c_terminal_cap.clone(),
-            match_method: None,
             simulation_id: sim_id,
             polymer_id,
         },
@@ -791,6 +788,9 @@ fn upsert_uniprot(
             name: uniprot.name.clone(),
             amino_length,
             sequence: uniprot.sequence.clone(),
+            response: None,
+            entry_version: None,
+            fetched_at: None,
         },
     )?
     .id;
@@ -864,6 +864,9 @@ fn upsert_pdb(
             pdb_id: code,
             classification: Some(pdb.classification.clone()),
             title: Some(pdb.title.clone()),
+            response: None,
+            entities_response: None,
+            fetched_at: None,
         },
     )?
     .id;
