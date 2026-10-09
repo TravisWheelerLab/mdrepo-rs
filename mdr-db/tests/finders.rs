@@ -1037,11 +1037,12 @@ fn upserts_keep_a_stored_response_unless_given_a_new_one() {
     assert!(kept.fetched_at.is_some());
 }
 
-/// The UniProt reference is written with the chain, so two simulations that
-/// share a polymer keep their own (CALM1 and CALM2 are one protein), and
-/// md_chain_uniprot_hit refuses a hit with no method that found it.
+/// A polymer's reference is decided from its residues and written once: the
+/// first lookup sets it, a later one does not change it, "none" records a
+/// lookup that found nothing, and md_polymer_uniprot_hit refuses a hit past
+/// the polymer's end.
 #[test]
-fn a_chain_carries_its_own_uniprot_reference() {
+fn set_polymer_reference_writes_once() {
     let mut c = conn_or_skip!();
     let ref_for = |c: &mut PgConnection, acc: &str| {
         ops::insert_uniprot(
@@ -1059,64 +1060,61 @@ fn a_chain_carries_its_own_uniprot_reference() {
         .unwrap()
         .id
     };
-    let calm1 = ref_for(&mut c, "P0DP23-chaintest");
-    let calm2 = ref_for(&mut c, "P0DP24-chaintest");
-    let residues: Vec<String> = ["ALA", "ASP", "GLN", "LEU", "THR"]
-        .iter()
-        .map(|r| r.to_string())
-        .collect();
-    let polymer = ops::find_or_insert_polymer(
-        &mut c,
-        &NewPolymer {
-            polymer_type: "protein".into(),
-            sequence: "ADQLT".into(),
-            residues,
-            residues_hash: "cd".repeat(32),
-            num_residues: 5,
-        },
-    )
-    .unwrap();
-    let chain = |sim: i64, method: Option<&str>, uniprot: Option<i64>| NewChain {
-        chain_order: 1,
-        chain_label: "A".into(),
-        source: "structure".into(),
-        first_residue: Some(1),
-        last_residue: Some(5),
-        n_terminal_cap: None,
-        c_terminal_cap: None,
-        match_method: method.map(String::from),
-        simulation_id: sim,
-        polymer_id: polymer,
-        uniprot_id: uniprot,
-        query_start: uniprot.map(|_| 1),
-        query_end: uniprot.map(|_| 5),
-        reference_start: uniprot.map(|_| 2),
-        reference_end: uniprot.map(|_| 6),
-        identity: uniprot.map(|_| 100.0),
+    let calm1 = ref_for(&mut c, "P0DP23-polymertest");
+    let calm2 = ref_for(&mut c, "P0DP24-polymertest");
+    let polymer = |c: &mut PgConnection, hash: &str| {
+        let residues: Vec<String> = ["ALA", "ASP", "GLN", "LEU", "THR"]
+            .iter()
+            .map(|r| r.to_string())
+            .collect();
+        ops::find_or_insert_polymer(
+            c,
+            &NewPolymer {
+                polymer_type: "protein".into(),
+                sequence: "ADQLT".into(),
+                residues,
+                residues_hash: hash.repeat(32),
+                num_residues: 5,
+            },
+        )
+        .unwrap()
+    };
+    let hit = |uniprot_id| PolymerReference {
+        uniprot_id,
+        query_start: 1,
+        query_end: 5,
+        reference_start: 2,
+        reference_end: 6,
+        identity: 100.0,
     };
 
-    let sim_a = seed_sim(&mut c);
-    let sim_b = seed_sim(&mut c);
-    let a =
-        ops::insert_chain(&mut c, chain(sim_a, Some("declared"), Some(calm1))).unwrap();
-    let b =
-        ops::insert_chain(&mut c, chain(sim_b, Some("declared"), Some(calm2))).unwrap();
-    assert_eq!(a.polymer_id, b.polymer_id);
+    let found = polymer(&mut c, "cd");
+    assert_eq!(ops::get_polymer(&mut c, found).unwrap().match_method, None);
+    assert!(ops::set_polymer_reference(&mut c, found, Some(&hit(calm1))).unwrap());
+    assert!(!ops::set_polymer_reference(&mut c, found, Some(&hit(calm2))).unwrap());
+    assert!(!ops::set_polymer_reference(&mut c, found, None).unwrap());
+    let p = ops::get_polymer(&mut c, found).unwrap();
+    assert_eq!(p.uniprot_id, Some(calm1));
+    assert_eq!(p.match_method.as_deref(), Some("aligned"));
+    assert_eq!((p.query_start, p.query_end), (Some(1), Some(5)));
+    assert_eq!((p.reference_start, p.reference_end), (Some(2), Some(6)));
+    assert_eq!(p.identity, Some(100.0));
+
+    let not_found = polymer(&mut c, "ce");
+    assert!(ops::set_polymer_reference(&mut c, not_found, None).unwrap());
+    let p = ops::get_polymer(&mut c, not_found).unwrap();
     assert_eq!(
-        ops::get_chain(&mut c, a.id).unwrap().uniprot_id,
-        Some(calm1)
+        (p.uniprot_id, p.match_method.as_deref()),
+        (None, Some("none"))
     );
-    assert_eq!(
-        ops::get_chain(&mut c, b.id).unwrap().uniprot_id,
-        Some(calm2)
-    );
-    assert_eq!((b.query_start, b.query_end), (Some(1), Some(5)));
-    assert_eq!((b.reference_start, b.reference_end), (Some(2), Some(6)));
-    assert_eq!(b.identity, Some(100.0));
 
     // Last statement: the CHECK failure aborts the transaction.
-    let sim_c = seed_sim(&mut c);
-    assert!(ops::insert_chain(&mut c, chain(sim_c, None, Some(calm1))).is_err());
+    let past_the_end = polymer(&mut c, "cf");
+    let bad = PolymerReference {
+        query_end: 6,
+        ..hit(calm1)
+    };
+    assert!(ops::set_polymer_reference(&mut c, past_the_end, Some(&bad)).is_err());
 }
 
 #[test]

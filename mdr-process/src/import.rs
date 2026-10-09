@@ -636,15 +636,8 @@ fn insert_chain(
             last_residue: chain.last_residue,
             n_terminal_cap: chain.n_terminal_cap.clone(),
             c_terminal_cap: chain.c_terminal_cap.clone(),
-            match_method: None,
             simulation_id: sim_id,
             polymer_id,
-            uniprot_id: None,
-            query_start: None,
-            query_end: None,
-            reference_start: None,
-            reference_end: None,
-            identity: None,
         },
     )?
     .id)

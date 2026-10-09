@@ -339,8 +339,17 @@ pub struct Polymer {
     pub residues: Vec<String>,
     pub residues_hash: String,
     pub num_residues: i32,
+    pub uniprot_id: Option<i64>,
+    pub match_method: Option<String>,
+    pub query_start: Option<i32>,
+    pub query_end: Option<i32>,
+    pub reference_start: Option<i32>,
+    pub reference_end: Option<i32>,
+    pub identity: Option<f64>,
 }
 
+/// A new polymer has not been looked up yet; `ops::set_polymer_reference`
+/// records the result.
 #[derive(Debug, Insertable)]
 #[diesel(table_name = md_polymer)]
 pub struct NewPolymer {
@@ -349,6 +358,22 @@ pub struct NewPolymer {
     pub residues: Vec<String>,
     pub residues_hash: String,
     pub num_residues: i32,
+}
+
+/// A polymer's UniProt hit (md-repo-app 0289), decided from its residues
+/// alone. The CHECK md_polymer_uniprot_hit wants all of it or none of it, so
+/// there are no optional fields. `query_*` are 1-based positions in the
+/// polymer's sequence, `reference_*` in the UniProt one; `identity` is a
+/// percent.
+#[derive(Debug, Clone, PartialEq, AsChangeset)]
+#[diesel(table_name = md_polymer)]
+pub struct PolymerReference {
+    pub uniprot_id: i64,
+    pub query_start: i32,
+    pub query_end: i32,
+    pub reference_start: i32,
+    pub reference_end: i32,
+    pub identity: f64,
 }
 
 // ── md_chain ──────────────────────────────────────────────────────────────────
@@ -376,23 +401,10 @@ pub struct Chain {
     pub last_residue: Option<i32>,
     pub n_terminal_cap: Option<String>,
     pub c_terminal_cap: Option<String>,
-    pub match_method: Option<String>,
-    pub reference_start: Option<i32>,
-    pub reference_end: Option<i32>,
     pub simulation_id: i64,
     pub polymer_id: i64,
-    pub uniprot_id: Option<i64>,
-    pub query_start: Option<i32>,
-    pub query_end: Option<i32>,
-    pub identity: Option<f64>,
 }
 
-/// The UniProt reference is this simulation's own (md-repo-app 0288), so it is
-/// written with the chain. The CHECK md_chain_uniprot_hit wants the whole hit
-/// with a `match_method` of pdb, declared or aligned, or no hit with "none" or
-/// no method. `query_*` are 1-based positions in the polymer's sequence and
-/// must end within it (no CHECK can see the polymer); `reference_*` are in
-/// the UniProt sequence; `identity` is a percent.
 #[derive(Debug, Insertable)]
 #[diesel(table_name = md_chain)]
 pub struct NewChain {
@@ -403,15 +415,8 @@ pub struct NewChain {
     pub last_residue: Option<i32>,
     pub n_terminal_cap: Option<String>,
     pub c_terminal_cap: Option<String>,
-    pub match_method: Option<String>,
     pub simulation_id: i64,
     pub polymer_id: i64,
-    pub uniprot_id: Option<i64>,
-    pub query_start: Option<i32>,
-    pub query_end: Option<i32>,
-    pub reference_start: Option<i32>,
-    pub reference_end: Option<i32>,
-    pub identity: Option<f64>,
 }
 
 // ── md_pdb ────────────────────────────────────────────────────────────────────
