@@ -2873,6 +2873,15 @@ pub fn get_uniprot_entry(uniprot_id: &str) -> Result<UniprotEntry> {
     let raw: serde_json::Value = resp.json().map_err(|e| {
         anyhow!(r#"Failed to parse Uniprot response for "{uniprot_id}": {e}"#)
     })?;
+    uniprot_entry_from_json(uniprot_id, raw, fetched_at)
+}
+
+/// An entry from UniProt's JSON for it, fetched at `fetched_at`
+pub fn uniprot_entry_from_json(
+    uniprot_id: &str,
+    raw: serde_json::Value,
+    fetched_at: chrono::DateTime<chrono::Utc>,
+) -> Result<UniprotEntry> {
     let uniprot: UniprotResponse =
         serde_json::from_value(raw.clone()).map_err(|e| {
             anyhow!(r#"Failed to parse Uniprot response for "{uniprot_id}": {e}"#)

@@ -125,7 +125,8 @@ pub struct BackfillArgs {
     #[arg(short, long, value_name = "FILE")]
     pub out: PathBuf,
 
-    /// Directory for the BLAST files
+    /// Directory for the BLAST files and the UniProt cache (`uniprot/`);
+    /// give the real run its dry run's, to reuse both
     #[arg(short, long, value_name = "DIR")]
     pub work_dir: PathBuf,
 

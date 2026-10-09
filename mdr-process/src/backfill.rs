@@ -16,6 +16,10 @@
 //! are counted in the report when their own PDB entry would have given
 //! another accession.
 //!
+//! UniProt entries are cached in `<work_dir>/uniprot/`, so a later run over
+//! the same work folder (the real run after its dry run) reuses them and
+//! writes what the dry run reported.
+//!
 //! Writes: per simulation, one transaction (`import::backfill_chains`). A
 //! simulation that already has chains is left alone, and a polymer that
 //! already has a reference keeps it. `--dry-run` reads no database and
@@ -102,6 +106,7 @@ pub fn backfill_chains(args: &BackfillArgs) -> Result<()> {
         &blast_dir,
         &args.work_dir,
         args.blast_num_threads,
+        Some(&args.work_dir.join("uniprot")),
     )?;
     for warning in &warnings {
         warn!("{warning}");
