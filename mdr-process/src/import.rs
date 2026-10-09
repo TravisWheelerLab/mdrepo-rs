@@ -171,6 +171,27 @@ pub fn import_simulation(
 }
 
 // --------------------------------------------------
+/// The chain backfill's write for one simulation imported before chains
+/// were recorded: its chains, their polymers, and each polymer's reference
+/// if it has none, in one transaction. Returns false, writing nothing, when
+/// the simulation already has chains.
+pub fn backfill_chains(
+    conn: &mut PgConnection,
+    sim_id: i64,
+    chains: &[ImportChain],
+) -> Result<bool> {
+    conn.transaction(|conn| {
+        if !ops::list_chains_for_simulation(conn, sim_id)?.is_empty() {
+            return Ok(false);
+        }
+        for chain in chains {
+            insert_chain(conn, sim_id, chain)?;
+        }
+        Ok(true)
+    })
+}
+
+// --------------------------------------------------
 /// A warning for each polymer of `sim` that already has a reference (or a
 /// `none`) other than this simulation's own lookup gave. A polymer's
 /// reference is set once, by the first simulation to import it, and is not

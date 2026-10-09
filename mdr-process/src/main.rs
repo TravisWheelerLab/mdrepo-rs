@@ -3,7 +3,7 @@ use clap::Parser;
 use libmdrepo::metadata::{Meta, MetaCheckOptions};
 use log::info;
 use mdr_process::{
-    process, reprocess, sequence, ticket,
+    backfill, process, reprocess, sequence, ticket,
     types::{Cli, Command, LogLevel},
     validate,
 };
@@ -61,6 +61,11 @@ fn run(args: Cli) -> Result<()> {
             }
 
             process::process(args)?;
+            info!("Finished");
+            Ok(())
+        }
+        Command::BackfillChains(args) => {
+            backfill::backfill_chains(args)?;
             info!("Finished");
             Ok(())
         }

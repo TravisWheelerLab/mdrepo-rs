@@ -11,6 +11,22 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.7.0 (2026-10-09)
+
+- **`mdr-process backfill-chains`**: md_chain, md_polymer and each polymer's
+  UniProt reference for simulations imported before mdr-process wrote
+  them. It reads a TSV of simulation ID, declared PDB ID and a local copy
+  of the processed structure; splits each with the import's splitter;
+  looks every polymer up in one batch (the PDB index read once, one BLAST,
+  each UniProt entry fetched once); and writes each simulation in one
+  transaction. A simulation that already has chains is left alone; a
+  polymer shared by several simulations is decided by the lowest
+  simulation ID. `--dry-run` touches no database. The report has one row
+  per chain, with how many sharing simulations would have disagreed.
+- `reference::lookup_polymers` is that batch; the import's per-simulation
+  lookup now goes through it too. UniProt entries are fetched 8 at a time
+  with two retries.
+
 ## 0.6.0 (2026-10-09)
 
 - **The PDB step reads the simulation's declared PDB ID** (Ken,

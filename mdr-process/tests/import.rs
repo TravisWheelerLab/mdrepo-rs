@@ -858,3 +858,44 @@ fn reference_disagreement_warns() {
     assert!(got[0].contains("Q00011-importref"), "{}", got[0]);
     assert!(got[0].starts_with("Chain 1 (A)"), "{}", got[0]);
 }
+
+/// The chain backfill writes a simulation's chains, polymers and references
+/// once; a simulation that already has chains is left alone
+#[test]
+fn backfill_writes_chains_once() {
+    let mut c = conn_or_skip!();
+    let orcid = "0000-0002-0000-0292";
+    seed_user_with_orcid(&mut c, "bf1", orcid);
+    let sim_id = import::import_simulation(
+        &mut c,
+        &base_sim("bf1", orcid),
+        &ImportOpts::default(),
+    )
+    .unwrap();
+    assert!(
+        ops::list_chains_for_simulation(&mut c, sim_id)
+            .unwrap()
+            .is_empty()
+    );
+
+    let chains = vec![looked_up_chain(Some(hit("pdb", "Q00021-importref")))];
+    assert!(import::backfill_chains(&mut c, sim_id, &chains).unwrap());
+    let got = ops::list_chains_for_simulation(&mut c, sim_id).unwrap();
+    assert_eq!(got.len(), 1);
+    let polymer = ops::get_polymer(&mut c, got[0].polymer_id).unwrap();
+    assert_eq!(polymer.match_method.as_deref(), Some("pdb"));
+
+    // Again: left alone, nothing added
+    let other = vec![looked_up_chain(Some(hit("aligned", "Q00022-importref")))];
+    assert!(!import::backfill_chains(&mut c, sim_id, &other).unwrap());
+    assert_eq!(
+        ops::list_chains_for_simulation(&mut c, sim_id)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        ops::find_uniprot_id_by_accession(&mut c, "Q00022-importref").unwrap(),
+        None
+    );
+}
