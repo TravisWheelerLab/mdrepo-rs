@@ -11,6 +11,14 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.5.1 (2026-10-09)
+
+- **Dependencies updated within their existing version ranges**
+  (`cargo update`; `Cargo.lock` only). Among them diesel 2.3.14, clap
+  4.6.7, reqwest 0.13.5, tokio 1.53.2, rustls 0.23.45, uuid 1.27.0. No
+  change in behaviour expected. The major-version bumps from dependabot's
+  mdrepo-rs#23 are left for one PR each.
+
 ## 0.5.0 (2026-10-09)
 
 - **Each polymer gets a UniProt reference, decided from its residues
