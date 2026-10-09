@@ -11,6 +11,34 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.5.0 (2026-10-09)
+
+- **Each polymer gets a UniProt reference, decided from its residues
+  alone** (md-repo-app 0287-0290; Travis's option 1 and Ken's
+  "an exact match in the PDB first, then BLAST", 2026-10-09). Per distinct
+  polymer, in `reference.rs`:
+  - DNA, RNA, or under 20 residues: `none`.
+  - `pdb`: a PDB chain with exactly these residues (parent letters), from
+    a local `pdb_seqres.txt`; SIFTS's UniProt segment for it, a fusion's
+    largest. Every matching chain SIFTS maps must name the same accession,
+    or BLAST decides (the proposed tie rule, to be confirmed by Travis).
+  - `aligned`: BLAST, Swiss-Prot then TrEMBL; identity >= 95%, at most 3
+    mismatches, >= 90% of the chain covered; top bit score, then canonical
+    over isoform, then the lowest accession.
+  - Otherwise `none`.
+  The import writes it to md_polymer only if the polymer was never looked
+  up, so a reference is set once. The hit's UniProt entry is stored but not
+  linked to the simulation: md_simulation_uniprot still holds the TOML's
+  accessions, as before, and a declared accession that is no chain's
+  reference is now an upload warning.
+- **Needs `just pdb-index` on each processing host** (into
+  `$MDREPO_WORK_DIR/blast/pdb`). Without it, polymers are left unlooked-up
+  and the upload gets a warning; nothing fails.
+- **md_uniprot keeps UniProt's JSON** (`response`, `entry_version`,
+  `fetched_at`), and **md_pdb keeps PDBe's molecules and SIFTS mappings**
+  for the declared PDB ID (`response`, `entities_response`, `fetched_at`).
+- Needs md-repo-app 0290 in the database.
+
 ## 0.4.0 (2026-10-01)
 
 - **A .psf topology's elements come from its masses and bonds**, not

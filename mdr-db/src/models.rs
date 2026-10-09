@@ -362,12 +362,14 @@ pub struct NewPolymer {
 
 /// A polymer's UniProt hit (md-repo-app 0289), decided from its residues
 /// alone. The CHECK md_polymer_uniprot_hit wants all of it or none of it, so
-/// there are no optional fields. `query_*` are 1-based positions in the
-/// polymer's sequence, `reference_*` in the UniProt one; `identity` is a
-/// percent.
+/// there are no optional fields. `match_method` is how it was found: `pdb`
+/// (a PDB entity with the same residues, through SIFTS; 0290) or `aligned`
+/// (BLAST). `query_*` are 1-based positions in the polymer's sequence,
+/// `reference_*` in the UniProt one; `identity` is a percent.
 #[derive(Debug, Clone, PartialEq, AsChangeset)]
 #[diesel(table_name = md_polymer)]
 pub struct PolymerReference {
+    pub match_method: String,
     pub uniprot_id: i64,
     pub query_start: i32,
     pub query_end: i32,

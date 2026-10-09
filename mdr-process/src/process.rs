@@ -1,6 +1,6 @@
 use crate::{
     import::{self, ImportOpts},
-    psf_elements, sequence,
+    psf_elements, reference, sequence,
     ticket::dsn_for,
     types::{
         BlastResult, CheckedLigand, DoiAuthor, DoiPaper, Duration, Export,
@@ -1108,60 +1108,15 @@ pub fn blast_uniprot(
             "Creating {uniprot_db} BLAST results ({})",
             blast_results.display()
         );
-        let blastp =
-            which("blastp").map_err(|e| anyhow!("Failed to find blastp ({e})"))?;
-
-        let mut cmd = Command::new(&blastp);
-        let (blast_db, max_target_seqs) = match uniprot_db {
-            UniprotDb::Swissprot => (
-                blast_dir.join("swissprot").join("swissprot"),
-                BLAST_MAX_TARGET_SEQS_SWISSPROT,
-            ),
-            UniprotDb::Isoform => (
-                blast_dir.join("isoform").join("isoform"),
-                BLAST_MAX_TARGET_SEQS_SWISSPROT,
-            ),
-            UniprotDb::Trembl => (
-                blast_dir.join("trembl").join("trembl"),
-                BLAST_MAX_TARGET_SEQS_TREMBL,
-            ),
-        };
-
-        // blastp takes -num_threads as a string arg; render it once here.
-        let num_threads = num_threads.to_string();
-        cmd.args([
-            "-query",
-            fasta_sequence.to_string_lossy().as_ref(),
-            "-db",
-            blast_db.to_string_lossy().as_ref(),
-            "-out",
-            blast_results.to_string_lossy().as_ref(),
-            "-outfmt",
-            "6",
-            "-evalue",
-            BLAST_EVALUE,
-            "-num_threads",
-            num_threads.as_str(),
-            "-max_target_seqs",
+        let (blast_db, max_target_seqs) = blast_db(blast_dir, &uniprot_db);
+        run_blastp(
+            fasta_sequence,
+            &blast_db,
             max_target_seqs,
-            "-task",
-            "blastp-fast",
-            "-comp_based_stats",
-            "0",
-        ]);
-        debug!("Running {cmd:?}");
-
-        let output = cmd.output()?;
-
-        debug!("{}", str::from_utf8(&output.stdout)?);
-
-        if !output.status.success() {
-            bail!(
-                "Command failed ({}): {cmd:?}\n{}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
+            "6",
+            &blast_results,
+            num_threads,
+        )?;
     }
 
     let mut results = vec![];
@@ -1204,6 +1159,77 @@ pub fn blast_uniprot(
     }
 
     Ok(results)
+}
+
+// --------------------------------------------------
+/// A UniProt BLAST database under `blast_dir`, and how many targets to keep
+pub fn blast_db(blast_dir: &Path, uniprot_db: &UniprotDb) -> (PathBuf, &'static str) {
+    match uniprot_db {
+        UniprotDb::Swissprot => (
+            blast_dir.join("swissprot").join("swissprot"),
+            BLAST_MAX_TARGET_SEQS_SWISSPROT,
+        ),
+        UniprotDb::Isoform => (
+            blast_dir.join("isoform").join("isoform"),
+            BLAST_MAX_TARGET_SEQS_SWISSPROT,
+        ),
+        UniprotDb::Trembl => (
+            blast_dir.join("trembl").join("trembl"),
+            BLAST_MAX_TARGET_SEQS_TREMBL,
+        ),
+    }
+}
+
+// --------------------------------------------------
+/// Run blastp (blastp-fast, e-value `BLAST_EVALUE`) and write `out` in the
+/// tabular `outfmt` given
+pub fn run_blastp(
+    query: &Path,
+    blast_db: &Path,
+    max_target_seqs: &str,
+    outfmt: &str,
+    out: &Path,
+    num_threads: usize,
+) -> Result<()> {
+    let blastp = which("blastp").map_err(|e| anyhow!("Failed to find blastp ({e})"))?;
+
+    let mut cmd = Command::new(&blastp);
+    // blastp takes -num_threads as a string arg; render it once here.
+    let num_threads = num_threads.to_string();
+    cmd.args([
+        "-query",
+        query.to_string_lossy().as_ref(),
+        "-db",
+        blast_db.to_string_lossy().as_ref(),
+        "-out",
+        out.to_string_lossy().as_ref(),
+        "-outfmt",
+        outfmt,
+        "-evalue",
+        BLAST_EVALUE,
+        "-num_threads",
+        num_threads.as_str(),
+        "-max_target_seqs",
+        max_target_seqs,
+        "-task",
+        "blastp-fast",
+        "-comp_based_stats",
+        "0",
+    ]);
+    debug!("Running {cmd:?}");
+
+    let output = cmd.output()?;
+
+    debug!("{}", str::from_utf8(&output.stdout)?);
+
+    if !output.status.success() {
+        bail!(
+            "Command failed ({}): {cmd:?}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
 }
 
 // --------------------------------------------------
@@ -1259,6 +1285,7 @@ pub fn place_chains(
                 last_residue: Some(c.last_residue),
                 n_terminal_cap: c.n_terminal_cap.clone(),
                 c_terminal_cap: c.c_terminal_cap.clone(),
+                reference: None,
             };
             (c.first_atom, chain, None)
         })
@@ -1417,6 +1444,7 @@ fn declared_chain(seq: &str, seq_type: metadata::SequenceType) -> Result<ImportC
         last_residue: None,
         n_terminal_cap: n_cap,
         c_terminal_cap: c_cap,
+        reference: None,
     })
 }
 
@@ -1546,7 +1574,7 @@ pub fn make_import_json(
         );
     }
     let fasta_sequence_file = get_sequence(&structure_chains, args.processed_dir)?;
-    let (chains, ligand_chains) =
+    let (mut chains, ligand_chains) =
         place_chains(&structure_chains, args.meta.ligands.as_ref(), full_pdb)?;
 
     let rmsd_rmsf = get_all_rmsd_rmsf(
@@ -1592,6 +1620,18 @@ pub fn make_import_json(
         args.blast_dir,
         args.blast_num_threads,
     )?;
+    let mut reference_warnings = reference::lookup_chains(
+        &mut chains,
+        args.blast_dir,
+        args.processed_dir,
+        args.blast_num_threads,
+    )?;
+    let declared_uniprot_ids: Vec<String> =
+        args.meta.uniprot_ids.clone().unwrap_or_default();
+    reference_warnings.extend(reference::declared_not_referenced(
+        &declared_uniprot_ids,
+        &chains,
+    ));
     let blast_elapsed = blast_start.elapsed();
 
     let (ligands, ligand_warnings) = resolve_ligands(
@@ -1603,6 +1643,7 @@ pub fn make_import_json(
     )?;
 
     let mut warnings = uniprot_warnings;
+    warnings.extend(reference_warnings);
     warnings.extend(ligand_notes);
     warnings.extend(ligand_warnings);
 
@@ -2815,10 +2856,17 @@ pub fn get_uniprot_entry(uniprot_id: &str) -> Result<UniprotEntry> {
     if !resp.status().is_success() {
         bail!(r#"Failed to fetch "{url}" ({})""#, resp.status());
     }
+    let fetched_at = chrono::Utc::now();
 
-    let uniprot: UniprotResponse = resp.json().map_err(|e| {
+    // Kept whole for md_uniprot.response; the fields used here are read
+    // from it.
+    let raw: serde_json::Value = resp.json().map_err(|e| {
         anyhow!(r#"Failed to parse Uniprot response for "{uniprot_id}": {e}"#)
     })?;
+    let uniprot: UniprotResponse =
+        serde_json::from_value(raw.clone()).map_err(|e| {
+            anyhow!(r#"Failed to parse Uniprot response for "{uniprot_id}": {e}"#)
+        })?;
 
     let desc = uniprot.protein_description;
     let name = if let Some(name) = desc.recommended_name {
@@ -2832,14 +2880,25 @@ pub fn get_uniprot_entry(uniprot_id: &str) -> Result<UniprotEntry> {
         bail!(r#"Uniprot entry for "{uniprot_id}" has no names"#)
     };
 
+    let entry_version = raw
+        .pointer("/entryAudit/entryVersion")
+        .and_then(serde_json::Value::as_i64)
+        .and_then(|v| i32::try_from(v).ok());
+
     Ok(UniprotEntry {
         uniprot_id: uniprot_id.to_string(),
         name,
         sequence: uniprot.sequence.value,
+        response: Some(raw),
+        entry_version,
+        fetched_at: Some(fetched_at),
     })
 }
 
 // --------------------------------------------------
+/// The title and classification come from RCSB; PDBe's molecules and SIFTS
+/// mappings are kept whole for md_pdb (Ken, 2026-10-09). A PDBe call that
+/// fails leaves its response out, and the import keeps what is stored.
 pub fn get_pdb_entry(pdb_id: &str) -> Result<PdbEntry> {
     let pdb_id = pdb_id.to_uppercase();
     let url = format!("https://data.rcsb.org/rest/v1/core/entry/{pdb_id}");
@@ -2851,11 +2910,41 @@ pub fn get_pdb_entry(pdb_id: &str) -> Result<PdbEntry> {
         .json()
         .map_err(|e| anyhow!("Failed to parse PDB response: {e}"))?;
 
+    let code = pdb_id.to_lowercase();
+    let fetched_at = chrono::Utc::now();
+    let response = get_pdbe(&format!("pdb/entry/molecules/{code}"));
+    let entities_response = get_pdbe(&format!("mappings/uniprot/{code}"));
+    let fetched_at =
+        (response.is_some() || entities_response.is_some()).then_some(fetched_at);
+
     Ok(PdbEntry {
         pdb_id,
         title: pdb_resp.struct_.title,
         classification: pdb_resp.struct_keywords.pdbx_keywords,
+        response,
+        entities_response,
+        fetched_at,
     })
+}
+
+/// One PDBe API response, or None (logged) when it could not be had. PDBe
+/// answers 404 for an entry with nothing to report, e.g. no UniProt mapping.
+fn get_pdbe(path: &str) -> Option<serde_json::Value> {
+    let url = format!("https://www.ebi.ac.uk/pdbe/api/{path}");
+    let resp = match reqwest::blocking::get(&url) {
+        Ok(resp) => resp,
+        Err(e) => {
+            debug!(r#"Failed to GET "{url}": {e}"#);
+            return None;
+        }
+    };
+    if !resp.status().is_success() {
+        debug!(r#"Failed to GET "{url}" ({})"#, resp.status());
+        return None;
+    }
+    resp.json()
+        .map_err(|e| debug!(r#"Failed to parse "{url}": {e}"#))
+        .ok()
 }
 
 // --------------------------------------------------

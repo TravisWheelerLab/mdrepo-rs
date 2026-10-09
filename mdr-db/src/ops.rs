@@ -742,12 +742,12 @@ pub fn find_or_insert_polymer(
     }
 }
 
-/// Record a polymer's UniProt lookup: the hit (`match_method` "aligned") or
-/// `None` for looked-for-and-not-found ("none"). Only a polymer not yet
-/// looked up (`match_method` null) is written, so a polymer's reference is
-/// set once: the rule reads only the residues, and a later run against a
-/// newer UniProt release must not quietly change it for every simulation
-/// sharing the row. Returns whether this call wrote it.
+/// Record a polymer's UniProt lookup: the hit (its `match_method`, `pdb` or
+/// `aligned`) or `None` for looked-for-and-not-found ("none"). Only a polymer
+/// not yet looked up (`match_method` null) is written, so a polymer's
+/// reference is set once: the rule reads only the residues, and a later run
+/// against a newer UniProt release must not quietly change it for every
+/// simulation sharing the row. Returns whether this call wrote it.
 pub fn set_polymer_reference(
     conn: &mut PgConnection,
     rid: i64,
@@ -757,9 +757,7 @@ pub fn set_polymer_reference(
         .filter(md_polymer::id.eq(rid))
         .filter(md_polymer::match_method.is_null());
     let n = match hit {
-        Some(hit) => diesel::update(untried)
-            .set((hit, md_polymer::match_method.eq("aligned")))
-            .execute(conn)?,
+        Some(hit) => diesel::update(untried).set(hit).execute(conn)?,
         None => diesel::update(untried)
             .set(md_polymer::match_method.eq("none"))
             .execute(conn)?,

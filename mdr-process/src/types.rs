@@ -392,11 +392,21 @@ pub struct Duration {
 }
 
 // --------------------------------------------------
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 pub struct UniprotEntry {
     pub uniprot_id: String,
     pub name: String,
     pub sequence: String,
+
+    /// UniProt's JSON for the entry, untrimmed, its `entryAudit.entryVersion`,
+    /// and when it was fetched: md_uniprot's `response`, `entry_version` and
+    /// `fetched_at` (md-repo-app 0287). None keeps what is stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_version: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fetched_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 // --------------------------------------------------
@@ -438,11 +448,23 @@ pub struct UniprotProteinSequence {
 }
 
 // --------------------------------------------------
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct PdbEntry {
     pub pdb_id: String,
     pub title: String,
     pub classification: String,
+
+    /// PDBe's responses for the entry, untrimmed (Ken, 2026-10-09): the
+    /// molecules (md_pdb.response) and the SIFTS UniProt mappings
+    /// (md_pdb.entities_response), and when they were fetched. RCSB's entry,
+    /// which gives the title and classification, is not kept. None keeps what
+    /// is stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entities_response: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fetched_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 // --------------------------------------------------
@@ -709,6 +731,39 @@ pub struct ImportChain {
     pub n_terminal_cap: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub c_terminal_cap: Option<String>,
+
+    /// The polymer's UniProt lookup, from its residues alone (see
+    /// `reference.rs`). None: not looked up, and the polymer is left for a
+    /// later run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<PolymerLookup>,
+}
+
+// --------------------------------------------------
+/// What one polymer's UniProt lookup found, written to md_polymer once
+/// (`ops::set_polymer_reference`)
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct PolymerLookup {
+    /// `pdb`, `aligned` or `none`
+    pub match_method: String,
+
+    /// Set unless `match_method` is `none`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hit: Option<PolymerHit>,
+}
+
+// --------------------------------------------------
+/// A polymer's UniProt reference: 1-based positions in the polymer's sequence
+/// (`query_*`) and in the UniProt one (`reference_*`), and the percent
+/// identity of the two over them
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct PolymerHit {
+    pub uniprot: UniprotEntry,
+    pub query_start: i32,
+    pub query_end: i32,
+    pub reference_start: i32,
+    pub reference_end: i32,
+    pub identity: f64,
 }
 
 // --------------------------------------------------
