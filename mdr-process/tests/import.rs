@@ -34,7 +34,8 @@ use mdr_db::models::*;
 use mdr_db::ops;
 use mdr_process::import::{self, ImportOpts};
 use mdr_process::types::{
-    ExportSimulation, ImportChain, MdFile, PdbEntry, ResolvedLigand, UniprotEntry,
+    ExportSimulation, ImportChain, MdFile, PdbEntry, PolymerHit, PolymerLookup,
+    ResolvedLigand, UniprotEntry,
 };
 
 /// A connection whose work always rolls back, or `None` when the test DB
@@ -164,11 +165,13 @@ fn import_new_simulation_creates_all_related_rows() {
             pdb_id: "1ABC".into(),
             title: "Test structure".into(),
             classification: "TRANSFERASE".into(),
+            ..Default::default()
         }),
         uniprots: vec![UniprotEntry {
             uniprot_id: "P00000-importtest".into(),
             name: "Test protein".into(),
             sequence: "MLDD".into(),
+            ..Default::default()
         }],
         external_links: vec![metadata::ExternalLink {
             url: "https://example.org/import-test".into(),
@@ -563,6 +566,7 @@ fn chains_and_peptide() -> (Vec<ImportChain>, Vec<ResolvedLigand>) {
         last_residue: (source == "structure").then_some(residues.len() as i32),
         n_terminal_cap: None,
         c_terminal_cap: None,
+        reference: None,
     };
     let chains = vec![
         chain(1, "structure", "NLYQ", &["ASN", "LEU", "TYR", "GLN"]),
@@ -671,4 +675,142 @@ fn reimporting_replaces_chains_and_shares_polymers() {
     assert_eq!(ligs.len(), 2);
     let peptide = ligs.iter().find(|l| l.chain_id.is_some()).unwrap();
     assert_eq!(peptide.chain_id, Some(after[1].id));
+}
+
+/// A protein chain of 25 residues with the given lookup
+fn looked_up_chain(lookup: Option<PolymerLookup>) -> ImportChain {
+    let sequence = "ACDEFGHIKLMNPQRSTVWYACDEF";
+    ImportChain {
+        chain_order: 1,
+        chain_label: "A".into(),
+        source: "structure".into(),
+        polymer_type: "protein".into(),
+        sequence: sequence.into(),
+        residues: sequence.chars().map(|l| format!("Z{l}")).collect(),
+        first_residue: Some(1),
+        last_residue: Some(25),
+        n_terminal_cap: None,
+        c_terminal_cap: None,
+        reference: lookup,
+    }
+}
+
+fn hit(method: &str, accession: &str) -> PolymerLookup {
+    PolymerLookup {
+        match_method: method.into(),
+        hit: Some(PolymerHit {
+            uniprot: UniprotEntry {
+                uniprot_id: accession.into(),
+                name: format!("{accession} protein"),
+                sequence: "M".repeat(40),
+                response: Some(serde_json::json!({"primaryAccession": accession})),
+                entry_version: Some(7),
+                fetched_at: Some(chrono::Utc::now()),
+            },
+            query_start: 1,
+            query_end: 25,
+            reference_start: 11,
+            reference_end: 35,
+            identity: 96.0,
+        }),
+    }
+}
+
+/// The first import's lookup sets the polymer's reference, with the UniProt
+/// entry's raw response; a second simulation with the same residues and a
+/// different answer leaves it (set once), and a hit is not linked to the
+/// simulation (md_simulation_uniprot keeps the TOML's accessions)
+#[test]
+fn polymer_reference_is_written_once() {
+    let mut c = conn_or_skip!();
+    let orcid = "0000-0002-0000-0287";
+    seed_user_with_orcid(&mut c, "ref1", orcid);
+
+    let first = ExportSimulation {
+        chains: vec![looked_up_chain(Some(hit("pdb", "Q00001-importref")))],
+        ..base_sim("ref1", orcid)
+    };
+    let first_id =
+        import::import_simulation(&mut c, &first, &ImportOpts::default()).unwrap();
+    let chains = ops::list_chains_for_simulation(&mut c, first_id).unwrap();
+    let polymer = ops::get_polymer(&mut c, chains[0].polymer_id).unwrap();
+    let q1 = ops::find_uniprot_id_by_accession(&mut c, "Q00001-importref")
+        .unwrap()
+        .unwrap();
+    assert_eq!(polymer.match_method.as_deref(), Some("pdb"));
+    assert_eq!(polymer.uniprot_id, Some(q1));
+    assert_eq!(
+        (polymer.query_start, polymer.query_end),
+        (Some(1), Some(25))
+    );
+    assert_eq!(
+        (polymer.reference_start, polymer.reference_end),
+        (Some(11), Some(35))
+    );
+    assert_eq!(polymer.identity, Some(96.0));
+    let uniprot = ops::get_uniprot(&mut c, q1).unwrap();
+    assert_eq!(uniprot.entry_version, Some(7));
+    assert_eq!(
+        uniprot.response,
+        Some(serde_json::json!({"primaryAccession": "Q00001-importref"}))
+    );
+    assert!(uniprot.fetched_at.is_some());
+    assert_eq!(
+        ops::find_simulation_uniprot_id(&mut c, first_id, q1).unwrap(),
+        None
+    );
+
+    let second = ExportSimulation {
+        chains: vec![looked_up_chain(Some(hit("aligned", "Q00002-importref")))],
+        ..base_sim("ref2", orcid)
+    };
+    let second_id =
+        import::import_simulation(&mut c, &second, &ImportOpts::default()).unwrap();
+    assert_ne!(second_id, first_id);
+    let chains = ops::list_chains_for_simulation(&mut c, second_id).unwrap();
+    assert_eq!(chains[0].polymer_id, polymer.id, "one polymer row");
+    let again = ops::get_polymer(&mut c, polymer.id).unwrap();
+    assert_eq!(again.uniprot_id, Some(q1));
+    assert_eq!(again.match_method.as_deref(), Some("pdb"));
+    assert_eq!(
+        ops::find_uniprot_id_by_accession(&mut c, "Q00002-importref").unwrap(),
+        None,
+        "a hit that is not written is not stored"
+    );
+}
+
+/// No lookup (None) leaves the polymer untried for a later run; `none` is
+/// recorded and sticks
+#[test]
+fn polymer_lookup_none_and_untried() {
+    let mut c = conn_or_skip!();
+    let orcid = "0000-0002-0000-0288";
+    seed_user_with_orcid(&mut c, "ref3", orcid);
+
+    let untried = ExportSimulation {
+        chains: vec![looked_up_chain(None)],
+        ..base_sim("ref3", orcid)
+    };
+    let sim_id =
+        import::import_simulation(&mut c, &untried, &ImportOpts::default()).unwrap();
+    let chains = ops::list_chains_for_simulation(&mut c, sim_id).unwrap();
+    let polymer_id = chains[0].polymer_id;
+    assert_eq!(
+        ops::get_polymer(&mut c, polymer_id).unwrap().match_method,
+        None
+    );
+
+    let none = ExportSimulation {
+        chains: vec![looked_up_chain(Some(PolymerLookup {
+            match_method: "none".into(),
+            hit: None,
+        }))],
+        ..base_sim("ref4", orcid)
+    };
+    import::import_simulation(&mut c, &none, &ImportOpts::default()).unwrap();
+    let polymer = ops::get_polymer(&mut c, polymer_id).unwrap();
+    assert_eq!(
+        (polymer.match_method.as_deref(), polymer.uniprot_id),
+        (Some("none"), None)
+    );
 }

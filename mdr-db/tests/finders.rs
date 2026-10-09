@@ -1040,7 +1040,7 @@ fn upserts_keep_a_stored_response_unless_given_a_new_one() {
 /// A polymer's reference is decided from its residues and written once: the
 /// first lookup sets it, a later one does not change it, "none" records a
 /// lookup that found nothing, and md_polymer_uniprot_hit refuses a hit past
-/// the polymer's end.
+/// the polymer's end. A hit may be `pdb` (0290) or `aligned`.
 #[test]
 fn set_polymer_reference_writes_once() {
     let mut c = conn_or_skip!();
@@ -1080,6 +1080,7 @@ fn set_polymer_reference_writes_once() {
         .unwrap()
     };
     let hit = |uniprot_id| PolymerReference {
+        match_method: "aligned".into(),
         uniprot_id,
         query_start: 1,
         query_end: 5,
@@ -1099,6 +1100,18 @@ fn set_polymer_reference_writes_once() {
     assert_eq!((p.query_start, p.query_end), (Some(1), Some(5)));
     assert_eq!((p.reference_start, p.reference_end), (Some(2), Some(6)));
     assert_eq!(p.identity, Some(100.0));
+
+    let by_pdb = polymer(&mut c, "cc");
+    let pdb_hit = PolymerReference {
+        match_method: "pdb".into(),
+        ..hit(calm2)
+    };
+    assert!(ops::set_polymer_reference(&mut c, by_pdb, Some(&pdb_hit)).unwrap());
+    let p = ops::get_polymer(&mut c, by_pdb).unwrap();
+    assert_eq!(
+        (p.uniprot_id, p.match_method.as_deref()),
+        (Some(calm2), Some("pdb"))
+    );
 
     let not_found = polymer(&mut c, "ce");
     assert!(ops::set_polymer_reference(&mut c, not_found, None).unwrap());

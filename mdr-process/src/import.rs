@@ -29,7 +29,9 @@
 //! - **A bare `Cl` solute becomes `Cl-`, not the script's `Cl+`.** Chloride is an
 //!   anion; the script wrote a cation that does not exist in these systems.
 
-use crate::types::{ExportSimulation, ImportChain, MdFile, ResolvedLigand};
+use crate::types::{
+    ExportSimulation, ImportChain, MdFile, PolymerLookup, ResolvedLigand,
+};
 use anyhow::{Result, anyhow, bail};
 use chrono::Utc;
 use diesel::{PgConnection, connection::Connection};
@@ -608,8 +610,8 @@ pub fn residues_hash(residues: &[String]) -> String {
 }
 
 // --------------------------------------------------
-/// Insert one chain, and its polymer if the polymer is new. Returns the
-/// chain's id.
+/// Insert one chain, and its polymer if the polymer is new, and record the
+/// polymer's UniProt lookup if it has none yet. Returns the chain's id.
 fn insert_chain(
     conn: &mut PgConnection,
     sim_id: i64,
@@ -626,6 +628,10 @@ fn insert_chain(
         },
     )?;
 
+    if let Some(lookup) = &chain.reference {
+        set_polymer_reference(conn, polymer_id, lookup)?;
+    }
+
     Ok(ops::insert_chain(
         conn,
         NewChain {
@@ -641,6 +647,37 @@ fn insert_chain(
         },
     )?
     .id)
+}
+
+// --------------------------------------------------
+/// Write a polymer's UniProt lookup, unless it was looked up before: a
+/// polymer's reference is set once (`ops::set_polymer_reference`). A hit's
+/// UniProt entry is upserted only when it will be written, and is not linked
+/// to the simulation; md_simulation_uniprot keeps the TOML's accessions.
+fn set_polymer_reference(
+    conn: &mut PgConnection,
+    polymer_id: i64,
+    lookup: &PolymerLookup,
+) -> Result<()> {
+    let untried = ops::get_polymer(conn, polymer_id)?.match_method.is_none();
+    if !untried {
+        debug!("Polymer {polymer_id} was looked up before; keeping its reference");
+        return Ok(());
+    }
+    let reference = match &lookup.hit {
+        Some(hit) => Some(PolymerReference {
+            match_method: lookup.match_method.clone(),
+            uniprot_id: ops::upsert_uniprot(conn, new_uniprot(&hit.uniprot))?.id,
+            query_start: hit.query_start,
+            query_end: hit.query_end,
+            reference_start: hit.reference_start,
+            reference_end: hit.reference_end,
+            identity: hit.identity,
+        }),
+        None => None,
+    };
+    ops::set_polymer_reference(conn, polymer_id, reference.as_ref())?;
+    Ok(())
 }
 
 // --------------------------------------------------
@@ -773,27 +810,13 @@ fn upsert_uniprot(
     sim_id: i64,
     uniprot: &crate::types::UniprotEntry,
 ) -> Result<i64> {
-    let amino_length = uniprot.sequence.len() as i32;
-
     // One statement, not find-then-insert: landing directories are processed in
     // parallel and md_uniprot is shared across simulations, so two threads
     // citing the same new accession used to both find nothing and both insert.
     // See ops::upsert_uniprot for the ticket 2175 failure this fixes. Both old
     // branches ended up writing these same three fields, so the behaviour for
     // an accession that already exists is unchanged.
-    let uniprot_pk = ops::upsert_uniprot(
-        conn,
-        NewUniprot {
-            uniprot_id: uniprot.uniprot_id.clone(),
-            name: uniprot.name.clone(),
-            amino_length,
-            sequence: uniprot.sequence.clone(),
-            response: None,
-            entry_version: None,
-            fetched_at: None,
-        },
-    )?
-    .id;
+    let uniprot_pk = ops::upsert_uniprot(conn, new_uniprot(uniprot))?.id;
 
     if let Some(id) = ops::find_simulation_uniprot_id(conn, sim_id, uniprot_pk)? {
         return Ok(id);
@@ -807,6 +830,20 @@ fn upsert_uniprot(
         },
     )?
     .id)
+}
+
+/// An md_uniprot row from a fetched entry. A raw response left out (None)
+/// keeps the stored one (`ops::upsert_uniprot`).
+fn new_uniprot(uniprot: &crate::types::UniprotEntry) -> NewUniprot {
+    NewUniprot {
+        uniprot_id: uniprot.uniprot_id.clone(),
+        name: uniprot.name.clone(),
+        amino_length: uniprot.sequence.len() as i32,
+        sequence: uniprot.sequence.clone(),
+        response: uniprot.response.clone(),
+        entry_version: uniprot.entry_version,
+        fetched_at: uniprot.fetched_at,
+    }
 }
 
 // --------------------------------------------------
@@ -864,9 +901,9 @@ fn upsert_pdb(
             pdb_id: code,
             classification: Some(pdb.classification.clone()),
             title: Some(pdb.title.clone()),
-            response: None,
-            entities_response: None,
-            fetched_at: None,
+            response: pdb.response.clone(),
+            entities_response: pdb.entities_response.clone(),
+            fetched_at: pdb.fetched_at,
         },
     )?
     .id;

@@ -16,7 +16,8 @@
 -- 0285 plus md-repo-app 0286) with 0287-0289 applied (`sqlmigrate
 -- md_repo_app` each: md_polymer's UniProt reference, hit and match_method,
 -- raw API responses on md_uniprot and md_pdb), dumped from the postgres:16
--- test container.
+-- test container. Then 0290 by hand: md_polymer_uniprot_hit allows `pdb` as
+-- well as `aligned` with a hit, written as pg_dump writes an IN list.
 --
 --
 -- PostgreSQL database dump
@@ -1276,7 +1277,7 @@ CREATE TABLE public.md_polymer (
     CONSTRAINT md_polymer_reference_db CHECK (((reference_db IS NULL) OR ((reference_db)::text = ANY (ARRAY[('uniprot'::character varying)::text, ('rnacentral'::character varying)::text])))),
     CONSTRAINT md_polymer_reference_pair CHECK ((((reference_accession IS NULL) AND (reference_db IS NULL)) OR ((reference_accession IS NOT NULL) AND (reference_db IS NOT NULL)))),
     CONSTRAINT md_polymer_residues_hash_format CHECK (((residues_hash)::text ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT md_polymer_uniprot_hit CHECK ((((identity IS NULL) AND (query_end IS NULL) AND (query_start IS NULL) AND (reference_end IS NULL) AND (reference_start IS NULL) AND (uniprot_id IS NULL) AND ((match_method IS NULL) OR ((match_method)::text = 'none'::text))) OR ((identity IS NOT NULL) AND ((match_method)::text = 'aligned'::text) AND (match_method IS NOT NULL) AND (query_end IS NOT NULL) AND (query_start IS NOT NULL) AND (reference_end IS NOT NULL) AND (reference_start IS NOT NULL) AND (uniprot_id IS NOT NULL) AND (query_start >= 1) AND (query_end >= query_start) AND (query_end <= num_residues) AND (reference_start >= 1) AND (reference_end >= reference_start) AND (identity >= (0.0)::double precision) AND (identity <= (100.0)::double precision))))
+    CONSTRAINT md_polymer_uniprot_hit CHECK ((((identity IS NULL) AND (query_end IS NULL) AND (query_start IS NULL) AND (reference_end IS NULL) AND (reference_start IS NULL) AND (uniprot_id IS NULL) AND ((match_method IS NULL) OR ((match_method)::text = 'none'::text))) OR ((identity IS NOT NULL) AND ((match_method)::text = ANY ((ARRAY['pdb'::character varying, 'aligned'::character varying])::text[])) AND (match_method IS NOT NULL) AND (query_end IS NOT NULL) AND (query_start IS NOT NULL) AND (reference_end IS NOT NULL) AND (reference_start IS NOT NULL) AND (uniprot_id IS NOT NULL) AND (query_start >= 1) AND (query_end >= query_start) AND (query_end <= num_residues) AND (reference_start >= 1) AND (reference_end >= reference_start) AND (identity >= (0.0)::double precision) AND (identity <= (100.0)::double precision))))
 );
 
 
