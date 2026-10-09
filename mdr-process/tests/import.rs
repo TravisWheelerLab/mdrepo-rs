@@ -566,6 +566,7 @@ fn chains_and_peptide() -> (Vec<ImportChain>, Vec<ResolvedLigand>) {
         last_residue: (source == "structure").then_some(residues.len() as i32),
         n_terminal_cap: None,
         c_terminal_cap: None,
+        breaks: vec![],
         reference: None,
     };
     let chains = vec![
@@ -691,6 +692,7 @@ fn looked_up_chain(lookup: Option<PolymerLookup>) -> ImportChain {
         last_residue: Some(25),
         n_terminal_cap: None,
         c_terminal_cap: None,
+        breaks: vec![],
         reference: lookup,
     }
 }
@@ -813,4 +815,46 @@ fn polymer_lookup_none_and_untried() {
         (polymer.match_method.as_deref(), polymer.uniprot_id),
         (Some("none"), None)
     );
+}
+
+/// A later simulation whose own lookup disagrees with the polymer's stored
+/// reference gets a warning; one that agrees, or a polymer never looked up,
+/// gets none
+#[test]
+fn reference_disagreement_warns() {
+    let mut c = conn_or_skip!();
+    let orcid = "0000-0002-0000-0291";
+    seed_user_with_orcid(&mut c, "ref5", orcid);
+
+    let first = ExportSimulation {
+        chains: vec![looked_up_chain(Some(hit("pdb", "Q00011-importref")))],
+        ..base_sim("ref5", orcid)
+    };
+    assert!(
+        import::reference_disagreements(&mut c, &first)
+            .unwrap()
+            .is_empty(),
+        "nothing stored yet"
+    );
+    import::import_simulation(&mut c, &first, &ImportOpts::default()).unwrap();
+
+    let agrees = ExportSimulation {
+        chains: vec![looked_up_chain(Some(hit("aligned", "Q00011-importref")))],
+        ..base_sim("ref6", orcid)
+    };
+    assert!(
+        import::reference_disagreements(&mut c, &agrees)
+            .unwrap()
+            .is_empty()
+    );
+
+    let differs = ExportSimulation {
+        chains: vec![looked_up_chain(Some(hit("pdb", "Q00012-importref")))],
+        ..base_sim("ref7", orcid)
+    };
+    let got = import::reference_disagreements(&mut c, &differs).unwrap();
+    assert_eq!(got.len(), 1);
+    assert!(got[0].contains("Q00012-importref"), "{}", got[0]);
+    assert!(got[0].contains("Q00011-importref"), "{}", got[0]);
+    assert!(got[0].starts_with("Chain 1 (A)"), "{}", got[0]);
 }

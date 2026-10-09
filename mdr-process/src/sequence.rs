@@ -121,6 +121,12 @@ pub struct Chain {
     pub last_residue: i32,
     pub n_terminal_cap: Option<String>,
     pub c_terminal_cap: Option<String>,
+    /// Where the backbone is broken inside the chain (a missing loop, rule
+    /// 2): the index in `residues` of each residue whose backbone is not
+    /// bonded to the one before it, though both have the atoms. Only these
+    /// places may have residues missing when the chain is matched to a PDB
+    /// entry (`reference.rs`); not stored
+    pub breaks: Vec<usize>,
     /// Index of the chain's first atom in the file, for ordering it among
     /// declared chains; not stored
     pub first_atom: usize,
@@ -328,11 +334,7 @@ fn joins(prev: &Residue, cur: &Residue) -> bool {
         return false;
     }
 
-    let bonded = |a: Option<[f64; 3]>, b: Option<[f64; 3]>| match (a, b) {
-        (Some(a), Some(b)) => distance(a, b) <= MAX_BACKBONE_BOND,
-        _ => false,
-    };
-    if bonded(prev.c, cur.n) || bonded(prev.o3, cur.p) {
+    if backbone_bonded(prev, cur) {
         return true;
     }
 
@@ -358,13 +360,28 @@ fn joins(prev: &Residue, cur: &Residue) -> bool {
     // backbone atoms are there, that is a break; where they are not
     // (coarse-grained, CA beads only), fall back to the CA distance; with
     // nothing to measure, the numbering decides.
-    if (prev.c.is_some() && cur.n.is_some()) || (prev.o3.is_some() && cur.p.is_some()) {
+    if backbone_present(prev, cur) {
         return false;
     }
     match (prev.ca, cur.ca) {
         (Some(a), Some(b)) => distance(a, b) <= MAX_CA_CA,
         _ => true,
     }
+}
+
+/// C(i) to N(i+1), or O3'(i) to P(i+1), within `MAX_BACKBONE_BOND`
+fn backbone_bonded(prev: &Residue, cur: &Residue) -> bool {
+    let bonded = |a: Option<[f64; 3]>, b: Option<[f64; 3]>| match (a, b) {
+        (Some(a), Some(b)) => distance(a, b) <= MAX_BACKBONE_BOND,
+        _ => false,
+    };
+    bonded(prev.c, cur.n) || bonded(prev.o3, cur.p)
+}
+
+/// Both residues have the atoms of a backbone bond, so whether they are
+/// bonded can be measured
+fn backbone_present(prev: &Residue, cur: &Residue) -> bool {
+    (prev.c.is_some() && cur.n.is_some()) || (prev.o3.is_some() && cur.p.is_some())
 }
 
 fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -496,6 +513,13 @@ fn make_chain(run: &[&Residue]) -> Option<Chain> {
         sequence.push(letter);
     }
 
+    let breaks = (1..body.len())
+        .filter(|&i| {
+            backbone_present(body[i - 1], body[i])
+                && !backbone_bonded(body[i - 1], body[i])
+        })
+        .collect();
+
     Some(Chain {
         label: body[0].chain_id.clone(),
         polymer_type,
@@ -505,6 +529,7 @@ fn make_chain(run: &[&Residue]) -> Option<Chain> {
         last_residue: body[body.len() - 1].number,
         n_terminal_cap: n_cap,
         c_terminal_cap: c_cap,
+        breaks,
         first_atom: run[0].first_atom,
     })
 }
@@ -1015,6 +1040,15 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].sequence, "MAGS");
         assert_eq!((got[0].first_residue, got[0].last_residue), (1, 21));
+        // The break is recorded before GLY, the first residue after the loop
+        assert_eq!(got[0].breaks, vec![2]);
+    }
+
+    #[test]
+    fn a_bonded_chain_has_no_breaks() {
+        let mut s = 0;
+        let got = chains(&chain(&mut s, "MET ALA GLY SER", "A", 1, 0.0));
+        assert_eq!(got[0].breaks, Vec::<usize>::new());
     }
 
     #[test]

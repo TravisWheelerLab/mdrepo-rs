@@ -732,7 +732,12 @@ pub struct ImportChain {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub c_terminal_cap: Option<String>,
 
-    /// The polymer's UniProt lookup, from its residues alone (see
+    /// Where the backbone is broken inside the chain, as indexes in
+    /// `residues` (`sequence::Chain::breaks`). Empty for a declared chain.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub breaks: Vec<usize>,
+
+    /// This simulation's UniProt lookup for the chain's polymer (see
     /// `reference.rs`). None: not looked up, and the polymer is left for a
     /// later run.
     #[serde(default, skip_serializing_if = "Option::is_none")]

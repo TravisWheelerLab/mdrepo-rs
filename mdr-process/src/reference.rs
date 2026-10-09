@@ -1,17 +1,16 @@
-//! A polymer's UniProt reference, decided from its residues alone (Travis,
-//! option 1, 2026-10-09), so every simulation sharing an md_polymer row gets
-//! the same answer. Per distinct polymer in a simulation:
+//! A polymer's UniProt reference. Per distinct polymer in a simulation:
 //!
 //! 1. Not protein, or under `MIN_RESIDUES` residues: `none`. BLAST cannot
 //!    reach its e-value with a short query, and a short one often matches
 //!    many entries identically.
-//! 2. **An exact match in the PDB** (`pdb`; Ken, 2026-10-09). A PDB chain
-//!    whose sequence (`pdb_seqres.txt`) equals the polymer's, letter for
-//!    letter, compared on parent residues (MSE as M, HIE as H: the letters
-//!    `sequence.rs` gives). Never keyed by the simulation's declared PDB ID.
-//!    SIFTS (`pdb_chain_uniprot.tsv`) gives the UniProt; a fusion takes its
-//!    largest segment. When several chains match, every one SIFTS maps must
-//!    give the same accession, or this step decides nothing.
+//! 2. **The declared PDB entry** (`pdb`; Ken, 2026-10-09). When the
+//!    simulation declares a PDB ID, its protein chains (`pdb_seqres.txt`)
+//!    are compared with ours: every residue of ours must equal one of theirs,
+//!    in order, with theirs allowed extra residues at either end and, inside,
+//!    only where our backbone is broken (a missing loop; `ImportChain::
+//!    breaks`). No mismatches. SIFTS (`pdb_chain_uniprot.tsv`) then gives the
+//!    UniProt entry for the matching chain, the segment covering most of our
+//!    residues (a fusion's largest).
 //! 3. **BLAST** (`aligned`): Swiss-Prot, then TrEMBL for what Swiss-Prot did
 //!    not pass. A hit passes with identity >= 95%, at most 3 mismatches, and
 //!    the alignment covering >= 90% of the chain. The best passing hit has
@@ -19,9 +18,16 @@
 //!    the lowest accession.
 //! 4. Otherwise `none`.
 //!
-//! Nothing here writes to the database. The import records the result
-//! (`ops::set_polymer_reference`), and only on a polymer never looked up, so
-//! a polymer's reference is set once. A polymer whose lookup could not be
+//! The reference is md_polymer's, shared by every simulation with the same
+//! residues, and set once: the import writes it only to a polymer never
+//! looked up (`ops::set_polymer_reference`). Step 2 reads the simulation's
+//! own PDB ID, so simulations sharing a polymer can disagree; the first to
+//! import decides, and a later one that disagrees gets a warning
+//! (`import::reference_disagreements`). Ken relaxed "no simulation may point
+//! to the wrong UniProt entry" to allow this (2026-10-09), in place of
+//! matching against the whole PDB.
+//!
+//! Nothing here writes to the database. A polymer whose lookup could not be
 //! finished (no PDB index on the host, a UniProt fetch that failed) gets no
 //! result at all and is left for a later run, rather than a `none` that
 //! would stick.
@@ -80,8 +86,12 @@ pub struct Candidate {
     pub reference_end: i32,
 
     /// BLAST's percent identity. None for a PDB match: it is measured
-    /// against the UniProt sequence once that is fetched.
+    /// against the UniProt sequence once that is fetched, over `pairs`.
     pub identity: Option<f64>,
+
+    /// A PDB match's residue pairs, 1-based: each of our residues in the
+    /// segment and its UniProt position. Empty for BLAST.
+    pub pairs: Vec<(i32, i32)>,
 }
 
 // --------------------------------------------------
@@ -99,11 +109,8 @@ pub struct SiftsSegment {
     pub sp_end: i32,
 }
 
-impl SiftsSegment {
-    fn len(&self) -> i32 {
-        self.res_end - self.res_beg + 1
-    }
-}
+/// SIFTS's segments by (PDB ID, chain ID)
+pub type Segments = HashMap<(String, String), Vec<SiftsSegment>>;
 
 // --------------------------------------------------
 /// One row of `BLAST_OUTFMT`
@@ -127,34 +134,30 @@ pub struct PolymerBlastHit {
 
 // --------------------------------------------------
 /// Look up every distinct polymer among `chains` and set each chain's
-/// `reference`. Returns warnings for the submitter.
+/// `reference`. `pdb_id` is the simulation's declared PDB ID. Returns
+/// warnings for the submitter.
 pub fn lookup_chains(
     chains: &mut [ImportChain],
+    pdb_id: Option<&str>,
     blast_dir: &Path,
     processed_dir: &Path,
     num_threads: usize,
 ) -> Result<Vec<String>> {
     let mut warnings = vec![];
 
-    // Distinct polymers, in chain order: (type, residues) is md_polymer's key
-    let mut polymers: Vec<(String, Vec<String>, String)> = vec![];
+    // Distinct polymers, in chain order: (type, residues) is md_polymer's
+    // key. The first chain of each gives the sequence and the breaks.
+    let mut polymers: Vec<&ImportChain> = vec![];
     for chain in chains.iter() {
-        if !polymers
-            .iter()
-            .any(|p| (&p.0, &p.1) == (&chain.polymer_type, &chain.residues))
-        {
-            polymers.push((
-                chain.polymer_type.clone(),
-                chain.residues.clone(),
-                chain.sequence.clone(),
-            ));
+        if !polymers.iter().any(|p| same_polymer(p, chain)) {
+            polymers.push(chain);
         }
     }
 
     let mut lookups: Vec<Option<PolymerLookup>> = vec![None; polymers.len()];
     let mut wanted = vec![];
-    for (i, (polymer_type, residues, _)) in polymers.iter().enumerate() {
-        if polymer_type == "protein" && residues.len() >= MIN_RESIDUES {
+    for (i, polymer) in polymers.iter().enumerate() {
+        if polymer.polymer_type == "protein" && polymer.residues.len() >= MIN_RESIDUES {
             wanted.push(i);
         } else {
             lookups[i] = Some(none());
@@ -172,10 +175,14 @@ pub fn lookup_chains(
                 sifts.display()
             ));
         } else {
-            let sequences: Vec<&str> = polymers.iter().map(|p| p.2.as_str()).collect();
+            let queries: Vec<(&str, &[usize])> = polymers
+                .iter()
+                .map(|p| (p.sequence.as_str(), p.breaks.as_slice()))
+                .collect();
             let found = find_references(
                 &wanted,
-                &sequences,
+                &queries,
+                pdb_id,
                 &seqres,
                 &sifts,
                 blast_dir,
@@ -189,10 +196,14 @@ pub fn lookup_chains(
         }
     }
 
+    let keys: Vec<(String, Vec<String>)> = polymers
+        .iter()
+        .map(|p| (p.polymer_type.clone(), p.residues.clone()))
+        .collect();
     for chain in chains.iter_mut() {
-        let i = polymers
+        let i = keys
             .iter()
-            .position(|p| (&p.0, &p.1) == (&chain.polymer_type, &chain.residues))
+            .position(|k| (&k.0, &k.1) == (&chain.polymer_type, &chain.residues))
             .ok_or_else(|| anyhow!("chain {} has no polymer", chain.chain_order))?;
         chain.reference = lookups[i].clone();
     }
@@ -200,13 +211,19 @@ pub fn lookup_chains(
     Ok(warnings)
 }
 
+fn same_polymer(a: &ImportChain, b: &ImportChain) -> bool {
+    a.polymer_type == b.polymer_type && a.residues == b.residues
+}
+
 // --------------------------------------------------
-/// Steps 2-4 for the polymers at `wanted` (indexes into `sequences`). A
-/// polymer missing from the result was not finished and stays untried.
+/// Steps 2-4 for the polymers at `wanted` (indexes into `queries`, each a
+/// sequence and its breaks). A polymer missing from the result was not
+/// finished and stays untried.
 #[allow(clippy::too_many_arguments)]
 fn find_references(
     wanted: &[usize],
-    sequences: &[&str],
+    queries: &[(&str, &[usize])],
+    pdb_id: Option<&str>,
     seqres: &Path,
     sifts: &Path,
     blast_dir: &Path,
@@ -217,28 +234,33 @@ fn find_references(
     let mut found = HashMap::new();
     let mut entries: HashMap<String, UniprotEntry> = HashMap::new();
 
-    // 2. An exact match in the PDB. A sequence with an unknown residue (X)
-    // cannot be said to equal anything.
-    let exact: HashSet<&str> = wanted
-        .iter()
-        .map(|&i| sequences[i])
-        .filter(|s| !s.contains('X'))
-        .collect();
-    let pdb_chains = pdb_chains_with_sequences(seqres, &exact)?;
-    let pairs: HashSet<(String, String)> =
-        pdb_chains.values().flatten().cloned().collect();
-    let segments = sifts_segments(sifts, &pairs)?;
-
+    // 2. The declared PDB entry
     let mut to_blast = vec![];
+    let entry = match pdb_id {
+        Some(pdb_id) => {
+            let chains = entry_chains(seqres, pdb_id)?;
+            if chains.is_empty() {
+                debug!("PDB {pdb_id} has no protein chains in the index");
+            }
+            let pairs: HashSet<(String, String)> = chains
+                .iter()
+                .map(|(chain, _)| (pdb_id.to_lowercase(), chain.clone()))
+                .collect();
+            let segments = sifts_segments(sifts, &pairs)?;
+            Some((pdb_id.to_lowercase(), chains, segments))
+        }
+        None => None,
+    };
     for &i in wanted {
-        let candidate = pdb_chains.get(sequences[i]).and_then(|chains| {
-            pdb_candidate(chains, &segments, sequences[i].len() as i32)
+        let (sequence, breaks) = queries[i];
+        let candidate = entry.as_ref().and_then(|(pdb, chains, segments)| {
+            pdb_candidate(sequence, breaks, pdb, chains, segments)
         });
         let Some(candidate) = candidate else {
             to_blast.push(i);
             continue;
         };
-        match resolve(&candidate, sequences[i], &mut entries) {
+        match resolve(&candidate, sequence, &mut entries) {
             Ok(Some(hit)) => {
                 found.insert(i, Some(lookup(&candidate, hit)));
             }
@@ -249,19 +271,19 @@ fn find_references(
 
     // 3. BLAST
     if !to_blast.is_empty() {
-        let queries: Vec<(String, &str)> = to_blast
+        let blast_queries: Vec<(String, &str)> = to_blast
             .iter()
-            .map(|&i| (format!("p{i}"), sequences[i]))
+            .map(|&i| (format!("p{i}"), queries[i].0))
             .collect();
         let candidates =
-            blast_candidates(&queries, blast_dir, processed_dir, num_threads)?;
+            blast_candidates(&blast_queries, blast_dir, processed_dir, num_threads)?;
         for &i in &to_blast {
             let Some(candidate) = candidates.get(&format!("p{i}")) else {
                 // 4. Nothing passed
                 found.insert(i, Some(none()));
                 continue;
             };
-            match resolve(candidate, sequences[i], &mut entries) {
+            match resolve(candidate, queries[i].0, &mut entries) {
                 Ok(Some(hit)) => {
                     found.insert(i, Some(lookup(candidate, hit)));
                 }
@@ -321,10 +343,9 @@ fn resolve(
 }
 
 /// The hit for a candidate whose UniProt entry is in hand. A PDB match's
-/// identity is ours against UniProt's over the two ranges, when they are the
-/// same length; SIFTS splits a segment at every insertion, so they nearly
-/// always are, and otherwise it is taken as 100 (the residues equal the PDB
-/// entity's).
+/// identity is the share of its residue pairs where ours equals UniProt's.
+/// None when a range does not fit the sequences: SIFTS read against an
+/// older UniProt release than the one served now.
 pub fn make_hit(
     candidate: &Candidate,
     sequence: &str,
@@ -338,16 +359,21 @@ pub fn make_hit(
     if rs < 1 || re < rs || re as usize > uniprot.sequence.len() {
         return None;
     }
-    let identity = candidate.identity.unwrap_or_else(|| {
-        let ours = &sequence.as_bytes()[qs as usize - 1..qe as usize];
-        let theirs = &uniprot.sequence.as_bytes()[rs as usize - 1..re as usize];
-        if ours.len() == theirs.len() {
-            let same = ours.iter().zip(theirs).filter(|(a, b)| a == b).count();
-            100.0 * same as f64 / ours.len() as f64
-        } else {
-            100.0
+    let identity = match candidate.identity {
+        Some(identity) => identity,
+        None => {
+            let (ours, theirs) = (sequence.as_bytes(), uniprot.sequence.as_bytes());
+            if candidate.pairs.is_empty() {
+                return None;
+            }
+            let same = candidate
+                .pairs
+                .iter()
+                .filter(|&&(q, r)| ours[q as usize - 1] == theirs[r as usize - 1])
+                .count();
+            100.0 * same as f64 / candidate.pairs.len() as f64
         }
-    });
+    };
     Some(PolymerHit {
         uniprot: uniprot.clone(),
         query_start: qs,
@@ -359,50 +385,69 @@ pub fn make_hit(
 }
 
 // --------------------------------------------------
-/// Every protein chain in `pdb_seqres.txt` whose sequence is one of
-/// `sequences`, as (PDB ID, chain ID), keyed by the sequence
-pub fn pdb_chains_with_sequences(
-    seqres: &Path,
-    sequences: &HashSet<&str>,
-) -> Result<HashMap<String, Vec<(String, String)>>> {
-    let mut found: HashMap<String, Vec<(String, String)>> = HashMap::new();
-    if sequences.is_empty() {
-        return Ok(found);
-    }
+/// The protein chains of one PDB entry in `pdb_seqres.txt`, as (chain ID,
+/// sequence), in chain ID order
+pub fn entry_chains(seqres: &Path, pdb_id: &str) -> Result<Vec<(String, String)>> {
     let file = File::open(seqres).map_err(|e| anyhow!("{}: {e}", seqres.display()))?;
+    let prefix = format!("{}_", pdb_id.to_lowercase());
 
-    // `>101m_A mol:protein length:154  MYOGLOBIN`, then the sequence
-    let mut record: Option<(String, String)> = None;
-    let mut sequence = String::new();
-    let mut finish = |record: &mut Option<(String, String)>, sequence: &mut String| {
-        if let Some(id) = record.take()
-            && sequences.contains(sequence.as_str())
-        {
-            found.entry(sequence.clone()).or_default().push(id);
-        }
-        sequence.clear();
-    };
+    // `>101m_A mol:protein length:154  MYOGLOBIN`, then the sequence. The
+    // file is in PDB ID order, so the entry's records are together.
+    let mut found: Vec<(String, String)> = vec![];
+    let mut current: Option<usize> = None;
     for line in BufReader::new(file).lines() {
         let line = line.map_err(|e| anyhow!("{}: {e}", seqres.display()))?;
         if let Some(header) = line.strip_prefix('>') {
-            finish(&mut record, &mut sequence);
+            current = None;
             let mut fields = header.split_whitespace();
-            let id = fields.next().unwrap_or("");
-            if fields.next() == Some("mol:protein")
-                && let Some((pdb, chain)) = id.split_once('_')
-            {
-                record = Some((pdb.to_lowercase(), chain.to_string()));
+            let id = fields.next().unwrap_or("").to_lowercase();
+            if let Some(chain) = id.strip_prefix(&prefix) {
+                if fields.next() == Some("mol:protein") {
+                    // Keep the chain ID as written: SIFTS's is case-sensitive
+                    let written = &header[prefix.len()..prefix.len() + chain.len()];
+                    found.push((written.to_string(), String::new()));
+                    current = Some(found.len() - 1);
+                }
+            } else if !found.is_empty() {
+                break;
             }
-        } else if record.is_some() {
-            sequence.push_str(line.trim());
+        } else if let Some(i) = current {
+            found[i].1.push_str(line.trim());
         }
     }
-    finish(&mut record, &mut sequence);
-
-    for chains in found.values_mut() {
-        chains.sort();
-    }
+    found.sort();
     Ok(found)
+}
+
+// --------------------------------------------------
+/// Where each of our residues sits in `theirs` (0-based), when ours is
+/// theirs with residues missing at either end and, inside, only at our
+/// `breaks`. Each unbroken piece of ours must appear whole, in order; a piece
+/// is placed at its first occurrence after the one before it. None when
+/// they do not match.
+pub fn place(ours: &str, breaks: &[usize], theirs: &str) -> Option<Vec<usize>> {
+    if ours.is_empty() {
+        return None;
+    }
+    let mut cuts: Vec<usize> = breaks
+        .iter()
+        .copied()
+        .filter(|&b| b > 0 && b < ours.len())
+        .collect();
+    cuts.sort_unstable();
+    cuts.dedup();
+
+    let mut positions = Vec::with_capacity(ours.len());
+    let mut from = 0;
+    let mut start = 0;
+    for end in cuts.into_iter().chain([ours.len()]) {
+        let piece = &ours[start..end];
+        let at = from + theirs.get(from..)?.find(piece)?;
+        positions.extend(at..at + piece.len());
+        from = at + piece.len();
+        start = end;
+    }
+    Some(positions)
 }
 
 // --------------------------------------------------
@@ -410,8 +455,8 @@ pub fn pdb_chains_with_sequences(
 pub fn sifts_segments(
     sifts: &Path,
     pairs: &HashSet<(String, String)>,
-) -> Result<HashMap<(String, String), Vec<SiftsSegment>>> {
-    let mut found: HashMap<(String, String), Vec<SiftsSegment>> = HashMap::new();
+) -> Result<Segments> {
+    let mut found: Segments = HashMap::new();
     if pairs.is_empty() {
         return Ok(found);
     }
@@ -451,75 +496,78 @@ pub fn sifts_segments(
 }
 
 // --------------------------------------------------
-/// Step 2's answer for one polymer of `num_residues`, given the PDB chains
-/// with its sequence. Each chain SIFTS maps gives its largest segment; all
-/// must name the same accession (PROPOSED tie rule, to confirm with Travis),
-/// and the largest of them is taken, the lowest PDB and chain ID on a tie.
+/// Step 2's answer for one polymer, given its sequence and breaks and the
+/// declared entry's chains (chain ID, sequence) with their SIFTS segments.
+/// Of every chain that matches and every segment of it, the one covering
+/// most of our residues is taken; ties go to the lowest accession, then the
+/// lowest chain ID.
 pub fn pdb_candidate(
+    sequence: &str,
+    breaks: &[usize],
+    pdb: &str,
     chains: &[(String, String)],
-    segments: &HashMap<(String, String), Vec<SiftsSegment>>,
-    num_residues: i32,
+    segments: &Segments,
 ) -> Option<Candidate> {
-    let mut chains = chains.to_vec();
-    chains.sort();
-
-    let mut largest: Vec<&SiftsSegment> = vec![];
-    for chain in &chains {
-        let best = segments
-            .get(chain)
-            .into_iter()
-            .flatten()
-            .filter(|s| {
-                s.res_beg >= 1
-                    && s.res_end >= s.res_beg
-                    && s.res_end <= num_residues
-                    && s.sp_beg >= 1
-                    && s.sp_end >= s.sp_beg
-            })
-            .min_by(|a, b| {
-                b.len()
-                    .cmp(&a.len())
-                    .then_with(|| a.accession.cmp(&b.accession))
-                    .then_with(|| a.res_beg.cmp(&b.res_beg))
-            });
-        if let Some(segment) = best {
-            largest.push(segment);
+    // (residues covered, accession, chain), pairs
+    type Best<'a> = ((usize, &'a str, &'a str), Vec<(i32, i32)>);
+    let mut best: Option<Best> = None;
+    for (chain, theirs) in chains {
+        let Some(positions) = place(sequence, breaks, theirs) else {
+            continue;
+        };
+        let key = (pdb.to_string(), chain.clone());
+        for seg in segments.get(&key).into_iter().flatten() {
+            if seg.res_beg < 1 || seg.res_end < seg.res_beg || seg.sp_beg < 1 {
+                continue;
+            }
+            // Our residues inside the segment, paired with UniProt positions
+            let pairs: Vec<(i32, i32)> = positions
+                .iter()
+                .enumerate()
+                .filter_map(|(q, &t)| {
+                    let t = t as i32 + 1;
+                    (seg.res_beg..=seg.res_end)
+                        .contains(&t)
+                        .then(|| (q as i32 + 1, seg.sp_beg + t - seg.res_beg))
+                })
+                .collect();
+            if pairs.is_empty() {
+                continue;
+            }
+            let better = match &best {
+                None => true,
+                Some(((n, acc, ch), _)) => {
+                    (
+                        pairs.len(),
+                        std::cmp::Reverse(seg.accession.as_str()),
+                        std::cmp::Reverse(chain.as_str()),
+                    ) > (*n, std::cmp::Reverse(*acc), std::cmp::Reverse(*ch))
+                }
+            };
+            if better {
+                best = Some((
+                    (pairs.len(), seg.accession.as_str(), chain.as_str()),
+                    pairs,
+                ));
+            }
         }
     }
 
-    let accessions: HashSet<&str> =
-        largest.iter().map(|s| s.accession.as_str()).collect();
-    if accessions.len() != 1 {
-        if accessions.len() > 1 {
-            let mut names: Vec<&str> = accessions.into_iter().collect();
-            names.sort();
-            debug!(
-                "{} PDB chains have the residues but SIFTS names {}; going to BLAST",
-                chains.len(),
-                names.join(", ")
-            );
-        }
-        return None;
-    }
-
-    // `largest` follows the sorted chains, so the first of the longest is the
-    // lowest PDB and chain ID
-    let segment = largest
-        .iter()
-        .copied()
-        .reduce(|best, s| if s.len() > best.len() { s } else { best })?;
+    let ((_, accession, chain), pairs) = best?;
+    let (first, last) = (pairs[0], pairs[pairs.len() - 1]);
     debug!(
-        "PDB {} chain {} has the residues: {} {}-{}",
-        segment.pdb, segment.chain, segment.accession, segment.sp_beg, segment.sp_end
+        "PDB {pdb} chain {chain} has the residues: {accession} {}-{}",
+        first.1, last.1
     );
     Some(Candidate {
         match_method: PDB,
-        accession: segment.accession.clone(),
-        query_start: segment.res_beg,
-        query_end: segment.res_end,
-        reference_start: segment.sp_beg,
-        reference_end: segment.sp_end,
+        accession: accession.to_string(),
+        query_start: first.0,
+        query_end: last.0,
+        reference_start: first.1,
+        reference_end: last.1,
         identity: None,
+        pairs,
     })
 }
 
@@ -650,6 +698,7 @@ pub fn best_hits(hits: &[PolymerBlastHit]) -> HashMap<String, Candidate> {
                 reference_start: top.sstart.min(top.send) as i32,
                 reference_end: top.sstart.max(top.send) as i32,
                 identity: Some(top.pident),
+                pairs: vec![],
             },
         );
     }
@@ -712,10 +761,8 @@ mod tests {
         }
     }
 
-    fn segments(
-        rows: Vec<SiftsSegment>,
-    ) -> HashMap<(String, String), Vec<SiftsSegment>> {
-        let mut map: HashMap<(String, String), Vec<SiftsSegment>> = HashMap::new();
+    fn segments(rows: Vec<SiftsSegment>) -> Segments {
+        let mut map: Segments = HashMap::new();
         for s in rows {
             map.entry((s.pdb.clone(), s.chain.clone()))
                 .or_default()
@@ -767,29 +814,39 @@ mod tests {
             last_residue: Some(sequence.len() as i32),
             n_terminal_cap: None,
             c_terminal_cap: None,
+            breaks: vec![],
             reference: None,
         }
     }
 
-    /// The index files are read as wwPDB and SIFTS write them
+    /// One entry's protein chains come out of `pdb_seqres.txt`, and SIFTS's
+    /// rows are read as written
     #[test]
-    fn reads_seqres_and_sifts() {
+    fn reads_entry_chains_and_sifts() {
         let dir = tempdir().unwrap();
         let seqres = dir.path().join("pdb_seqres.txt");
         fs::write(
             &seqres,
             format!(
-                ">1a30_A mol:protein length:99  HIV-1 PROTEASE\n{PROTEASE}\n\
+                ">1a2z_A mol:protein length:3  OTHER\nAAA\n\
+                 >1a30_A mol:protein length:99  HIV-1 PROTEASE\n{PROTEASE}\n\
                  >1a30_B mol:protein length:99  HIV-1 PROTEASE\n{PROTEASE}\n\
                  >1a30_C mol:protein length:3  TRIPEPTIDE GLU-ASP-LEU\nEDL\n\
-                 >100d_A mol:na length:10  DNA/RNA\n{PROTEASE}\n"
+                 >1a30_D mol:na length:4  DNA\nACGT\n\
+                 >1a31_A mol:protein length:3  NEXT\nGGG\n"
             ),
         )
         .unwrap();
-        let wanted: HashSet<&str> = [PROTEASE, "NOTHERE"].into_iter().collect();
-        let found = pdb_chains_with_sequences(&seqres, &wanted).unwrap();
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[PROTEASE], vec![pair("1a30", "A"), pair("1a30", "B")]);
+        let got = entry_chains(&seqres, "1A30").unwrap();
+        assert_eq!(
+            got,
+            vec![
+                ("A".to_string(), PROTEASE.to_string()),
+                ("B".to_string(), PROTEASE.to_string()),
+                ("C".to_string(), "EDL".to_string()),
+            ]
+        );
+        assert!(entry_chains(&seqres, "9xyz").unwrap().is_empty());
 
         let sifts = dir.path().join("pdb_chain_uniprot.tsv");
         fs::write(
@@ -809,81 +866,134 @@ mod tests {
             got[&pair("1a30", "A")],
             vec![seg("1a30", "A", "P04585", (1, 99), (489, 587))]
         );
-        // A blank PDB_END does not matter: only SEQRES and UniProt positions are read
+        // A blank PDB_END does not matter: only SEQRES and UniProt positions
+        // are read
         assert_eq!(got[&pair("3uon", "A")][0].sp_end, 466);
     }
 
-    /// 1a30's protease (99 residues) takes P04585 489-587 by `pdb`
+    /// Ours may lack residues at either end of theirs, and inside only at a
+    /// break; never a mismatch or a residue theirs lacks
     #[test]
-    fn protease_by_pdb() {
+    fn placing_a_chain() {
+        let theirs = "MGSHHHHHHACDEFGHIKLMNPQRSTVW";
+        // Ends trimmed
+        assert_eq!(place("ACDEF", &[], theirs), Some((9..14).collect()));
+        // A missing loop (GHIK) at a break
+        assert_eq!(
+            place("ACDEFLMNP", &[5], theirs),
+            Some(vec![9, 10, 11, 12, 13, 18, 19, 20, 21])
+        );
+        // The same gap with no break there
+        assert_eq!(place("ACDEFLMNP", &[], theirs), None);
+        // A mismatch, and a residue theirs lacks
+        assert_eq!(place("ACDEY", &[], theirs), None);
+        assert_eq!(place("ACDEWF", &[4], theirs), None);
+        // Pieces must stay in order
+        assert_eq!(place("LMNACD", &[3], theirs), None);
+        // A break at either end changes nothing
+        assert_eq!(place("ACDEF", &[0, 5], theirs), Some((9..14).collect()));
+    }
+
+    fn protease_entry() -> (Vec<(String, String)>, Segments) {
+        let chains = vec![
+            ("A".to_string(), PROTEASE.to_string()),
+            ("B".to_string(), PROTEASE.to_string()),
+            ("C".to_string(), "EDL".to_string()),
+        ];
         let segs = segments(vec![
             seg("1a30", "A", "P04585", (1, 99), (489, 587)),
             seg("1a30", "B", "P04585", (1, 99), (489, 587)),
         ]);
-        let got =
-            pdb_candidate(&[pair("1a30", "B"), pair("1a30", "A")], &segs, 99).unwrap();
-        assert_eq!(
-            got,
-            Candidate {
-                match_method: PDB,
-                accession: "P04585".into(),
-                query_start: 1,
-                query_end: 99,
-                reference_start: 489,
-                reference_end: 587,
-                identity: None,
-            }
-        );
+        (chains, segs)
     }
 
-    /// A T4L fusion (3uon: M2 receptor 1-217, T4L, M2 again) takes its
-    /// largest segment
+    /// 1a30's protease (99 residues), declared as 1a30, takes P04585 489-587
+    /// by `pdb`
+    #[test]
+    fn protease_by_declared_pdb() {
+        let (chains, segs) = protease_entry();
+        let got = pdb_candidate(PROTEASE, &[], "1a30", &chains, &segs).unwrap();
+        assert_eq!(got.match_method, PDB);
+        assert_eq!(got.accession, "P04585");
+        assert_eq!((got.query_start, got.query_end), (1, 99));
+        assert_eq!((got.reference_start, got.reference_end), (489, 587));
+        assert_eq!(got.pairs.len(), 99);
+        assert_eq!(got.identity, None);
+    }
+
+    /// A chain trimmed at both ends, and one with a missing loop at a break,
+    /// map their positions through the match
+    #[test]
+    fn trimmed_and_looped_chains_map_positions() {
+        let (chains, segs) = protease_entry();
+        let trimmed = &PROTEASE[5..95];
+        let got = pdb_candidate(trimmed, &[], "1a30", &chains, &segs).unwrap();
+        assert_eq!((got.query_start, got.query_end), (1, 90));
+        assert_eq!((got.reference_start, got.reference_end), (494, 583));
+
+        let looped = format!("{}{}", &PROTEASE[..40], &PROTEASE[50..]);
+        let got = pdb_candidate(&looped, &[40], "1a30", &chains, &segs).unwrap();
+        assert_eq!((got.query_start, got.query_end), (1, 89));
+        assert_eq!((got.reference_start, got.reference_end), (489, 587));
+        // Our 41st residue is the entry's 51st, UniProt 539
+        assert_eq!(got.pairs[40], (41, 539));
+
+        // Without the break the loop is not allowed
+        assert_eq!(pdb_candidate(&looped, &[], "1a30", &chains, &segs), None);
+    }
+
+    /// A mutant does not match its entry (it goes to BLAST), nor does a
+    /// chain when the simulation declared no entry with it
+    #[test]
+    fn a_mutant_does_not_match() {
+        let (chains, segs) = protease_entry();
+        let mutant = PROTEASE.replacen("GQLKEALLD", "GQWKEALLD", 1);
+        assert_eq!(pdb_candidate(&mutant, &[], "1a30", &chains, &segs), None);
+        assert_eq!(pdb_candidate(PROTEASE, &[], "1a30", &[], &segs), None);
+    }
+
+    /// A fusion (3uon-like: receptor, T4L, receptor) takes the segment
+    /// covering most of our residues
     #[test]
     fn fusion_takes_the_largest_segment() {
+        let theirs: String = "ACDEFGHIKL".repeat(5);
+        let chains = vec![("A".to_string(), theirs.clone())];
         let segs = segments(vec![
-            seg("3uon", "A", "P08172", (1, 217), (1, 217)),
-            seg("3uon", "A", "P00720", (218, 377), (2, 161)),
-            seg("3uon", "A", "P08172", (378, 467), (377, 466)),
+            seg("3uon", "A", "P08172", (1, 15), (1, 15)),
+            seg("3uon", "A", "P00720", (16, 40), (2, 26)),
+            seg("3uon", "A", "P08172", (41, 50), (377, 386)),
         ]);
-        let got = pdb_candidate(&[pair("3uon", "A")], &segs, 467).unwrap();
-        assert_eq!(got.accession, "P08172");
-        assert_eq!((got.query_start, got.query_end), (1, 217));
-        assert_eq!((got.reference_start, got.reference_end), (1, 217));
+        let got = pdb_candidate(&theirs, &[], "3uon", &chains, &segs).unwrap();
+        assert_eq!(got.accession, "P00720");
+        assert_eq!((got.query_start, got.query_end), (16, 40));
+        assert_eq!((got.reference_start, got.reference_end), (2, 26));
     }
 
-    /// The same residues in two entries that SIFTS maps to different UniProt
-    /// entries decide nothing, so the polymer goes to BLAST; a chain SIFTS
-    /// does not map is not a disagreement
+    /// Two matching chains of one entry that SIFTS maps differently: the
+    /// one covering more of ours, then the lowest accession
     #[test]
-    fn disagreeing_entries_go_to_blast() {
+    fn matching_chains_that_differ() {
+        let chains = vec![
+            ("A".to_string(), PROTEASE.to_string()),
+            ("B".to_string(), PROTEASE.to_string()),
+        ];
         let segs = segments(vec![
-            seg("1aaa", "A", "P0DP23", (1, 148), (2, 149)),
-            seg("2bbb", "A", "P0DP24", (1, 148), (2, 149)),
+            seg("9zzz", "A", "Q22222", (1, 99), (1, 99)),
+            seg("9zzz", "B", "Q11111", (1, 99), (1, 99)),
         ]);
-        let chains = [pair("1aaa", "A"), pair("2bbb", "A")];
-        assert_eq!(pdb_candidate(&chains, &segs, 148), None);
+        let got = pdb_candidate(PROTEASE, &[], "9zzz", &chains, &segs).unwrap();
+        assert_eq!(got.accession, "Q11111");
 
-        let chains = [pair("1aaa", "A"), pair("3ccc", "A")];
-        assert_eq!(
-            pdb_candidate(&chains, &segs, 148).unwrap().accession,
-            "P0DP23"
-        );
-
-        // No chain mapped at all
-        assert_eq!(pdb_candidate(&[pair("3ccc", "A")], &segs, 148), None);
+        let segs = segments(vec![
+            seg("9zzz", "A", "Q22222", (1, 99), (1, 99)),
+            seg("9zzz", "B", "Q11111", (1, 60), (1, 60)),
+        ]);
+        let got = pdb_candidate(PROTEASE, &[], "9zzz", &chains, &segs).unwrap();
+        assert_eq!(got.accession, "Q22222");
     }
 
-    /// A segment past the polymer's end (a SIFTS row at odds with SEQRES)
-    /// is not used
-    #[test]
-    fn pdb_segment_past_the_end_is_ignored() {
-        let segs = segments(vec![seg("1aaa", "A", "P04585", (1, 120), (1, 120))]);
-        assert_eq!(pdb_candidate(&[pair("1aaa", "A")], &segs, 99), None);
-    }
-
-    /// A PDB match's identity is measured against UniProt (1a30's construct
-    /// differs from P04585 at some positions), and a range past the UniProt
-    /// sequence gives no hit
+    /// A PDB match's identity is measured against UniProt over its pairs,
+    /// and a range past the UniProt sequence gives no hit
     #[test]
     fn pdb_hit_identity_and_range() {
         let candidate = Candidate {
@@ -894,6 +1004,7 @@ mod tests {
             reference_start: 3,
             reference_end: 6,
             identity: None,
+            pairs: vec![(1, 3), (2, 4), (3, 5), (4, 6)],
         };
         let uniprot = UniprotEntry {
             uniprot_id: "Q00000".into(),
@@ -1054,7 +1165,8 @@ mod tests {
             chain(2, "dna", "ACGTACGTACGTACGTACGTACGT"),
             chain(3, "protein", "ACDEFGHIKLMNPQRSTVW"),
         ];
-        let warnings = lookup_chains(&mut chains, dir.path(), dir.path(), 1).unwrap();
+        let warnings =
+            lookup_chains(&mut chains, None, dir.path(), dir.path(), 1).unwrap();
         assert!(warnings.is_empty());
         for c in &chains {
             assert_eq!(c.reference, Some(none()));
@@ -1068,7 +1180,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut chains =
             vec![chain(1, "protein", PROTEASE), chain(2, "protein", "ACDEF")];
-        let warnings = lookup_chains(&mut chains, dir.path(), dir.path(), 1).unwrap();
+        let warnings =
+            lookup_chains(&mut chains, None, dir.path(), dir.path(), 1).unwrap();
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("no PDB index"));
         assert_eq!(chains[0].reference, None);

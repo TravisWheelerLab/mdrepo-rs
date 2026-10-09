@@ -192,7 +192,7 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
     let mut simulation_id: Option<u32> = None;
     let mut push_elapsed = None;
     if !args.dry_run {
-        let imported_id = run_import(RunImportArgs {
+        let (imported_id, import_warnings) = run_import(RunImportArgs {
             simulation: &simulation,
             server: &args.server,
             reprocess_simulation_id: args.reprocess_simulation_id,
@@ -200,6 +200,7 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
             ticket_id: args.ticket_id,
         })?;
         simulation_id = Some(imported_id);
+        warnings.extend(import_warnings);
 
         let import_result = ImportResult {
             filename: import_json.to_string_lossy().to_string(),
@@ -270,13 +271,17 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
 }
 
 // --------------------------------------------------
-/// Import the simulation into the database, returning its ID. Unlike the ticket
-/// feedback path, a DB failure here is fatal — the import *is* the work.
-fn run_import(args: RunImportArgs) -> Result<u32> {
+/// Import the simulation into the database, returning its ID and the
+/// warnings for polymers whose stored reference this simulation disagrees
+/// with. Unlike the ticket feedback path, a DB failure here is fatal — the
+/// import *is* the work.
+fn run_import(args: RunImportArgs) -> Result<(u32, Vec<String>)> {
     let env_key = dsn_for(args.server);
     let url = env::var(env_key).map_err(|e| anyhow!("{env_key}: {e}"))?;
     let mut conn =
         mdr_db::connect(&url).map_err(|e| anyhow!("Failed to connect: {e}"))?;
+
+    let warnings = import::reference_disagreements(&mut conn, args.simulation)?;
 
     let sim_id = import::import_simulation(
         &mut conn,
@@ -288,7 +293,9 @@ fn run_import(args: RunImportArgs) -> Result<u32> {
         },
     )?;
 
-    u32::try_from(sim_id).map_err(|e| anyhow!("Simulation ID {sim_id}: {e}"))
+    let sim_id =
+        u32::try_from(sim_id).map_err(|e| anyhow!("Simulation ID {sim_id}: {e}"))?;
+    Ok((sim_id, warnings))
 }
 
 // --------------------------------------------------
@@ -1285,6 +1292,7 @@ pub fn place_chains(
                 last_residue: Some(c.last_residue),
                 n_terminal_cap: c.n_terminal_cap.clone(),
                 c_terminal_cap: c.c_terminal_cap.clone(),
+                breaks: c.breaks.clone(),
                 reference: None,
             };
             (c.first_atom, chain, None)
@@ -1444,6 +1452,7 @@ fn declared_chain(seq: &str, seq_type: metadata::SequenceType) -> Result<ImportC
         last_residue: None,
         n_terminal_cap: n_cap,
         c_terminal_cap: c_cap,
+        breaks: vec![],
         reference: None,
     })
 }
@@ -1622,6 +1631,7 @@ pub fn make_import_json(
     )?;
     let mut reference_warnings = reference::lookup_chains(
         &mut chains,
+        args.meta.pdb_id.as_deref(),
         args.blast_dir,
         args.processed_dir,
         args.blast_num_threads,
