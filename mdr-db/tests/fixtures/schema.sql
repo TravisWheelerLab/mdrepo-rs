@@ -12,17 +12,20 @@
 -- then re-add this header block and the two INSERTs for the file-type lookups
 -- at the end, which every file row references.
 --
--- This snapshot (2026-10-01): staging's schema at 0285 plus md-repo-app 0286
--- (md_ligand.chain_id, smiles nullable), applied to a local copy.
+-- This snapshot (2026-10-09): the 2026-10-01 snapshot (staging's schema at
+-- 0285 plus md-repo-app 0286) with 0287 applied (`sqlmigrate md_repo_app
+-- 0287`: md_polymer's UniProt hit, md_chain's `pdb` match method, raw API
+-- responses on md_uniprot and md_pdb), dumped from the postgres:16 test
+-- container.
 --
 --
 -- PostgreSQL database dump
 --
 
-\restrict 0eFvncodakFfnw1X4bSUJEydvM9Zz6HE9beKgiAiRysjRJgIwXNiUWAyA1nPjNf
+\restrict qTEBW86XgnRFg3AVBhws1HMya1lsBTMpPb4OXup0IA39uVBJDghyFr1hGiKmrWL
 
--- Dumped from database version 15.19 (Debian 15.19-1.pgdg13+2)
--- Dumped by pg_dump version 15.19 (Debian 15.19-1.pgdg13+2)
+-- Dumped from database version 16.14 (Debian 16.14-1.pgdg13+1)
+-- Dumped by pg_dump version 16.14 (Debian 16.14-1.pgdg13+1)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -1046,7 +1049,7 @@ CREATE TABLE public.md_chain (
     simulation_id bigint NOT NULL,
     polymer_id bigint NOT NULL,
     CONSTRAINT md_chain_chain_order CHECK ((chain_order > 0)),
-    CONSTRAINT md_chain_match_method CHECK (((match_method IS NULL) OR ((match_method)::text = ANY (ARRAY[('declared'::character varying)::text, ('aligned'::character varying)::text, ('none'::character varying)::text])))),
+    CONSTRAINT md_chain_match_method CHECK (((match_method IS NULL) OR ((match_method)::text = ANY ((ARRAY['pdb'::character varying, 'declared'::character varying, 'aligned'::character varying, 'none'::character varying])::text[])))),
     CONSTRAINT md_chain_source CHECK (((source)::text = ANY (ARRAY[('structure'::character varying)::text, ('declared'::character varying)::text])))
 );
 
@@ -1229,7 +1232,7 @@ CREATE TABLE public.md_ligand (
     inchi text,
     inchikey text,
     chain_id bigint,
-    CONSTRAINT md_ligand_smiles_or_chain CHECK ((((chain_id IS NULL) AND (smiles IS NOT NULL)) OR ((chain_id IS NOT NULL) AND (smiles IS NULL))))
+    CONSTRAINT md_ligand_smiles_or_chain CHECK (((smiles IS NOT NULL) OR (chain_id IS NOT NULL)))
 );
 
 
@@ -1241,7 +1244,10 @@ CREATE TABLE public.md_pdb (
     id bigint NOT NULL,
     pdb_id character varying(20) NOT NULL,
     classification character varying(255),
-    title character varying(500)
+    title character varying(500),
+    response jsonb,
+    entities_response jsonb,
+    fetched_at timestamp with time zone
 );
 
 
@@ -1258,11 +1264,18 @@ CREATE TABLE public.md_polymer (
     num_residues integer NOT NULL,
     reference_db character varying(16),
     reference_accession character varying(32),
+    uniprot_id bigint,
+    query_start integer,
+    query_end integer,
+    reference_start integer,
+    reference_end integer,
+    identity double precision,
     CONSTRAINT md_polymer_num_residues CHECK (((num_residues > 0) AND (num_residues = cardinality(residues)) AND (num_residues = char_length(sequence)))),
     CONSTRAINT md_polymer_polymer_type CHECK (((polymer_type)::text = ANY (ARRAY[('protein'::character varying)::text, ('dna'::character varying)::text, ('rna'::character varying)::text]))),
     CONSTRAINT md_polymer_reference_db CHECK (((reference_db IS NULL) OR ((reference_db)::text = ANY (ARRAY[('uniprot'::character varying)::text, ('rnacentral'::character varying)::text])))),
     CONSTRAINT md_polymer_reference_pair CHECK ((((reference_accession IS NULL) AND (reference_db IS NULL)) OR ((reference_accession IS NOT NULL) AND (reference_db IS NOT NULL)))),
-    CONSTRAINT md_polymer_residues_hash_format CHECK (((residues_hash)::text ~ '^[0-9a-f]{64}$'::text))
+    CONSTRAINT md_polymer_residues_hash_format CHECK (((residues_hash)::text ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT md_polymer_uniprot_hit CHECK ((((identity IS NULL) AND (query_end IS NULL) AND (query_start IS NULL) AND (reference_end IS NULL) AND (reference_start IS NULL) AND (uniprot_id IS NULL)) OR ((identity IS NOT NULL) AND (query_end IS NOT NULL) AND (query_start IS NOT NULL) AND (reference_end IS NOT NULL) AND (reference_start IS NOT NULL) AND (uniprot_id IS NOT NULL) AND (query_start >= 1) AND (query_end >= query_start) AND (query_end <= num_residues) AND (reference_start >= 1) AND (reference_end >= reference_start) AND (identity >= (0.0)::double precision) AND (identity <= (100.0)::double precision))))
 );
 
 
@@ -1788,6 +1801,9 @@ CREATE TABLE public.md_uniprot (
     name character varying(500) NOT NULL,
     amino_length integer NOT NULL,
     sequence text NOT NULL,
+    response jsonb,
+    entry_version integer,
+    fetched_at timestamp with time zone,
     CONSTRAINT md_repo_app_uniprot_amino_length_check CHECK ((amino_length >= 0))
 );
 
@@ -2450,6 +2466,14 @@ ALTER TABLE ONLY public.md_chain
 
 ALTER TABLE ONLY public.md_chain
     ADD CONSTRAINT md_chain_unique_order UNIQUE (simulation_id, chain_order);
+
+
+--
+-- Name: md_chain md_chain_unique_simulation_id; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.md_chain
+    ADD CONSTRAINT md_chain_unique_simulation_id UNIQUE (simulation_id, id);
 
 
 --
@@ -3280,6 +3304,13 @@ CREATE INDEX md_polymer_accession_idx ON public.md_polymer USING btree (referenc
 
 
 --
+-- Name: md_polymer_uniprot_id_8936d3e7; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX md_polymer_uniprot_id_8936d3e7 ON public.md_polymer USING btree (uniprot_id);
+
+
+--
 -- Name: md_process__status_3d4cb9_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3980,6 +4011,22 @@ ALTER TABLE ONLY public.md_ligand
 
 
 --
+-- Name: md_ligand md_ligand_chain_same_simulation; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.md_ligand
+    ADD CONSTRAINT md_ligand_chain_same_simulation FOREIGN KEY (simulation_id, chain_id) REFERENCES public.md_chain(simulation_id, id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: md_polymer md_polymer_uniprot_id_8936d3e7_fk_md_uniprot_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.md_polymer
+    ADD CONSTRAINT md_polymer_uniprot_id_8936d3e7_fk_md_uniprot_id FOREIGN KEY (uniprot_id) REFERENCES public.md_uniprot(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
 -- Name: md_process_job md_process_job_ticket_id_590c1a63_fk_md_ticket_id; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4375,7 +4422,7 @@ ALTER TABLE ONLY public.socialaccount_socialaccount
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 0eFvncodakFfnw1X4bSUJEydvM9Zz6HE9beKgiAiRysjRJgIwXNiUWAyA1nPjNf
+\unrestrict qTEBW86XgnRFg3AVBhws1HMya1lsBTMpPb4OXup0IA39uVBJDghyFr1hGiKmrWL
 
 
 -- The two file-type lookups need their rows: every file row references one.

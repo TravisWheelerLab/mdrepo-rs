@@ -14,6 +14,15 @@ fn limit(n: Option<i64>) -> i64 {
     n.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT)
 }
 
+diesel::define_sql_function! {
+    /// The upserts use it to keep a stored API response when the caller has
+    /// none, so a row refreshed without a fetch is not wiped.
+    fn coalesce<T: diesel::sql_types::SingleValue>(
+        x: diesel::sql_types::Nullable<T>,
+        y: diesel::sql_types::Nullable<T>,
+    ) -> diesel::sql_types::Nullable<T>;
+}
+
 // ── md_collection ────────────────────────────────────────────────────────────
 
 fn collection_query(search: Option<&str>) -> md_collection::BoxedQuery<'static, Pg> {
@@ -733,6 +742,20 @@ pub fn find_or_insert_polymer(
     }
 }
 
+/// Set a polymer's UniProt hit, replacing any it had. The polymer row is shared
+/// by every simulation with the same residues, so the last import to find a
+/// hit decides it.
+pub fn set_polymer_reference(
+    conn: &mut PgConnection,
+    rid: i64,
+    hit: &PolymerReference,
+) -> QueryResult<Polymer> {
+    diesel::update(md_polymer::table.find(rid))
+        .set(hit)
+        .returning(Polymer::as_returning())
+        .get_result(conn)
+}
+
 pub fn get_polymer(conn: &mut PgConnection, rid: i64) -> QueryResult<Polymer> {
     md_polymer::table
         .find(rid)
@@ -828,6 +851,9 @@ pub fn insert_pdb(conn: &mut PgConnection, new: NewPdb) -> QueryResult<Pdb> {
 ///
 /// Callers lowercase the code first; that is not done here, so this upserts
 /// on whatever it is given.
+///
+/// The raw responses and `fetched_at` are kept when `new` has none (see
+/// `coalesce`); title and classification are always replaced, as before.
 pub fn upsert_pdb(conn: &mut PgConnection, new: NewPdb) -> QueryResult<Pdb> {
     use diesel::upsert::excluded;
 
@@ -838,6 +864,13 @@ pub fn upsert_pdb(conn: &mut PgConnection, new: NewPdb) -> QueryResult<Pdb> {
         .set((
             md_pdb::classification.eq(excluded(md_pdb::classification)),
             md_pdb::title.eq(excluded(md_pdb::title)),
+            md_pdb::response.eq(coalesce(excluded(md_pdb::response), md_pdb::response)),
+            md_pdb::entities_response.eq(coalesce(
+                excluded(md_pdb::entities_response),
+                md_pdb::entities_response,
+            )),
+            md_pdb::fetched_at
+                .eq(coalesce(excluded(md_pdb::fetched_at), md_pdb::fetched_at)),
         ))
         .returning(Pdb::as_returning())
         .get_result(conn)
@@ -1869,6 +1902,9 @@ pub fn insert_uniprot(
 /// get_result would fail with NotFound precisely when we lost the race. The
 /// SET list mirrors what the old update branch wrote, so behaviour for an
 /// existing row is unchanged.
+///
+/// The raw response, `entry_version` and `fetched_at` (md-repo-app 0287) are
+/// kept when `new` has none (see `coalesce`).
 pub fn upsert_uniprot(
     conn: &mut PgConnection,
     new: NewUniprot,
@@ -1883,6 +1919,18 @@ pub fn upsert_uniprot(
             md_uniprot::name.eq(excluded(md_uniprot::name)),
             md_uniprot::amino_length.eq(excluded(md_uniprot::amino_length)),
             md_uniprot::sequence.eq(excluded(md_uniprot::sequence)),
+            md_uniprot::response.eq(coalesce(
+                excluded(md_uniprot::response),
+                md_uniprot::response,
+            )),
+            md_uniprot::entry_version.eq(coalesce(
+                excluded(md_uniprot::entry_version),
+                md_uniprot::entry_version,
+            )),
+            md_uniprot::fetched_at.eq(coalesce(
+                excluded(md_uniprot::fetched_at),
+                md_uniprot::fetched_at,
+            )),
         ))
         .returning(Uniprot::as_returning())
         .get_result(conn)

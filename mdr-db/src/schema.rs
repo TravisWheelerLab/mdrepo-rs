@@ -100,6 +100,11 @@ diesel::table! {
     }
 }
 
+// md_polymer.reference_db/_accession and md_chain.reference_start/_end/
+// _identity/_coverage are still in the database after md-repo-app 0287 but are
+// left out here on purpose: a later migration drops them, and a binary that
+// names them would fail every import from then on. 0287 replaced them with
+// md_polymer's UniProt hit (uniprot_id .. identity).
 diesel::table! {
     use diesel::sql_types::*;
     md_polymer (id) {
@@ -109,8 +114,12 @@ diesel::table! {
         residues -> Array<Varchar>,
         residues_hash -> Varchar,
         num_residues -> Int4,
-        reference_db -> Nullable<Varchar>,
-        reference_accession -> Nullable<Varchar>,
+        uniprot_id -> Nullable<Int8>,
+        query_start -> Nullable<Int4>,
+        query_end -> Nullable<Int4>,
+        reference_start -> Nullable<Int4>,
+        reference_end -> Nullable<Int4>,
+        identity -> Nullable<Float8>,
     }
 }
 
@@ -126,10 +135,6 @@ diesel::table! {
         n_terminal_cap -> Nullable<Varchar>,
         c_terminal_cap -> Nullable<Varchar>,
         match_method -> Nullable<Varchar>,
-        reference_start -> Nullable<Int4>,
-        reference_end -> Nullable<Int4>,
-        reference_identity -> Nullable<Float8>,
-        reference_coverage -> Nullable<Float8>,
         simulation_id -> Int8,
         polymer_id -> Int8,
     }
@@ -142,6 +147,9 @@ diesel::table! {
         pdb_id -> Varchar,
         classification -> Nullable<Varchar>,
         title -> Nullable<Varchar>,
+        response -> Nullable<Jsonb>,
+        entities_response -> Nullable<Jsonb>,
+        fetched_at -> Nullable<Timestamptz>,
     }
 }
 
@@ -306,6 +314,9 @@ diesel::table! {
         name -> Varchar,
         amino_length -> Int4,
         sequence -> Text,
+        response -> Nullable<Jsonb>,
+        entry_version -> Nullable<Int4>,
+        fetched_at -> Nullable<Timestamptz>,
     }
 }
 

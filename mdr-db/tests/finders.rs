@@ -212,6 +212,9 @@ fn seed_simulation_uniprot(c: &mut PgConnection, sim_id: i64, acc: &str) -> (i64
             name: format!("{acc}_HUMAN"),
             amino_length: 42,
             sequence: "MTEST".into(),
+            response: None,
+            entry_version: None,
+            fetched_at: None,
         },
     )
     .expect("insert uniprot")
@@ -797,6 +800,9 @@ fn upsert_uniprot_is_idempotent_on_the_accession() {
             name: "Glucokinase".into(),
             amino_length: 4,
             sequence: "MLDD".into(),
+            response: None,
+            entry_version: None,
+            fetched_at: None,
         },
     )
     .unwrap();
@@ -808,6 +814,9 @@ fn upsert_uniprot_is_idempotent_on_the_accession() {
             name: "Glucokinase, refreshed".into(),
             amino_length: 6,
             sequence: "MLDDRA".into(),
+            response: None,
+            entry_version: None,
+            fetched_at: None,
         },
     )
     .unwrap();
@@ -944,6 +953,9 @@ fn upsert_pdb_is_idempotent_on_the_code() {
             pdb_id: "1v4t-upserttest".into(),
             classification: Some("TRANSFERASE".into()),
             title: Some("Glucokinase".into()),
+            response: None,
+            entities_response: None,
+            fetched_at: None,
         },
     )
     .unwrap();
@@ -954,6 +966,9 @@ fn upsert_pdb_is_idempotent_on_the_code() {
             pdb_id: "1v4t-upserttest".into(),
             classification: Some("TRANSFERASE, refreshed".into()),
             title: Some("Glucokinase, refreshed".into()),
+            response: None,
+            entities_response: None,
+            fetched_at: None,
         },
     )
     .unwrap();
@@ -970,6 +985,119 @@ fn upsert_pdb_is_idempotent_on_the_code() {
     );
 }
 
+/// A refresh without a fetch (mdr-process before Phase 2, or any caller with
+/// no response) must not wipe the stored raw response; a fresh one replaces it.
+#[test]
+fn upserts_keep_a_stored_response_unless_given_a_new_one() {
+    let mut c = conn_or_skip!();
+    let fetched = Utc::now();
+    let uni =
+        |name: &str, response: Option<serde_json::Value>, entry_version| NewUniprot {
+            uniprot_id: "P35557-responsetest".into(),
+            name: name.into(),
+            amino_length: 4,
+            sequence: "MLDD".into(),
+            fetched_at: response.as_ref().map(|_| fetched),
+            response,
+            entry_version,
+        };
+
+    ops::upsert_uniprot(&mut c, uni("a", Some(serde_json::json!({"v": 1})), Some(7)))
+        .unwrap();
+    let kept = ops::upsert_uniprot(&mut c, uni("b", None, None)).unwrap();
+    assert_eq!(kept.name, "b");
+    assert_eq!(kept.response, Some(serde_json::json!({"v": 1})));
+    assert_eq!(kept.entry_version, Some(7));
+    assert!(kept.fetched_at.is_some());
+    let replaced = ops::upsert_uniprot(
+        &mut c,
+        uni("c", Some(serde_json::json!({"v": 2})), Some(8)),
+    )
+    .unwrap();
+    assert_eq!(replaced.response, Some(serde_json::json!({"v": 2})));
+    assert_eq!(replaced.entry_version, Some(8));
+
+    let pdb = |title: &str, molecules: Option<serde_json::Value>| NewPdb {
+        pdb_id: "1v4t-responsetest".into(),
+        classification: None,
+        title: Some(title.into()),
+        fetched_at: molecules.as_ref().map(|_| fetched),
+        entities_response: molecules.as_ref().map(|_| serde_json::json!({"sifts": 1})),
+        response: molecules,
+    };
+    ops::upsert_pdb(&mut c, pdb("a", Some(serde_json::json!({"molecules": 1}))))
+        .unwrap();
+    let kept = ops::upsert_pdb(&mut c, pdb("b", None)).unwrap();
+    assert_eq!(kept.title.as_deref(), Some("b"));
+    assert_eq!(kept.response, Some(serde_json::json!({"molecules": 1})));
+    assert_eq!(
+        kept.entities_response,
+        Some(serde_json::json!({"sifts": 1}))
+    );
+    assert!(kept.fetched_at.is_some());
+}
+
+/// A polymer starts with no reference; `set_polymer_reference` writes the
+/// whole hit, and md_polymer_uniprot_hit refuses one past the chain's end.
+#[test]
+fn set_polymer_reference_writes_the_hit() {
+    let mut c = conn_or_skip!();
+    let uniprot = ops::insert_uniprot(
+        &mut c,
+        NewUniprot {
+            uniprot_id: "P04585-polymertest".into(),
+            name: "Gag-Pol".into(),
+            amino_length: 1435,
+            sequence: "M".into(),
+            response: None,
+            entry_version: None,
+            fetched_at: None,
+        },
+    )
+    .unwrap()
+    .id;
+    let residues: Vec<String> = ["PRO", "GLN", "ILE", "THR", "LEU"]
+        .iter()
+        .map(|r| r.to_string())
+        .collect();
+    let polymer = ops::find_or_insert_polymer(
+        &mut c,
+        &NewPolymer {
+            polymer_type: "protein".into(),
+            sequence: "PQITL".into(),
+            residues,
+            residues_hash: "ab".repeat(32),
+            num_residues: 5,
+        },
+    )
+    .unwrap();
+    assert_eq!(ops::get_polymer(&mut c, polymer).unwrap().uniprot_id, None);
+
+    let hit = PolymerReference {
+        uniprot_id: uniprot,
+        query_start: 1,
+        query_end: 5,
+        reference_start: 489,
+        reference_end: 493,
+        identity: 100.0,
+    };
+    let set = ops::set_polymer_reference(&mut c, polymer, &hit).unwrap();
+    assert_eq!(set.uniprot_id, Some(uniprot));
+    assert_eq!((set.query_start, set.query_end), (Some(1), Some(5)));
+    assert_eq!(
+        (set.reference_start, set.reference_end),
+        (Some(489), Some(493))
+    );
+    assert_eq!(set.identity, Some(100.0));
+
+    // Last statement: the CHECK failure aborts the transaction.
+    let past_the_end = PolymerReference {
+        query_end: 6,
+        ..hit
+    };
+    assert!(ops::set_polymer_reference(&mut c, polymer, &past_the_end).is_err());
+}
+
 #[test]
 fn find_uniprot_and_pdb_by_their_string_keys() {
     let mut c = conn_or_skip!();
@@ -981,6 +1109,9 @@ fn find_uniprot_and_pdb_by_their_string_keys() {
             name: "Spike".into(),
             amino_length: 4,
             sequence: "MFVF".into(),
+            response: None,
+            entry_version: None,
+            fetched_at: None,
         },
     )
     .unwrap()
@@ -991,6 +1122,9 @@ fn find_uniprot_and_pdb_by_their_string_keys() {
             pdb_id: "6vxx-test".into(),
             classification: Some("VIRAL PROTEIN".into()),
             title: Some("Spike".into()),
+            response: None,
+            entities_response: None,
+            fetched_at: None,
         },
     )
     .unwrap()
