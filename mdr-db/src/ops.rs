@@ -742,6 +742,20 @@ pub fn find_or_insert_polymer(
     }
 }
 
+/// The polymer with this type and residue hash, if there is one
+pub fn find_polymer(
+    conn: &mut PgConnection,
+    polymer_type: &str,
+    residues_hash: &str,
+) -> QueryResult<Option<Polymer>> {
+    md_polymer::table
+        .filter(md_polymer::polymer_type.eq(polymer_type))
+        .filter(md_polymer::residues_hash.eq(residues_hash))
+        .select(Polymer::as_select())
+        .first(conn)
+        .optional()
+}
+
 /// Record a polymer's UniProt lookup: the hit (its `match_method`, `pdb` or
 /// `aligned`) or `None` for looked-for-and-not-found ("none"). Only a polymer
 /// not yet looked up (`match_method` null) is written, so a polymer's

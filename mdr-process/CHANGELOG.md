@@ -11,6 +11,24 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.6.0 (2026-10-09)
+
+- **The PDB step reads the simulation's declared PDB ID** (Ken,
+  2026-10-09), replacing 0.5.0's search of the whole PDB and its "every
+  entry must agree" rule. The declared entry's protein chains are compared
+  with ours: every residue of ours must equal one of theirs, in order,
+  with theirs allowed extra residues at either end, and inside only where
+  our backbone is broken (a missing loop). No mismatches. SIFTS's segment
+  covering most of our residues gives the UniProt entry (`pdb`). No PDB
+  ID, or no match: BLAST, as before.
+- **The reference is still md_polymer's and still set once**, so when
+  simulations with the same residues declare entries that map to
+  different UniProt entries, the first to import decides. A later one that
+  disagrees now gets an upload warning; the stored reference is not
+  changed. This relaxes 0.5.0's "decided from the residues alone".
+- `sequence.rs` records where a chain's backbone is broken
+  (`breaks`), which the match uses and `import.json` carries.
+
 ## 0.5.1 (2026-10-09)
 
 - **Dependencies updated within their existing version ranges**

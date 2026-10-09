@@ -171,6 +171,65 @@ pub fn import_simulation(
 }
 
 // --------------------------------------------------
+/// A warning for each polymer of `sim` that already has a reference (or a
+/// `none`) other than this simulation's own lookup gave. A polymer's
+/// reference is set once, by the first simulation to import it, and is not
+/// changed here; the warning says so. Reads only.
+pub fn reference_disagreements(
+    conn: &mut PgConnection,
+    sim: &ExportSimulation,
+) -> Result<Vec<String>> {
+    let mut warnings = vec![];
+    let mut seen: Vec<(&str, &[String])> = vec![];
+    for chain in &sim.chains {
+        let key = (chain.polymer_type.as_str(), chain.residues.as_slice());
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
+        let Some(lookup) = &chain.reference else {
+            continue;
+        };
+        let Some(polymer) = ops::find_polymer(
+            conn,
+            &chain.polymer_type,
+            &residues_hash(&chain.residues),
+        )?
+        else {
+            continue;
+        };
+        let Some(stored_method) = polymer.match_method.as_deref() else {
+            continue;
+        };
+        let stored = match polymer.uniprot_id {
+            Some(id) => Some(ops::get_uniprot(conn, id)?.uniprot_id),
+            None => None,
+        };
+        let ours = lookup.hit.as_ref().map(|h| h.uniprot.uniprot_id.clone());
+        if stored != ours {
+            let name = |acc: &Option<String>| {
+                acc.clone()
+                    .unwrap_or_else(|| "no UniProt entry".to_string())
+            };
+            let label = match chain.chain_label.trim() {
+                "" => format!("Chain {}", chain.chain_order),
+                l => format!("Chain {} ({l})", chain.chain_order),
+            };
+            warnings.push(format!(
+                "{label}: this simulation's own lookup gives {} (by {}), but the \
+                 chain's polymer already has {} (by {stored_method}), set by an \
+                 earlier simulation with the same residues. The polymer's reference \
+                 was not changed.",
+                name(&ours),
+                lookup.match_method,
+                name(&stored),
+            ));
+        }
+    }
+    Ok(warnings)
+}
+
+// --------------------------------------------------
 /// Find the simulation this payload belongs to — by explicit id, then by
 /// `(alias, creator)`, then by file hash — and update it; insert a new one when
 /// nothing matches. Mirrors the script's `get_simulation`.
