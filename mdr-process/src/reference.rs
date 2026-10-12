@@ -942,6 +942,134 @@ mod tests {
         assert_eq!(pdb_candidate(&looped, &[], "1a30", &chains, &segs), None);
     }
 
+    /// A structure file with residues `(number, one-letter)` laid as a
+    /// backbone (N, CA, C) along x, 3.8 A per residue, so each C is 1.33 A
+    /// from the next N; `gap_before` adds that many angstroms before a
+    /// residue, which breaks the bond there
+    fn backbone_pdb(
+        residues: &[(i32, char)],
+        gap_before: Option<(i32, f64)>,
+    ) -> String {
+        const STANDARD: &[&str] = &[
+            "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE",
+            "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
+        ];
+        let three = |c: char| {
+            *STANDARD
+                .iter()
+                .find(|name| crate::sequence::one_letter(name) == Some(c))
+                .unwrap()
+        };
+        let mut text = String::new();
+        let (mut serial, mut x0) = (0, 0.0);
+        for &(num, c) in residues {
+            if let Some((before, gap)) = gap_before
+                && before == num
+            {
+                x0 += gap;
+            }
+            for (name, dx) in [("N", 0.0), ("CA", 1.2), ("C", 2.47)] {
+                serial += 1;
+                text.push_str(&format!(
+                    "ATOM  {serial:>5} {name:<4} {:>3} A{num:>4}    \
+                     {:>8.3}{:>8.3}{:>8.3}  1.00  0.00           C  \n",
+                    three(c),
+                    x0 + dx,
+                    0.0,
+                    0.0
+                ));
+            }
+            x0 += 3.8;
+        }
+        text.push_str("END\n");
+        text
+    }
+
+    /// End to end from a structure file: the protease with residues 41-50
+    /// unresolved (numbers 1-40, then 51-99, the backbone not bonded across)
+    /// is one chain with a break, which reaches the import's chain and lets
+    /// the PDB step skip the loop. The same 89 residues closed into one
+    /// bonded chain and renumbered (4s0v's shape: the loop removed in the
+    /// simulation) have no break, so they do not match and go to BLAST.
+    #[test]
+    fn missing_loop_from_a_structure_file() {
+        let dir = tempdir().unwrap();
+        let seqres = dir.path().join("pdb_seqres.txt");
+        fs::write(
+            &seqres,
+            format!(
+                ">1a30_A mol:protein length:99  HIV-1 PROTEASE\n{PROTEASE}\n\
+                 >1a30_B mol:protein length:99  HIV-1 PROTEASE\n{PROTEASE}\n"
+            ),
+        )
+        .unwrap();
+        let sifts = dir.path().join("pdb_chain_uniprot.tsv");
+        fs::write(
+            &sifts,
+            "PDB\tCHAIN\tSP_PRIMARY\tRES_BEG\tRES_END\tPDB_BEG\tPDB_END\tSP_BEG\tSP_END\n\
+             1a30\tA\tP04585\t1\t99\t1\t99\t489\t587\n\
+             1a30\tB\tP04585\t1\t99\t1\t99\t489\t587\n",
+        )
+        .unwrap();
+        let entry = entry_chains(&seqres, "1a30").unwrap();
+        let pairs: HashSet<_> =
+            [pair("1a30", "A"), pair("1a30", "B")].into_iter().collect();
+        let segs = sifts_segments(&sifts, &pairs).unwrap();
+
+        let looped: Vec<(i32, char)> = (1..=99)
+            .zip(PROTEASE.chars())
+            .filter(|(num, _)| !(41..=50).contains(num))
+            .collect();
+        let looped_seq: String = looped.iter().map(|(_, c)| c).collect();
+
+        // Unresolved: numbers jump 40 -> 51 and the residues sit 30 A apart
+        let pdb = dir.path().join("looped.pdb");
+        fs::write(&pdb, backbone_pdb(&looped, Some((51, 30.0)))).unwrap();
+        let found = crate::sequence::chains_from_pdb(&pdb).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].sequence, looped_seq);
+        assert_eq!((found[0].first_residue, found[0].last_residue), (1, 99));
+        assert_eq!(found[0].breaks, vec![40]);
+
+        let (chains, _) = crate::process::place_chains(&found, None, &pdb).unwrap();
+        assert_eq!(chains[0].breaks, vec![40]);
+
+        let got = pdb_candidate(
+            &chains[0].sequence,
+            &chains[0].breaks,
+            "1a30",
+            &entry,
+            &segs,
+        )
+        .unwrap();
+        assert_eq!(got.match_method, PDB);
+        assert_eq!(got.accession, "P04585");
+        assert_eq!((got.query_start, got.query_end), (1, 89));
+        assert_eq!((got.reference_start, got.reference_end), (489, 587));
+        // Our 40th and 41st residues are the entry's 40th and 51st
+        assert_eq!(got.pairs[39], (40, 528));
+        assert_eq!(got.pairs[40], (41, 539));
+
+        // Closed: the same residues numbered 1-89 and bonded throughout
+        let closed: Vec<(i32, char)> = (1..).zip(looped_seq.chars()).collect();
+        let pdb = dir.path().join("closed.pdb");
+        fs::write(&pdb, backbone_pdb(&closed, None)).unwrap();
+        let found = crate::sequence::chains_from_pdb(&pdb).unwrap();
+        assert_eq!(found.len(), 1);
+        assert!(found[0].breaks.is_empty());
+        let (chains, _) = crate::process::place_chains(&found, None, &pdb).unwrap();
+        assert_eq!(
+            pdb_candidate(
+                &chains[0].sequence,
+                &chains[0].breaks,
+                "1a30",
+                &entry,
+                &segs
+            ),
+            None
+        );
+    }
+
     /// A mutant does not match its entry (it goes to BLAST), nor does a
     /// chain when the simulation declared no entry with it
     #[test]
