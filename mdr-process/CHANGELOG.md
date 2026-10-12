@@ -11,6 +11,19 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.7.0 (2026-10-12)
+
+- **A blank chain ID is stored as an empty `md_chain.chain_label`, not a
+  space.** `sequence.rs` read PDB column 22 untrimmed, so every chain in
+  a file with no chain IDs got `' '` (72 prod chains, MDR00105141-105212,
+  and 1 on staging; those rows were set to `''` by hand the same day).
+  FASTA headers were already right (`_`, `_2`): `header()` trims. The
+  UI derives the same `_`/`_2`/`A_2` name from `chain_label` and
+  `chain_order` (Ken, 2026-10-12); the column stays the file's label.
+- Minor, not patch: it changes what is written to the database. The
+  unmerged `mdr-backfill-chains` branch also claimed 0.7.0; it becomes
+  0.8.0 when rebased onto this.
+
 ## 0.6.0 (2026-10-09)
 
 - **The PDB step reads the simulation's declared PDB ID** (Ken,

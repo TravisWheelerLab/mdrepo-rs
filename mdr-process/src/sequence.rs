@@ -302,7 +302,8 @@ fn read_atoms(text: &str) -> Result<Vec<PdbAtom>> {
             element,
             name,
             res_name: col(16, 21).trim().to_uppercase(),
-            chain_id: col(21, 22).to_string(),
+            // Trimmed: a blank chain ID is stored as "", not " " (md_chain)
+            chain_id: col(21, 22).trim().to_string(),
             res_seq,
             ins_code: col(26, 27).chars().next().unwrap_or(' '),
             xyz: [num(30, 38)?, num(38, 46)?, num(46, 54)?],
@@ -1010,6 +1011,17 @@ mod tests {
         let mut lines = chain(&mut s, "MET ALA LYS", " ", 1, 0.0);
         lines.extend(chain(&mut s, "GLY SER", " ", 1, 100.0));
         assert_eq!(fasta(&lines), ">_\nMAK\n>_2\nGS\n");
+    }
+
+    #[test]
+    fn blank_chain_label_is_empty_not_a_space() {
+        // MDR00105204's shape: one chain with no chain ID.
+        let mut s = 0;
+        let lines = chain(&mut s, "MET ALA LYS", " ", 1, 0.0);
+        let got = chains(&lines);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].label, "");
+        assert_eq!(fasta(&lines), ">_\nMAK\n");
     }
 
     #[test]
