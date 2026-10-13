@@ -11,6 +11,53 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.8.0 (unreleased)
+
+- **BLAST for every comparison** (Ken, 2026-10-13; plan
+  `PLAN-2026-10-13-polymer-reference-blast-every-comparison.md`). Curated
+  sources pick the candidate entries: the UniProt entries SIFTS lists for
+  the declared PDB ID (`pdb`) and the declared UniProt IDs (`declared`, new;
+  md-repo-app 0292 allows it). Each is compared with the chain by
+  `blastp -subject` (no database) under the search's pass rule. Failing
+  those, the Swiss-Prot/TrEMBL search, as before (`aligned`). 0.6.0's
+  exact-sequence PDB matcher (`place()`, SIFTS coordinate mapping,
+  `pdb_seqres.txt`) is gone; the ranges and identity are BLAST's for every
+  method.
+- **Identity is over our aligned residues** (`nident` / our residues in the
+  alignment), not BLAST's `pident`: residues our chain lacks (an unresolved
+  loop) no longer count against it. The pass rule is otherwise unchanged:
+  >= 95%, <= 3 mismatches, >= 90% of the chain covered, in both steps. So
+  a mutant with up to 3 substitutions now matches its declared entry (0.6.0
+  allowed none), and a fusion matches neither partner (D3, deferred to the
+  DDD dry run).
+- **Ties go to the UniRef100 representative** when it is one of the tied
+  entries, then canonical over isoform, then the lowest accession. SOL3's
+  identical strain entries now give S288c's P38858, not YJM789's A6ZT71
+  (MDR00105204). One UniProt call per tie, cached with the entries by the
+  backfill; a failed call falls back to the old order.
+- A declared UniProt ID whose entry cannot be fetched is now an upload
+  warning (it was only logged, and the ID was silently not linked).
+- The backfill's input takes an optional fourth column, the declared
+  UniProt IDs (comma-separated), and its `disagreeing_sims` compares each
+  sharing simulation's own declared candidates.
+- **`mdr-process backfill-chains`**: md_chain, md_polymer and each polymer's
+  UniProt reference for simulations imported before mdr-process wrote
+  them. It reads a TSV of simulation ID, declared PDB ID and a local copy
+  of the processed structure; splits each with the import's splitter;
+  looks every polymer up in one batch (SIFTS read once, one search,
+  each UniProt entry fetched once); and writes each simulation in one
+  transaction. A simulation that already has chains is left alone; a
+  polymer shared by several simulations is decided by the lowest
+  simulation ID. `--dry-run` touches no database. The report has one row
+  per chain, with how many sharing simulations would have disagreed.
+- `reference::lookup_polymers` is that batch; the import's per-simulation
+  lookup now goes through it too. UniProt entries are fetched 8 at a time
+  with two retries.
+- The backfill caches UniProt entries in `<work_dir>/uniprot/` (fetch
+  time and UniProt's JSON; and each UniRef100 answer), so the real run over its dry run's work folder
+  reuses them, and its BLAST files, and writes what the dry run reported.
+  Imports do not cache.
+
 ## 0.7.0 (2026-10-12)
 
 - **A blank chain ID is stored as an empty `md_chain.chain_label`, not a

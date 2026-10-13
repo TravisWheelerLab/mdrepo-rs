@@ -1240,6 +1240,53 @@ pub fn run_blastp(
 }
 
 // --------------------------------------------------
+/// `blastp` of each sequence in `query` against each in `subject`, with no
+/// database: the check of a polymer against its declared candidates. Not
+/// `blastp-fast`, since a comparison this small is cheap, and no SEG
+/// (blastp's default, given anyway).
+pub fn run_blastp_subject(
+    query: &Path,
+    subject: &Path,
+    max_target_seqs: &str,
+    outfmt: &str,
+    out: &Path,
+) -> Result<()> {
+    let blastp = which("blastp").map_err(|e| anyhow!("Failed to find blastp ({e})"))?;
+    let mut cmd = Command::new(&blastp);
+    cmd.args([
+        "-query",
+        query.to_string_lossy().as_ref(),
+        "-subject",
+        subject.to_string_lossy().as_ref(),
+        "-out",
+        out.to_string_lossy().as_ref(),
+        "-outfmt",
+        outfmt,
+        "-evalue",
+        BLAST_EVALUE,
+        "-max_target_seqs",
+        max_target_seqs,
+        "-task",
+        "blastp",
+        "-comp_based_stats",
+        "0",
+        "-seg",
+        "no",
+    ]);
+    debug!("Running {cmd:?}");
+
+    let output = cmd.output()?;
+    if !output.status.success() {
+        bail!(
+            "Command failed ({}): {cmd:?}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
+}
+
+// --------------------------------------------------
 /// Write `sequence.fa`, one record per protein chain. See `sequence.rs` for how
 /// chains are found. The file is empty when the structure has polymer chains
 /// but no protein (DNA or RNA only), and BLAST is then skipped.
@@ -1629,15 +1676,16 @@ pub fn make_import_json(
         args.blast_dir,
         args.blast_num_threads,
     )?;
+    let declared_uniprot_ids: Vec<String> =
+        args.meta.uniprot_ids.clone().unwrap_or_default();
     let mut reference_warnings = reference::lookup_chains(
         &mut chains,
         args.meta.pdb_id.as_deref(),
+        &declared_uniprot_ids,
         args.blast_dir,
         args.processed_dir,
         args.blast_num_threads,
     )?;
-    let declared_uniprot_ids: Vec<String> =
-        args.meta.uniprot_ids.clone().unwrap_or_default();
     reference_warnings.extend(reference::declared_not_referenced(
         &declared_uniprot_ids,
         &chains,
@@ -2096,7 +2144,8 @@ pub fn get_uniprot_entries(
         return Ok((entries, warnings));
     }
 
-    if uniprot_ids.is_empty() {
+    let declared = !uniprot_ids.is_empty();
+    if !declared {
         // There are no given Uniprot IDs, so search
         let swissprot_ids = blast_uniprot(
             fasta_sequence_file,
@@ -2194,6 +2243,8 @@ pub fn get_uniprot_entries(
     for uniprot_id in uniprot_ids {
         match get_uniprot_entry(&uniprot_id) {
             Ok(entry) => entries.push(entry),
+            // A declared entry not fetched is not linked to the simulation
+            Err(e) if declared => warnings.push(e.to_string()),
             Err(e) => debug!("{e}"),
         }
     }
@@ -2873,6 +2924,15 @@ pub fn get_uniprot_entry(uniprot_id: &str) -> Result<UniprotEntry> {
     let raw: serde_json::Value = resp.json().map_err(|e| {
         anyhow!(r#"Failed to parse Uniprot response for "{uniprot_id}": {e}"#)
     })?;
+    uniprot_entry_from_json(uniprot_id, raw, fetched_at)
+}
+
+/// An entry from UniProt's JSON for it, fetched at `fetched_at`
+pub fn uniprot_entry_from_json(
+    uniprot_id: &str,
+    raw: serde_json::Value,
+    fetched_at: chrono::DateTime<chrono::Utc>,
+) -> Result<UniprotEntry> {
     let uniprot: UniprotResponse =
         serde_json::from_value(raw.clone()).map_err(|e| {
             anyhow!(r#"Failed to parse Uniprot response for "{uniprot_id}": {e}"#)
