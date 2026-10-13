@@ -3057,6 +3057,25 @@ fn output_with_timeout(
     }))
 }
 
+/// For tests that run simulation-processing's Python scripts: can `uv` build
+/// their environment here?
+///
+/// `uv run` syncs the whole project before any script starts, so a dependency
+/// with no wheel for this platform (RDKit on an arm64 Mac) fails every script,
+/// even ones that never import it. Skip on that instead of failing, so that a
+/// failure means the code is wrong, not the machine. Probed once per run.
+#[cfg(test)]
+pub(crate) fn python_env_builds(uv: &Path, script_dir: &Path) -> bool {
+    static BUILDS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *BUILDS.get_or_init(|| {
+        Command::new(uv)
+            .current_dir(script_dir)
+            .args(["run", "python", "-c", "import openbabel, rdkit"])
+            .output()
+            .is_ok_and(|out| out.status.success())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3744,7 +3763,7 @@ mol_id: No ligand-like residue found in minimal.pdb
     #[test]
     fn an_inchi_only_ligand_should_be_resolved_before_the_pipeline_sees_it() {
         let Some((uv, script_dir)) = resolver_available() else {
-            eprintln!("skipping: no uv or resolver script");
+            eprintln!("skipping: no uv, resolver script or Python environment");
             return;
         };
 
@@ -4451,14 +4470,13 @@ mol_id: No ligand-like residue found in minimal.pdb
         );
     }
 
-    /// A helper for the two declared_identity tests below.
+    /// A helper for the tests that run the resolver script.
     fn resolver_available() -> Option<(std::path::PathBuf, &'static Path)> {
         let uv = which::which("uv").ok()?;
         let script_dir = Path::new("../../simulation-processing/python");
-        script_dir
-            .join("resolve_ligand_identity.py")
-            .is_file()
-            .then_some((uv, script_dir))
+        (script_dir.join("resolve_ligand_identity.py").is_file()
+            && python_env_builds(&uv, script_dir))
+        .then_some((uv, script_dir))
     }
 
     /// THE REGRESSION THIS FILE EXISTS FOR.
@@ -4471,7 +4489,7 @@ mol_id: No ligand-like residue found in minimal.pdb
     #[test]
     fn declared_identity_survives_resolution() {
         let Some((uv, script_dir)) = resolver_available() else {
-            eprintln!("skipping: no uv or resolver script");
+            eprintln!("skipping: no uv, resolver script or Python environment");
             return;
         };
 
@@ -4519,7 +4537,7 @@ mol_id: No ligand-like residue found in minimal.pdb
     #[test]
     fn an_inferred_ligand_declares_nothing() {
         let Some((uv, script_dir)) = resolver_available() else {
-            eprintln!("skipping: no uv or resolver script");
+            eprintln!("skipping: no uv, resolver script or Python environment");
             return;
         };
 
