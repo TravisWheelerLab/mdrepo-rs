@@ -409,8 +409,8 @@ mod tests {
     /// cannot see it, exactly as `test_canonicalize_smiles.py` records for the
     /// CLI's ordering contract.
     ///
-    /// Requires the real `uv` and the canonicalize script; skips otherwise, in
-    /// the manner of the Postgres suites.
+    /// Requires the real `uv`, the canonicalize script and an environment uv
+    /// can build; skips otherwise, in the manner of the Postgres suites.
     #[test]
     fn canonicalization_writes_back_to_the_ligand_it_came_from() {
         let Some(uv) = which::which("uv").ok() else {
@@ -420,6 +420,10 @@ mod tests {
         let script_dir = Path::new("../../simulation-processing/python");
         if !script_dir.join("canonicalize_smiles.py").is_file() {
             eprintln!("skipping: canonicalize_smiles.py not checked out beside us");
+            return;
+        }
+        if !crate::process::python_env_builds(&uv, script_dir) {
+            eprintln!("skipping: uv cannot build simulation-processing's environment");
             return;
         }
 
