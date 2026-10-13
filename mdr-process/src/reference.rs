@@ -9,7 +9,9 @@
 //!    `pdb` when SIFTS lists the same entry). Curated sources say *which*
 //!    entries; BLAST says where they match: each candidate is compared with
 //!    the chain by `blastp -subject`, with no database. A SIFTS accession is
-//!    PDBe's assignment and is taken whenever BLAST aligns it at all, so a
+//!    PDBe's assignment and is taken whenever BLAST aligns it over at least
+//!    `MIN_SIFTS_COVERAGE` of the chain (a guard against a wrong declared
+//!    PDB ID), with no identity or mismatch limit, so a
 //!    mutant or engineered construct keeps its entry, as in 0.6.0 (Ken,
 //!    2026-10-13, after the DDD dry run); a declared UniProt ID must pass the
 //!    pass rule below.
@@ -72,6 +74,11 @@ pub const MIN_RESIDUES: usize = 20;
 const MIN_IDENTITY: f64 = 95.0;
 const MAX_MISMATCHES: u32 = 3;
 const MIN_COVERAGE: f64 = 0.9;
+
+/// A SIFTS accession skips the pass rule but must cover this much of the
+/// chain, against a simulation that declares the wrong PDB ID (Ken,
+/// 2026-10-13: "50% until things go sideways")
+const MIN_SIFTS_COVERAGE: f64 = 0.5;
 
 /// Enough targets that every hit tied at the top bit score is listed, so the
 /// tie-break sees them all: calmodulin's sequence ties more than 20 Swiss-Prot
@@ -417,7 +424,7 @@ pub fn declared_matches(
     for hits in compared {
         rows.extend(hits?);
     }
-    // A SIFTS accession passes whenever BLAST aligns it
+    // A SIFTS accession passes when BLAST aligns it over half the chain
     let sifts_listed: HashSet<(String, String)> = candidates
         .iter()
         .flat_map(|(&i, found)| {
@@ -428,7 +435,9 @@ pub fn declared_matches(
         })
         .collect();
     let pass = |hit: &PolymerBlastHit| {
-        sifts_listed.contains(&(hit.qaccver.clone(), accession(&hit.saccver)))
+        (sifts_listed.contains(&(hit.qaccver.clone(), accession(&hit.saccver)))
+            && hit.qlen > 0
+            && covered(hit) as f64 / hit.qlen as f64 >= MIN_SIFTS_COVERAGE)
             || passes(hit)
     };
     let representatives = representatives(&top_ties_by(&rows, &pass), uniprot_cache);
@@ -1232,8 +1241,9 @@ mod tests {
     }
 
     /// A SIFTS accession is PDBe's assignment: taken whenever BLAST aligns
-    /// it, so a mutant with 5 mismatches (3gcp's case) keeps it. The same
-    /// mutant declared only by UniProt ID still fails.
+    /// it over half the chain, so a mutant with 5 mismatches (3gcp's case)
+    /// keeps it. The same mutant declared only by UniProt ID still fails,
+    /// and so does a SIFTS accession covering under half (40 of 139).
     #[test]
     fn sifts_accessions_skip_the_pass_rule() {
         if !has_blastp() {
@@ -1241,8 +1251,11 @@ mod tests {
         }
         let dir = tempdir().unwrap();
         let cache = dir.path().join("uniprot");
-        cache_with(&cache, &[("P04585", PROTEASE)]);
-        let sifts = sifts_with(dir.path(), &[("1a30", "A", "P04585")]);
+        cache_with(&cache, &[("P04585", PROTEASE), ("P0DP23", CALM40)]);
+        let sifts = sifts_with(
+            dir.path(),
+            &[("1a30", "A", "P04585"), ("9yyy", "A", "P0DP23")],
+        );
         let mutant: String = PROTEASE
             .chars()
             .enumerate()
@@ -1255,6 +1268,7 @@ mod tests {
         let queries = vec![
             query(&mutant, Some("1a30"), &[]),
             query(&mutant, None, &["P04585"]),
+            query(&format!("{CALM40}{PROTEASE}"), Some("9yyy"), &[]),
         ];
         let got = declared(&queries, &sifts, dir.path(), &cache);
         let five = matched(&got, 0);
@@ -1263,6 +1277,7 @@ mod tests {
             ("P04585", PDB)
         );
         assert_eq!(got[&1], Declared::NoMatch);
+        assert_eq!(got[&2], Declared::NoMatch);
     }
 
     /// Ends trimmed, and a loop of 10 missing (which BLAST's `pident` would

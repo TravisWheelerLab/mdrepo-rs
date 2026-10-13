@@ -15,8 +15,10 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
 
 - **SIFTS accessions skip the pass rule** (Ken, 2026-10-13, after the DDD
   dry run). In step 2, an entry SIFTS lists for the declared PDB ID is
-  PDBe's assignment and is taken whenever `blastp -subject` aligns it at
-  all; BLAST still picks among the entry's accessions (top bit score, then
+  PDBe's assignment and is taken whenever `blastp -subject` aligns it over
+  at least half the chain (`MIN_SIFTS_COVERAGE`, a guard against a wrong
+  declared PDB ID; Ken: "50% until things go sideways"), with no identity
+  or mismatch limit; BLAST still picks among the entry's accessions (top bit score, then
   the tie-break) and gives the ranges and identity. 0.8.0 held them to
   95/3/90 against the UniProt sequence, which 0.6.0 never did (it checked
   our chain against the PDB entry's own sequence, then took SIFTS's
