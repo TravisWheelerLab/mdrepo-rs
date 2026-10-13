@@ -781,6 +781,24 @@ fn polymer_reference_is_written_once() {
     );
 }
 
+/// A match to a declared UniProt ID is written as `declared` (md-repo-app
+/// 0292 allows it)
+#[test]
+fn declared_match_is_written() {
+    let mut c = conn_or_skip!();
+    let orcid = "0000-0002-0000-0292";
+    seed_user_with_orcid(&mut c, "ref-declared", orcid);
+    let sim = ExportSimulation {
+        chains: vec![looked_up_chain(Some(hit("declared", "Q00003-importref")))],
+        ..base_sim("ref-declared", orcid)
+    };
+    let id = import::import_simulation(&mut c, &sim, &ImportOpts::default()).unwrap();
+    let chains = ops::list_chains_for_simulation(&mut c, id).unwrap();
+    let polymer = ops::get_polymer(&mut c, chains[0].polymer_id).unwrap();
+    assert_eq!(polymer.match_method.as_deref(), Some("declared"));
+    assert!(polymer.uniprot_id.is_some());
+}
+
 /// No lookup (None) leaves the polymer untried for a later run; `none` is
 /// recorded and sticks
 #[test]

@@ -108,7 +108,8 @@ pub enum Command {
 #[derive(Debug, Parser)]
 pub struct BackfillArgs {
     /// TSV with a header: simulation_id, pdb_id (may be blank), structure
-    /// (a local copy of the processed PDB)
+    /// (a local copy of the processed PDB), and optionally uniprot_ids
+    /// (the declared UniProt IDs, comma-separated)
     #[arg(value_name = "TSV")]
     pub input: PathBuf,
 
@@ -125,8 +126,8 @@ pub struct BackfillArgs {
     #[arg(short, long, value_name = "FILE")]
     pub out: PathBuf,
 
-    /// Directory for the BLAST files and the UniProt cache (`uniprot/`);
-    /// give the real run its dry run's, to reuse both
+    /// Directory for the BLAST files and the UniProt and UniRef cache
+    /// (`uniprot/`); give the real run its dry run's, to reuse both
     #[arg(short, long, value_name = "DIR")]
     pub work_dir: PathBuf,
 

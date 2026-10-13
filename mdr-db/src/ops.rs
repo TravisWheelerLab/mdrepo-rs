@@ -756,12 +756,12 @@ pub fn find_polymer(
         .optional()
 }
 
-/// Record a polymer's UniProt lookup: the hit (its `match_method`, `pdb` or
-/// `aligned`) or `None` for looked-for-and-not-found ("none"). Only a polymer
-/// not yet looked up (`match_method` null) is written, so a polymer's
-/// reference is set once: the rule reads only the residues, and a later run
-/// against a newer UniProt release must not quietly change it for every
-/// simulation sharing the row. Returns whether this call wrote it.
+/// Record a polymer's UniProt lookup: the hit (its `match_method`, `pdb`,
+/// `declared` or `aligned`) or `None` for looked-for-and-not-found ("none").
+/// Only a polymer not yet looked up (`match_method` null) is written, so a
+/// polymer's reference is set once and the first import decides: a later
+/// one, with other declared IDs or a newer UniProt release, must not quietly
+/// change it for every simulation sharing the row. Returns whether this call wrote it.
 pub fn set_polymer_reference(
     conn: &mut PgConnection,
     rid: i64,

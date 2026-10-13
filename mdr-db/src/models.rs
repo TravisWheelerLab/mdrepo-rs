@@ -360,11 +360,11 @@ pub struct NewPolymer {
     pub num_residues: i32,
 }
 
-/// A polymer's UniProt hit (md-repo-app 0289), decided from its residues
-/// alone. The CHECK md_polymer_uniprot_hit wants all of it or none of it, so
-/// there are no optional fields. `match_method` is how it was found: `pdb`
-/// (a PDB entity with the same residues, through SIFTS; 0290) or `aligned`
-/// (BLAST). `query_*` are 1-based positions in the polymer's sequence,
+/// A polymer's UniProt hit (md-repo-app 0289). The CHECK
+/// md_polymer_uniprot_hit wants all of it or none of it, so there are no
+/// optional fields. `match_method` is how it was found: `pdb` (an entry SIFTS
+/// lists for the declared PDB ID; 0290), `declared` (a declared UniProt ID;
+/// 0292) or `aligned` (the search), each passing the same BLAST rule. `query_*` are 1-based positions in the polymer's sequence,
 /// `reference_*` in the UniProt one; `identity` is a percent.
 #[derive(Debug, Clone, PartialEq, AsChangeset)]
 #[diesel(table_name = md_polymer)]
