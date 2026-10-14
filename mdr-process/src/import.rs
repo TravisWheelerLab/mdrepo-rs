@@ -29,6 +29,7 @@
 //! - **A bare `Cl` solute becomes `Cl-`, not the script's `Cl+`.** Chloride is an
 //!   anion; the script wrote a cation that does not exist in these systems.
 
+use crate::reference;
 use crate::types::{
     ExportSimulation, ImportChain, MdFile, PolymerLookup, ResolvedLigand,
 };
@@ -39,7 +40,10 @@ use libmdrepo::metadata;
 use log::debug;
 use mdr_db::{models::*, ops};
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+};
 
 /// Uploads made under this ORCID are attributed to the fixed `mdrepo_admin`
 /// account rather than a specific contributor.
@@ -171,23 +175,80 @@ pub fn import_simulation(
 }
 
 // --------------------------------------------------
-/// The chain backfill's write for one simulation imported before chains
-/// were recorded: its chains, their polymers, and each polymer's reference
-/// if it has none, in one transaction. Returns false, writing nothing, when
-/// the simulation already has chains.
+/// What the chain backfill did to one simulation
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backfilled {
+    /// Its chains, their polymers and references were written
+    Written,
+    /// It already had chains: only its polymers never looked up were given
+    /// a reference (or `none`), this many
+    ReferencesSet(usize),
+}
+
+/// The chain backfill's write for one simulation, in one transaction.
+/// Imported before chains were recorded: its chains, their polymers, and
+/// each polymer's reference if it has none. Already has chains (an import
+/// on 0.4.0-0.5.x, which wrote chains but no references, e.g. the DDD
+/// peptides): its chains are left as they are, and only those of its
+/// polymers never looked up get a reference. A polymer of `chains` is
+/// matched to the simulation's own by residues, not chain order (a declared
+/// chain is in the database's order but not in the structure's). A polymer
+/// of the simulation's that `chains` lacks (a declared chain) and that is
+/// not protein or shorter than `MIN_RESIDUES` gets `none`, as an import's
+/// lookup would give it; one that is long enough stays untried.
 pub fn backfill_chains(
     conn: &mut PgConnection,
     sim_id: i64,
     chains: &[ImportChain],
-) -> Result<bool> {
+) -> Result<Backfilled> {
     conn.transaction(|conn| {
-        if !ops::list_chains_for_simulation(conn, sim_id)?.is_empty() {
-            return Ok(false);
+        let existing = ops::list_chains_for_simulation(conn, sim_id)?;
+        if existing.is_empty() {
+            for chain in chains {
+                insert_chain(conn, sim_id, chain)?;
+            }
+            return Ok(Backfilled::Written);
         }
+
+        let own: HashSet<i64> = existing.iter().map(|c| c.polymer_id).collect();
+        let untried = |conn: &mut PgConnection, id: i64| -> Result<bool> {
+            Ok(ops::get_polymer(conn, id)?.match_method.is_none())
+        };
+        let mut set = 0;
         for chain in chains {
-            insert_chain(conn, sim_id, chain)?;
+            let Some(lookup) = &chain.reference else {
+                continue;
+            };
+            let Some(polymer) = ops::find_polymer(
+                conn,
+                &chain.polymer_type,
+                &residues_hash(&chain.residues),
+            )?
+            else {
+                continue;
+            };
+            if own.contains(&polymer.id) && untried(conn, polymer.id)? {
+                set_polymer_reference(conn, polymer.id, lookup)?;
+                set += 1;
+            }
         }
-        Ok(true)
+        let none = PolymerLookup {
+            match_method: reference::NONE.to_string(),
+            hit: None,
+        };
+        let mut own: Vec<i64> = own.into_iter().collect();
+        own.sort_unstable();
+        for id in own {
+            let polymer = ops::get_polymer(conn, id)?;
+            if polymer.match_method.is_none()
+                && (polymer.polymer_type != "protein"
+                    || usize::try_from(polymer.num_residues)? < reference::MIN_RESIDUES)
+            {
+                set_polymer_reference(conn, id, &none)?;
+                set += 1;
+            }
+        }
+        Ok(Backfilled::ReferencesSet(set))
     })
 }
 

@@ -11,6 +11,20 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.10.0 (unreleased)
+
+- **`backfill-chains` fills untried polymers of a simulation that already
+  has chains** (Ken, 2026-10-14). It used to leave such a simulation alone,
+  so the DDD peptides (MDR00105041-105140, imported on 0.4.0 with chains and
+  no references) kept 192 polymers never looked up. Now their chains stay
+  as they are, and only polymers with no `match_method` are written: those
+  in the structure from the lookup, matched by residues (a declared chain
+  shifts the chain order), and short or non-protein ones the structure
+  lacks (a declared peptide) `none`, by the length rule an import applies.
+  A polymer that already has a reference keeps it, as before.
+  `import::backfill_chains` returns `Backfilled` instead of a bool; the
+  report's status is `has chains; <n> references set`.
+
 ## 0.9.0 (unreleased)
 
 - **SIFTS accessions skip the pass rule** (Ken, 2026-10-13, after the DDD
