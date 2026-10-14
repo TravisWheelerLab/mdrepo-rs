@@ -2728,6 +2728,47 @@ pub fn delete_chains_for_simulation(
     diesel::delete(c::md_chain.filter(c::simulation_id.eq(sim_id))).execute(conn)
 }
 
+/// Delete a simulation's `structure` chains only, keeping its `declared`
+/// ones (the chain backfill's `--replace-chains`). Polymer ligands are not
+/// touched: one pointing at a structure chain makes this fail on the foreign
+/// key, so nothing is deleted from under a ligand. Returns the number of
+/// chains deleted.
+pub fn delete_structure_chains_for_simulation(
+    conn: &mut PgConnection,
+    sim_id: i64,
+) -> QueryResult<usize> {
+    use crate::schema::md_chain::dsl as c;
+    diesel::delete(
+        c::md_chain
+            .filter(c::simulation_id.eq(sim_id))
+            .filter(c::source.eq("structure")),
+    )
+    .execute(conn)
+}
+
+/// Move a chain to another `chain_order`
+pub fn set_chain_order(
+    conn: &mut PgConnection,
+    rid: i64,
+    order: i32,
+) -> QueryResult<usize> {
+    use crate::schema::md_chain::dsl as c;
+    diesel::update(c::md_chain.find(rid))
+        .set(c::chain_order.eq(order))
+        .execute(conn)
+}
+
+/// Replace a simulation's `fasta_sequence`
+pub fn set_fasta_sequence(
+    conn: &mut PgConnection,
+    sim_id: i64,
+    fasta: &str,
+) -> QueryResult<usize> {
+    diesel::update(md_simulation::table.find(sim_id))
+        .set(md_simulation::fasta_sequence.eq(fasta))
+        .execute(conn)
+}
+
 /// Delete a simulation's `md_simulation_uniprot` links. Used on the reprocess
 /// path.
 ///

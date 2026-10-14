@@ -11,6 +11,24 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.11.0 (unreleased)
+
+- **`backfill-chains --replace-chains`** (Ken, 2026-10-14). The DDD
+  peptides' chains were written on 10-02 from files that gave every chain
+  the same ID; the files were relabeled on 10-08 but the chains were not,
+  so all are labelled `A`, `fasta_sequence` has `>A`, `>A_2`, ..., and four
+  sims (105114, 105117, 105131, 105135) have two chains stored as one. With
+  the flag, a simulation that already has chains and whose stored structure
+  chains (label, residues, numbering, caps) or `fasta_sequence` differ from
+  its structure file's has its structure chains and `fasta_sequence`
+  replaced in one transaction, as an import of that file writes them
+  (`import::replace_structure_chains`). Declared chains keep their rows,
+  so polymer ligands stay linked, and move to follow the new structure
+  chains; a declared chain between structure chains is refused. New
+  polymers are looked up; existing references are kept. Report status
+  `chains replaced`. mdr-db: `delete_structure_chains_for_simulation`,
+  `set_chain_order`, `set_fasta_sequence`.
+
 ## 0.10.0 (unreleased)
 
 - **`backfill-chains` fills untried polymers of a simulation that already

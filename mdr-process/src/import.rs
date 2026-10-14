@@ -183,6 +183,9 @@ pub enum Backfilled {
     /// It already had chains: only its polymers never looked up were given
     /// a reference (or `none`), this many
     ReferencesSet(usize),
+    /// Its structure chains differed from the structure's and were replaced
+    /// (`replace_structure_chains`)
+    Replaced,
 }
 
 /// The chain backfill's write for one simulation, in one transaction.
@@ -232,23 +235,126 @@ pub fn backfill_chains(
                 set += 1;
             }
         }
-        let none = PolymerLookup {
-            match_method: reference::NONE.to_string(),
-            hit: None,
-        };
         let mut own: Vec<i64> = own.into_iter().collect();
         own.sort_unstable();
-        for id in own {
-            let polymer = ops::get_polymer(conn, id)?;
-            if polymer.match_method.is_none()
-                && (polymer.polymer_type != "protein"
-                    || usize::try_from(polymer.num_residues)? < reference::MIN_RESIDUES)
-            {
-                set_polymer_reference(conn, id, &none)?;
-                set += 1;
-            }
-        }
+        set += none_for_short_untried(conn, &own)?;
         Ok(Backfilled::ReferencesSet(set))
+    })
+}
+
+/// `none` for each of `polymer_ids` never looked up that is not protein or
+/// is shorter than `MIN_RESIDUES`, as an import's lookup would give it.
+/// Returns how many were set.
+fn none_for_short_untried(
+    conn: &mut PgConnection,
+    polymer_ids: &[i64],
+) -> Result<usize> {
+    let none = PolymerLookup {
+        match_method: reference::NONE.to_string(),
+        hit: None,
+    };
+    let mut set = 0;
+    for &id in polymer_ids {
+        let polymer = ops::get_polymer(conn, id)?;
+        if polymer.match_method.is_none()
+            && (polymer.polymer_type != "protein"
+                || usize::try_from(polymer.num_residues)? < reference::MIN_RESIDUES)
+        {
+            set_polymer_reference(conn, id, &none)?;
+            set += 1;
+        }
+    }
+    Ok(set)
+}
+
+/// The chain backfill's `--replace-chains`: like `backfill_chains`, but a
+/// simulation whose stored `structure` chains differ from `chains` (cut from
+/// its current structure file) has them replaced, in one transaction, as a
+/// new import of that file would write them (Ken, 2026-10-14: the DDD
+/// peptides' chains were written on 10-02 from files that gave every chain
+/// the same ID, relabeled on 10-08, so two chains were stored as one). The
+/// `declared` chains are kept, rows and ids, so the polymer ligands
+/// pointing at them stay linked; they are renumbered to follow the new
+/// structure chains, which is where an import puts a declared chain matched
+/// to a blob after the polymers. A simulation with a declared chain between
+/// structure chains is refused. `fasta_sequence` becomes `fasta`, the
+/// import's FASTA of the same chains. New polymers are looked up as in
+/// `backfill_chains`; polymers that already have a reference keep it.
+/// Identical chains and FASTA: nothing replaced, as `backfill_chains`.
+pub fn replace_structure_chains(
+    conn: &mut PgConnection,
+    sim_id: i64,
+    chains: &[ImportChain],
+    fasta: &str,
+) -> Result<Backfilled> {
+    conn.transaction(|conn| {
+        let existing = ops::list_chains_for_simulation(conn, sim_id)?;
+        let (declared, structure): (Vec<Chain>, Vec<Chain>) =
+            existing.into_iter().partition(|c| c.source == "declared");
+        if structure.is_empty() && declared.is_empty() {
+            return backfill_chains(conn, sim_id, chains);
+        }
+
+        let mut stored = vec![];
+        for c in &structure {
+            let polymer = ops::get_polymer(conn, c.polymer_id)?;
+            stored.push((
+                c.chain_label.clone(),
+                polymer.polymer_type,
+                polymer.residues_hash,
+                c.first_residue,
+                c.last_residue,
+                c.n_terminal_cap.clone(),
+                c.c_terminal_cap.clone(),
+            ));
+        }
+        let wanted: Vec<_> = chains
+            .iter()
+            .map(|c| {
+                (
+                    c.chain_label.clone(),
+                    c.polymer_type.clone(),
+                    residues_hash(&c.residues),
+                    c.first_residue,
+                    c.last_residue,
+                    c.n_terminal_cap.clone(),
+                    c.c_terminal_cap.clone(),
+                )
+            })
+            .collect();
+        let fasta_now = ops::get_simulation(conn, sim_id)?.fasta_sequence;
+        if stored == wanted && fasta_now.as_deref() == Some(fasta) {
+            return backfill_chains(conn, sim_id, chains);
+        }
+
+        let last_structure = structure.iter().map(|c| c.chain_order).max();
+        let first_declared = declared.iter().map(|c| c.chain_order).min();
+        if let (Some(s), Some(d)) = (last_structure, first_declared)
+            && d < s
+        {
+            bail!(
+                "a declared chain (chain_order {d}) comes before a structure \
+                 chain ({s}); not replaced"
+            );
+        }
+
+        ops::delete_structure_chains_for_simulation(conn, sim_id)?;
+        // Out of the way first, then into place: chain_order is unique per
+        // simulation, and the new numbers may overlap the old ones
+        let n = i32::try_from(chains.len())?;
+        for (k, c) in declared.iter().enumerate() {
+            ops::set_chain_order(conn, c.id, 10_000 + i32::try_from(k)?)?;
+        }
+        for (k, c) in declared.iter().enumerate() {
+            ops::set_chain_order(conn, c.id, n + 1 + i32::try_from(k)?)?;
+        }
+        for chain in chains {
+            insert_chain(conn, sim_id, chain)?;
+        }
+        let ids: Vec<i64> = declared.iter().map(|c| c.polymer_id).collect();
+        none_for_short_untried(conn, &ids)?;
+        ops::set_fasta_sequence(conn, sim_id, fasta)?;
+        Ok(Backfilled::Replaced)
     })
 }
 
