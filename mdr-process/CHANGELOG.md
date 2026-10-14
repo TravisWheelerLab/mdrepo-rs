@@ -26,6 +26,11 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   engineered constructs (3gcp, 4 mismatches, 98.9%) and fusions. A fusion
   now takes the partner with the top bit score, as 0.6.0 took SIFTS's
   largest segment. Declared UniProt IDs and the search keep 95/3/90.
+- **A SIFTS accession must be at least 70% identical** (`MIN_SIFTS_IDENTITY`;
+  the DDD report's question 2, taken as suggested, Ken 2026-10-14). SIFTS
+  lists entries per PDB entry, not per chain, so without it 25 DDD chains
+  in 20 entries, mostly antibodies, took another chain's entry at 23-77%
+  (1etz's heavy chain B took the light chain's G0YP42 at 26.7%).
 
 ## 0.8.0 (unreleased)
 
