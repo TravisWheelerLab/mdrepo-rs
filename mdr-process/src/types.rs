@@ -138,6 +138,12 @@ pub struct BackfillArgs {
     /// Threads for each `blastp` search (`-num_threads`)
     #[arg(long, value_name = "N", default_value_t = DEFAULT_BLAST_NUM_THREADS)]
     pub blast_num_threads: usize,
+
+    /// A simulation that already has chains: if its structure chains differ
+    /// from the structure file's, replace them (keeping its declared chains)
+    /// and its fasta_sequence, as an import of that file would write them
+    #[arg(long)]
+    pub replace_chains: bool,
 }
 
 // --------------------------------------------------

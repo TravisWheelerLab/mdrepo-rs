@@ -1003,3 +1003,113 @@ fn backfill_sets_untried_references_of_a_sim_with_chains() {
         None
     );
 }
+
+/// `--replace-chains`: two chains stored as one (a file that gave every
+/// chain the same ID, relabeled since) are replaced by the structure's two;
+/// the declared chain keeps its row and follows them; fasta_sequence is the
+/// new one. A second run changes nothing.
+#[test]
+fn replace_structure_chains_splits_a_merged_chain() {
+    let mut c = conn_or_skip!();
+    let orcid = "0000-0002-0000-0294";
+    seed_user_with_orcid(&mut c, "bf3", orcid);
+    let sim_id = import::import_simulation(
+        &mut c,
+        &base_sim("bf3", orcid),
+        &ImportOpts::default(),
+    )
+    .unwrap();
+
+    let residues = |seq: &str| seq.chars().map(|l| format!("W{l}")).collect::<Vec<_>>();
+    // 25 each: the test hit's range is 1-25
+    let (heavy, light) = ("ACDEFGHIKLMNPQRSTVWYACDEF", "YWVTSRQPNMLKIHGFEDCAYWVTS");
+    let merged = ImportChain {
+        sequence: format!("{heavy}{light}"),
+        residues: residues(&format!("{heavy}{light}")),
+        first_residue: Some(1),
+        last_residue: Some(50),
+        ..looked_up_chain(None)
+    };
+    let peptide = ImportChain {
+        chain_order: 2,
+        chain_label: "A".into(),
+        source: "declared".into(),
+        sequence: "ACDEF".into(),
+        residues: residues("ACDEF"),
+        first_residue: None,
+        last_residue: None,
+        ..looked_up_chain(None)
+    };
+    import::backfill_chains(&mut c, sim_id, &[merged, peptide]).unwrap();
+    let declared_id = ops::list_chains_for_simulation(&mut c, sim_id).unwrap()[1].id;
+
+    let split = vec![
+        ImportChain {
+            chain_label: "H".into(),
+            sequence: heavy.into(),
+            residues: residues(heavy),
+            first_residue: Some(1),
+            last_residue: Some(25),
+            reference: Some(hit("pdb", "Q00041-importref")),
+            ..looked_up_chain(None)
+        },
+        ImportChain {
+            chain_order: 2,
+            chain_label: "L".into(),
+            sequence: light.into(),
+            residues: residues(light),
+            first_residue: Some(26),
+            last_residue: Some(50),
+            reference: Some(hit("pdb", "Q00042-importref")),
+            ..looked_up_chain(None)
+        },
+    ];
+    let fasta = format!(">H\n{heavy}\n>L\n{light}\n");
+    assert_eq!(
+        import::replace_structure_chains(&mut c, sim_id, &split, &fasta).unwrap(),
+        Backfilled::Replaced
+    );
+    let got = ops::list_chains_for_simulation(&mut c, sim_id).unwrap();
+    let shape: Vec<(i32, &str, &str)> = got
+        .iter()
+        .map(|ch| (ch.chain_order, ch.chain_label.as_str(), ch.source.as_str()))
+        .collect();
+    assert_eq!(
+        shape,
+        vec![
+            (1, "H", "structure"),
+            (2, "L", "structure"),
+            (3, "A", "declared")
+        ]
+    );
+    assert_eq!(got[2].id, declared_id);
+    let methods: Vec<Option<String>> = got
+        .iter()
+        .map(|ch| {
+            ops::get_polymer(&mut c, ch.polymer_id)
+                .unwrap()
+                .match_method
+        })
+        .collect();
+    assert_eq!(
+        methods,
+        vec![Some("pdb".into()), Some("pdb".into()), Some("none".into())]
+    );
+    assert_eq!(
+        ops::get_simulation(&mut c, sim_id)
+            .unwrap()
+            .fasta_sequence
+            .as_deref(),
+        Some(fasta.as_str())
+    );
+
+    // Again: the same chains and FASTA, so nothing is replaced
+    assert_eq!(
+        import::replace_structure_chains(&mut c, sim_id, &split, &fasta).unwrap(),
+        Backfilled::ReferencesSet(0)
+    );
+    assert_eq!(
+        ops::list_chains_for_simulation(&mut c, sim_id).unwrap()[2].id,
+        declared_id
+    );
+}
