@@ -23,12 +23,14 @@
 //! writes what the dry run reported.
 //!
 //! Writes: per simulation, one transaction (`import::backfill_chains`). A
-//! simulation that already has chains is left alone, and a polymer that
-//! already has a reference keeps it. `--dry-run` reads no database and
+//! polymer that already has a reference keeps it. A simulation that already
+//! has chains keeps them, and only its polymers never looked up get a
+//! reference (the DDD peptides, imported on 0.4.0 with chains and no
+//! references; Ken, 2026-10-14). `--dry-run` reads no database and
 //! writes none; the report is the same.
 
 use crate::{
-    import,
+    import::{self, Backfilled},
     reference::{self, Declared, PolymerQuery},
     sequence,
     ticket::dsn_for,
@@ -146,7 +148,7 @@ pub fn backfill_chains(args: &BackfillArgs) -> Result<()> {
          num_residues\tbreaks\tmatch_method\taccession\tquery_start\tquery_end\t\
          reference_start\treference_end\tidentity\tdecided_by\tdisagreeing_sims"
     )?;
-    let (mut written, mut skipped, mut failed) = (0, 0, 0);
+    let (mut written, mut had_chains, mut references_set, mut failed) = (0, 0, 0, 0);
     for (row, chains) in rows.iter().zip(split) {
         let pdb = row.pdb_id.as_deref().unwrap_or("");
         let mut chains = match chains {
@@ -168,13 +170,14 @@ pub fn backfill_chains(args: &BackfillArgs) -> Result<()> {
             None => "dry run".to_string(),
             Some(conn) => {
                 match import::backfill_chains(conn, row.simulation_id, &chains) {
-                    Ok(true) => {
+                    Ok(Backfilled::Written) => {
                         written += 1;
                         "written".to_string()
                     }
-                    Ok(false) => {
-                        skipped += 1;
-                        "has chains; left alone".to_string()
+                    Ok(Backfilled::ReferencesSet(n)) => {
+                        had_chains += 1;
+                        references_set += n;
+                        format!("has chains; {n} references set")
                     }
                     Err(e) => {
                         failed += 1;
@@ -202,9 +205,11 @@ pub fn backfill_chains(args: &BackfillArgs) -> Result<()> {
         }
     }
     info!(
-        "{} written, {} left alone, {} failed (report: {})",
+        "{} written, {} had chains ({} untried polymers given a reference), \
+         {} failed (report: {})",
         written,
-        skipped,
+        had_chains,
+        references_set,
         failed,
         args.out.display()
     );

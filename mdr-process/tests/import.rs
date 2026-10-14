@@ -32,7 +32,7 @@ use diesel::pg::PgConnection;
 use libmdrepo::metadata;
 use mdr_db::models::*;
 use mdr_db::ops;
-use mdr_process::import::{self, ImportOpts};
+use mdr_process::import::{self, Backfilled, ImportOpts};
 use mdr_process::types::{
     ExportSimulation, ImportChain, MdFile, PdbEntry, PolymerHit, PolymerLookup,
     ResolvedLigand, UniprotEntry,
@@ -878,7 +878,8 @@ fn reference_disagreement_warns() {
 }
 
 /// The chain backfill writes a simulation's chains, polymers and references
-/// once; a simulation that already has chains is left alone
+/// once; a simulation that already has chains keeps them, and its polymers
+/// that already have a reference keep it
 #[test]
 fn backfill_writes_chains_once() {
     let mut c = conn_or_skip!();
@@ -897,15 +898,21 @@ fn backfill_writes_chains_once() {
     );
 
     let chains = vec![looked_up_chain(Some(hit("pdb", "Q00021-importref")))];
-    assert!(import::backfill_chains(&mut c, sim_id, &chains).unwrap());
+    assert_eq!(
+        import::backfill_chains(&mut c, sim_id, &chains).unwrap(),
+        Backfilled::Written
+    );
     let got = ops::list_chains_for_simulation(&mut c, sim_id).unwrap();
     assert_eq!(got.len(), 1);
     let polymer = ops::get_polymer(&mut c, got[0].polymer_id).unwrap();
     assert_eq!(polymer.match_method.as_deref(), Some("pdb"));
 
-    // Again: left alone, nothing added
+    // Again: nothing added, the reference kept
     let other = vec![looked_up_chain(Some(hit("aligned", "Q00022-importref")))];
-    assert!(!import::backfill_chains(&mut c, sim_id, &other).unwrap());
+    assert_eq!(
+        import::backfill_chains(&mut c, sim_id, &other).unwrap(),
+        Backfilled::ReferencesSet(0)
+    );
     assert_eq!(
         ops::list_chains_for_simulation(&mut c, sim_id)
             .unwrap()
@@ -914,6 +921,85 @@ fn backfill_writes_chains_once() {
     );
     assert_eq!(
         ops::find_uniprot_id_by_accession(&mut c, "Q00022-importref").unwrap(),
+        None
+    );
+}
+
+/// A simulation imported with chains but no references (0.4.0, the DDD
+/// peptides): the backfill leaves its chains as they are and fills in only
+/// its polymers never looked up, matched by residues: the long one from the
+/// lookup, the short declared one `none` by the length rule
+#[test]
+fn backfill_sets_untried_references_of_a_sim_with_chains() {
+    let mut c = conn_or_skip!();
+    let orcid = "0000-0002-0000-0293";
+    seed_user_with_orcid(&mut c, "bf2", orcid);
+    let sim_id = import::import_simulation(
+        &mut c,
+        &base_sim("bf2", orcid),
+        &ImportOpts::default(),
+    )
+    .unwrap();
+
+    let residues = |seq: &str| seq.chars().map(|l| format!("Y{l}")).collect::<Vec<_>>();
+    let long = ImportChain {
+        residues: residues("ACDEFGHIKLMNPQRSTVWYACDEF"),
+        ..looked_up_chain(None)
+    };
+    let peptide = ImportChain {
+        chain_order: 2,
+        chain_label: "".into(),
+        source: "declared".into(),
+        sequence: "ACDEFGHI".into(),
+        residues: residues("ACDEFGHI"),
+        first_residue: None,
+        last_residue: None,
+        ..looked_up_chain(None)
+    };
+    // As 0.4.0 wrote it: chains, no references
+    assert_eq!(
+        import::backfill_chains(&mut c, sim_id, &[long.clone(), peptide]).unwrap(),
+        Backfilled::Written
+    );
+    let before = ops::list_chains_for_simulation(&mut c, sim_id).unwrap();
+    for chain in &before {
+        let p = ops::get_polymer(&mut c, chain.polymer_id).unwrap();
+        assert_eq!(p.match_method, None);
+    }
+
+    // The structure has only the long chain, and in another position
+    let found = ImportChain {
+        chain_order: 3,
+        reference: Some(hit("pdb", "Q00031-importref")),
+        ..long
+    };
+    assert_eq!(
+        import::backfill_chains(&mut c, sim_id, std::slice::from_ref(&found)).unwrap(),
+        Backfilled::ReferencesSet(2)
+    );
+    let after = ops::list_chains_for_simulation(&mut c, sim_id).unwrap();
+    assert_eq!(after.len(), before.len());
+    let methods: Vec<Option<String>> = after
+        .iter()
+        .map(|ch| {
+            ops::get_polymer(&mut c, ch.polymer_id)
+                .unwrap()
+                .match_method
+        })
+        .collect();
+    assert_eq!(methods, vec![Some("pdb".into()), Some("none".into())]);
+
+    // A third run changes nothing
+    let again = ImportChain {
+        reference: Some(hit("aligned", "Q00032-importref")),
+        ..found
+    };
+    assert_eq!(
+        import::backfill_chains(&mut c, sim_id, &[again]).unwrap(),
+        Backfilled::ReferencesSet(0)
+    );
+    assert_eq!(
+        ops::find_uniprot_id_by_accession(&mut c, "Q00032-importref").unwrap(),
         None
     );
 }
