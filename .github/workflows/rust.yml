@@ -18,6 +18,12 @@ jobs:
     - uses: actions/checkout@v7
     - name: Check formatting
       run: cargo fmt --all --check
+    - name: Install BLAST
+      # Tests that run blastp skip themselves without it
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ncbi-blast+
+        blastp -version
     - name: Build
       run: cargo build --verbose
     - name: Run tests

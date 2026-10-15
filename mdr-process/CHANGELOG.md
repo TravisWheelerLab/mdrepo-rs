@@ -11,6 +11,18 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.12.0 (unreleased)
+
+- **A SIFTS accession split by an insert is taken** (Ken, 2026-10-15). A
+  SIFTS accession must cover half the chain, and it was measured on one
+  BLAST row. A protein with another inserted in a loop, such as CXCR4
+  with T4 lysozyme in 3odu (sim 10488), comes back as one row each side
+  of the insert, each under half, so the chain got `none`. Its rows at
+  70% identity or more now count together (`sifts_coverage`), when they
+  run in the same order in the chain and the entry, each residue once.
+  The stored range and identity are still those of the row with the top
+  bit score. Declared UniProt IDs and the search are unchanged.
+
 ## 0.11.0 (unreleased)
 
 - **`backfill-chains --replace-chains`** (Ken, 2026-10-14). The DDD
