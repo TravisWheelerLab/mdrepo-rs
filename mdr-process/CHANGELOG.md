@@ -11,6 +11,18 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.14.0 (unreleased)
+
+- **Fix: a SIFTS accession's coverage is never less than its longest
+  BLAST row** (2026-10-15). 0.12.0 added up an accession's rows taken by
+  bit score, skipping a row out of order with those taken. In a tethered
+  HIV protease dimer (3nxn, 3fsm, 4eqj, 4eq0) both copies align to the
+  same residues of P03369; the higher-scoring row was the shorter (99 of
+  202) and the longer (115) was skipped as out of order, so P03369 fell
+  under half the chain: 3nxn and 3fsm lost their reference, 4eqj and
+  4eq0 took Q9YV20 at 79% instead. The full A1 dry run found these 4 and
+  no others; the 37 chains 0.12.0 gained are unchanged.
+
 ## 0.13.0 (unreleased)
 
 - **A warning when the declared PDB ID matches no chain** (Ken,

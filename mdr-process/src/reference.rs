@@ -526,7 +526,7 @@ fn related_to_pdb(
 /// it adds: residues already counted, in our chain or in the entry, are
 /// taken off (BLAST's rows can share a few residues at the insert). So a
 /// repeat cannot count twice: a second row on the same residues of the
-/// entry adds nothing.
+/// entry adds nothing. The total is never less than the longest row.
 fn sifts_coverage(
     rows: &[PolymerBlastHit],
     listed: &HashSet<(String, String)>,
@@ -549,6 +549,15 @@ fn sifts_coverage(
                     .total_cmp(&a.bitscore)
                     .then_with(|| a.qstart.cmp(&b.qstart))
             });
+            // Never less than the longest row alone, which counted before
+            // 0.12.0: a tethered dimer (HIV protease, 3nxn) aligns both
+            // copies to the same residues of the entry, and the row taken
+            // first can be the shorter one, the other then out of order
+            let longest = hits
+                .iter()
+                .map(|h| h.qend.max(h.qstart) - h.qstart.min(h.qend) + 1)
+                .max()
+                .unwrap_or(0);
             let mut kept: Vec<((u32, u32), (u32, u32))> = vec![];
             let mut total = 0;
             for hit in hits {
@@ -567,7 +576,7 @@ fn sifts_coverage(
                     kept.push((q, s));
                 }
             }
-            (pair, total)
+            (pair, total.max(longest))
         })
         .collect()
 }
@@ -1648,6 +1657,15 @@ mod tests {
             row((1, 100), (1, 100), 100.0, 180.0),
         ];
         assert_eq!(cover(&low_first), 100);
+
+        // A tethered dimer, both copies on the same residues of the entry
+        // (3nxn, 202 residues): the higher-scoring row is the shorter, the
+        // longer is out of order with it, and still counts alone
+        let dimer = [
+            row((1, 99), (491, 589), 92.9, 191.0),
+            row((88, 202), (473, 589), 84.3, 186.0),
+        ];
+        assert_eq!(cover(&dimer), 115);
 
         // A pair SIFTS does not list is absent
         let other = [blast_row("p1", "P04585", 100.0, 0, (1, 99), 99, 180.0)];
