@@ -159,6 +159,19 @@ pub struct PolymerQuery {
     pub uniprot_ids: Vec<String>,
 }
 
+/// `lookup_polymers`'s result: a lookup per query, warnings, and the
+/// queries related to their declared PDB entry
+pub type Lookups = (Vec<Option<PolymerLookup>>, Vec<String>, HashSet<usize>);
+
+/// `declared_matches`'s result: step 2 per polymer, the entries fetched,
+/// warnings, and the polymers related to their declared PDB entry
+pub type DeclaredMatches = (
+    HashMap<usize, Declared>,
+    Entries,
+    Vec<String>,
+    HashSet<usize>,
+);
+
 // --------------------------------------------------
 /// Step 2's outcome for one polymer that has candidates
 #[derive(Debug, Clone, PartialEq)]
@@ -246,7 +259,7 @@ pub fn lookup_polymers(
     work_dir: &Path,
     num_threads: usize,
     uniprot_cache: Option<&Path>,
-) -> Result<(Vec<Option<PolymerLookup>>, Vec<String>, HashSet<usize>)> {
+) -> Result<Lookups> {
     let mut warnings = vec![];
     let mut lookups: Vec<Option<PolymerLookup>> = vec![None; queries.len()];
 
@@ -368,12 +381,7 @@ pub fn declared_matches(
     sifts: &Path,
     work_dir: &Path,
     uniprot_cache: Option<&Path>,
-) -> Result<(
-    HashMap<usize, Declared>,
-    Entries,
-    Vec<String>,
-    HashSet<usize>,
-)> {
+) -> Result<DeclaredMatches> {
     let pdb_ids: HashSet<String> = wanted
         .iter()
         .filter_map(|&i| queries[i].pdb_id.as_ref().map(|p| p.to_lowercase()))
