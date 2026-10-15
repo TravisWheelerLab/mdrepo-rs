@@ -178,7 +178,8 @@ pub type Entries = HashMap<String, std::result::Result<UniprotEntry, String>>;
 // --------------------------------------------------
 /// Look up every distinct polymer among one simulation's `chains` and set
 /// each chain's `reference`. `pdb_id` and `uniprot_ids` are the
-/// simulation's declared IDs. Returns warnings for the submitter.
+/// simulation's declared IDs. Returns warnings for the submitter, among them
+/// the PDB ID check (`declared_pdb_not_matched`).
 pub fn lookup_chains(
     chains: &mut [ImportChain],
     pdb_id: Option<&str>,
@@ -205,7 +206,7 @@ pub fn lookup_chains(
         }
     }
 
-    let (lookups, warnings) =
+    let (lookups, mut warnings, related) =
         lookup_polymers(&queries, blast_dir, processed_dir, num_threads, None)?;
 
     for chain in chains.iter_mut() {
@@ -216,6 +217,19 @@ pub fn lookup_chains(
         chain.reference = lookups[i].clone();
     }
 
+    // The PDB ID check; SIFTS is read again only when it would warn
+    if let Some(pdb_id) = pdb_id {
+        let flags = related_flags(&queries, &lookups, &related);
+        let sifts = blast_dir.join(PDB_SIFTS);
+        if none_related(&flags) && sifts.is_file() {
+            let code = pdb_id.to_lowercase();
+            let listed = sifts_accessions(&sifts, &[code.clone()].into())?
+                .remove(&code)
+                .unwrap_or_default();
+            warnings.extend(declared_pdb_not_matched(pdb_id, &listed, &flags));
+        }
+    }
+
     Ok(warnings)
 }
 
@@ -224,14 +238,15 @@ pub fn lookup_chains(
 /// SIFTS is read once, the search runs once over every polymer that needs
 /// it (its files go in `work_dir`), and each UniProt entry is fetched once
 /// (or read from `uniprot_cache`, see `fetch_entries`). Returns a lookup per
-/// query, None where it could not be finished (left untried), and warnings.
+/// query, None where it could not be finished (left untried), warnings, and
+/// the queries related to their declared PDB entry (`related_to_pdb`).
 pub fn lookup_polymers(
     queries: &[PolymerQuery],
     blast_dir: &Path,
     work_dir: &Path,
     num_threads: usize,
     uniprot_cache: Option<&Path>,
-) -> Result<(Vec<Option<PolymerLookup>>, Vec<String>)> {
+) -> Result<(Vec<Option<PolymerLookup>>, Vec<String>, HashSet<usize>)> {
     let mut warnings = vec![];
     let mut lookups: Vec<Option<PolymerLookup>> = vec![None; queries.len()];
 
@@ -245,7 +260,7 @@ pub fn lookup_polymers(
         }
     }
     if wanted.is_empty() {
-        return Ok((lookups, warnings));
+        return Ok((lookups, warnings, HashSet::new()));
     }
 
     let sifts = blast_dir.join(PDB_SIFTS);
@@ -255,11 +270,11 @@ pub fn lookup_polymers(
              index ({})",
             sifts.display()
         ));
-        return Ok((lookups, warnings));
+        return Ok((lookups, warnings, HashSet::new()));
     }
 
     // 2. The declared candidates
-    let (declared, mut entries, declared_warnings) =
+    let (declared, mut entries, declared_warnings, related) =
         declared_matches(queries, &wanted, &sifts, work_dir, uniprot_cache)?;
     warnings.extend(declared_warnings);
     let mut to_search = vec![];
@@ -306,7 +321,7 @@ pub fn lookup_polymers(
         }
     }
 
-    Ok((lookups, warnings))
+    Ok((lookups, warnings, related))
 }
 
 /// A candidate's lookup once its UniProt entry is in hand; `none` when
@@ -345,14 +360,20 @@ fn finish(
 /// with its sequence by BLAST. Polymers with the same candidates share one
 /// `blastp`, whose files go in `<work_dir>/declared/`. A polymer with no
 /// candidates is absent from the result. Also returns the entries fetched,
-/// and warnings.
+/// warnings, and the polymers related to their declared PDB entry
+/// (`related_to_pdb`).
 pub fn declared_matches(
     queries: &[PolymerQuery],
     wanted: &[usize],
     sifts: &Path,
     work_dir: &Path,
     uniprot_cache: Option<&Path>,
-) -> Result<(HashMap<usize, Declared>, Entries, Vec<String>)> {
+) -> Result<(
+    HashMap<usize, Declared>,
+    Entries,
+    Vec<String>,
+    HashSet<usize>,
+)> {
     let pdb_ids: HashSet<String> = wanted
         .iter()
         .filter_map(|&i| queries[i].pdb_id.as_ref().map(|p| p.to_lowercase()))
@@ -445,6 +466,7 @@ pub fn declared_matches(
         })
         .collect();
     let coverage = sifts_coverage(&rows, &sifts_listed);
+    let related = related_to_pdb(&rows, &sifts_listed);
     let pass = |hit: &PolymerBlastHit| passes_sifts(hit, &coverage) || passes(hit);
     let representatives = representatives(&top_ties_by(&rows, &pass), uniprot_cache);
     let best = best_hits_by(&rows, &representatives, &pass);
@@ -462,7 +484,28 @@ pub fn declared_matches(
         };
         outcome.insert(i, result);
     }
-    Ok((outcome, entries, warnings))
+    Ok((outcome, entries, warnings, related))
+}
+
+/// The polymers (`p<i>` -> i) that some SIFTS accession of their declared
+/// PDB entry aligns to at `MIN_SIFTS_IDENTITY` or more over `MIN_RESIDUES`
+/// or more of our residues: the entry is about this protein, whether or not
+/// it becomes the reference. Looser than the SIFTS rule on purpose, for the
+/// PDB ID check (`declared_pdb_not_matched`): an antibody whose entry SIFTS
+/// maps only over its constant half, or a chain whose declared UniProt ID
+/// outscores the SIFTS accession (1hxw), still has the right PDB ID.
+fn related_to_pdb(
+    rows: &[PolymerBlastHit],
+    listed: &HashSet<(String, String)>,
+) -> HashSet<usize> {
+    rows.iter()
+        .filter(|h| {
+            listed.contains(&(h.qaccver.clone(), accession(&h.saccver)))
+                && identity(h) >= MIN_SIFTS_IDENTITY
+                && covered(h) as usize >= MIN_RESIDUES
+        })
+        .filter_map(|h| h.qaccver.strip_prefix('p')?.parse().ok())
+        .collect()
 }
 
 /// For each (FASTA ID, accession) in `listed`, our residues that its BLAST
@@ -1052,26 +1095,23 @@ fn best_hits_by(
 
 // --------------------------------------------------
 /// A warning when the declared PDB ID looks wrong: SIFTS maps the entry to
-/// UniProt (`listed`), but no protein chain of the simulation matched one of
-/// those entries by step 2's SIFTS rule. `own_methods` is the match_method
-/// each of the simulation's protein polymers got from its OWN declared IDs
-/// (`None`: not looked up, e.g. a UniProt fetch failed), so a backfill must
-/// not pass a reference that another simulation decided. No warning when
-/// anything was not looked up, or the entry is not in SIFTS (nothing to
-/// compare). 21 PLAS-20K simulations declare a PDB entry of another
-/// protein, e.g. 84136: 4tq8 (transthyretin) with epoxide hydrolase 2
-/// (2026-10-15). A warning, not an error: the structure is what was
-/// simulated, and the PDB ID is metadata to correct.
+/// UniProt (`listed`), but no protein polymer of the simulation is related
+/// to any of those entries (`related_to_pdb`). `related` holds, for each of
+/// the simulation's protein polymers long enough to look up, whether it is
+/// related, by its OWN declared IDs (a backfill must not use a reference
+/// another simulation decided), or `None` when it was not looked up (e.g. a
+/// UniProt fetch failed). No warning then, nor when the entry is not in
+/// SIFTS (nothing to compare). 21 PLAS-20K simulations declare a PDB entry
+/// of another protein, e.g. 84136: 4tq8 (transthyretin) with epoxide
+/// hydrolase 2 (2026-10-15). A warning, not an error: the structure is what
+/// was simulated, and the PDB ID is metadata to correct. It does not see a
+/// system with one right protein and one foreign (2wva, 5hi4, 5km5, 5v03).
 pub fn declared_pdb_not_matched(
     pdb_id: &str,
     listed: &[String],
-    own_methods: &[Option<&str>],
+    related: &[Option<bool>],
 ) -> Option<String> {
-    if listed.is_empty()
-        || own_methods.is_empty()
-        || own_methods.iter().any(Option::is_none)
-        || own_methods.contains(&Some(PDB))
-    {
+    if listed.is_empty() || !none_related(related) {
         return None;
     }
     Some(format!(
@@ -1080,22 +1120,28 @@ pub fn declared_pdb_not_matched(
     ))
 }
 
-/// The match_method of each protein polymer of `chains` long enough to be
-/// looked up (`MIN_RESIDUES`), each polymer once, from the chains' own
-/// lookup: what `declared_pdb_not_matched` takes when the chains were
-/// looked up for this simulation alone, as in an import
-pub fn own_methods(chains: &[ImportChain]) -> Vec<Option<&str>> {
-    let mut seen: Vec<&[String]> = vec![];
-    chains
+/// For each protein polymer long enough to look up (`MIN_RESIDUES`), whether
+/// it is related to its declared PDB entry (`related`, from
+/// `lookup_polymers`), or `None` when it was not looked up: what
+/// `declared_pdb_not_matched` takes when each polymer was looked up for this
+/// simulation, as in an import
+fn related_flags(
+    queries: &[PolymerQuery],
+    lookups: &[Option<PolymerLookup>],
+    related: &HashSet<usize>,
+) -> Vec<Option<bool>> {
+    queries
         .iter()
-        .filter(|c| c.polymer_type == "protein" && c.residues.len() >= MIN_RESIDUES)
-        .filter(|c| {
-            let new = !seen.contains(&c.residues.as_slice());
-            seen.push(&c.residues);
-            new
-        })
-        .map(|c| c.reference.as_ref().map(|r| r.match_method.as_str()))
+        .enumerate()
+        .filter(|(_, q)| q.polymer_type == "protein" && q.num_residues >= MIN_RESIDUES)
+        .map(|(i, _)| lookups[i].as_ref().map(|_| related.contains(&i)))
         .collect()
+}
+
+/// Every protein polymer was looked up, and none is related to the declared
+/// PDB entry
+fn none_related(related: &[Option<bool>]) -> bool {
+    !related.is_empty() && related.iter().all(|r| *r == Some(false))
 }
 
 // --------------------------------------------------
@@ -1245,7 +1291,7 @@ mod tests {
         cache: &Path,
     ) -> HashMap<usize, Declared> {
         let wanted: Vec<usize> = (0..queries.len()).collect();
-        let (got, _, warnings) =
+        let (got, _, warnings, _) =
             declared_matches(queries, &wanted, sifts, work, Some(cache)).unwrap();
         assert!(warnings.is_empty(), "{warnings:?}");
         got
@@ -1293,7 +1339,7 @@ mod tests {
         cache_with(&cache, &[("P38858", PROTEASE), ("A6ZT71", PROTEASE)]);
         sifts_with(dir.path(), &[]);
         let queries = vec![query(PROTEASE, None, &["p38858"])];
-        let (lookups, warnings) =
+        let (lookups, warnings, _) =
             lookup_polymers(&queries, dir.path(), dir.path(), 1, Some(&cache)).unwrap();
         assert!(warnings.is_empty(), "{warnings:?}");
         let lookup = lookups[0].as_ref().unwrap();
@@ -2055,55 +2101,133 @@ mod tests {
     }
 
     /// A declared PDB ID warns only when SIFTS maps it, every protein
-    /// polymer was looked up, and none matched by SIFTS (84136: 4tq8's
+    /// polymer was looked up, and none is related to it (84136: 4tq8's
     /// transthyretin entry on an epoxide hydrolase)
     #[test]
     fn declared_pdb_that_no_chain_matches_warns() {
         let listed = vec!["P02766".to_string()];
         let got =
-            declared_pdb_not_matched("4tq8", &listed, &[Some(ALIGNED), Some(NONE)])
+            declared_pdb_not_matched("4tq8", &listed, &[Some(false), Some(false)])
                 .unwrap();
         assert!(got.contains(r#""4tq8""#), "{got}");
         assert!(got.contains("P02766"), "{got}");
 
-        // One polymer matched by SIFTS is enough
+        // One related polymer is enough
         assert_eq!(
-            declared_pdb_not_matched("4tq8", &listed, &[Some(NONE), Some(PDB)]),
+            declared_pdb_not_matched("4tq8", &listed, &[Some(false), Some(true)]),
             None
         );
         // A polymer not looked up: not known
         assert_eq!(
-            declared_pdb_not_matched("4tq8", &listed, &[Some(NONE), None]),
+            declared_pdb_not_matched("4tq8", &listed, &[Some(false), None]),
             None
         );
         // Not in SIFTS, or no protein polymer: nothing to compare
-        assert_eq!(declared_pdb_not_matched("4tq8", &[], &[Some(NONE)]), None);
+        assert_eq!(declared_pdb_not_matched("4tq8", &[], &[Some(false)]), None);
         assert_eq!(declared_pdb_not_matched("4tq8", &listed, &[]), None);
     }
 
-    /// Each protein polymer long enough to look up, once, with its own
-    /// lookup's method; `None` for one not looked up
+    /// Protein polymers long enough to look up, each with whether it is
+    /// related, or `None` when not looked up; peptides and DNA left out
     #[test]
-    fn own_methods_of_the_chains() {
-        let looked = |order, seq: &str, method: Option<&str>| {
-            let mut c = chain(order, "protein", seq);
-            c.reference = method.map(|m| PolymerLookup {
-                match_method: m.into(),
-                hit: None,
-            });
-            c
-        };
-        let chains = vec![
-            looked(1, PROTEASE, Some(PDB)),
-            looked(2, PROTEASE, Some(PDB)),
-            looked(3, CALM40, None),
-            looked(4, "ACDEFGHIK", Some(NONE)),
-            {
-                let mut dna = chain(5, "dna", "ACGTACGTACGTACGTACGTACGT");
-                dna.reference = Some(none());
-                dna
+    fn related_flags_of_the_polymers() {
+        let queries = vec![
+            query(PROTEASE, None, &[]),
+            query(CALM40, None, &[]),
+            query("ACDEFGHIK", None, &[]),
+            PolymerQuery {
+                polymer_type: "dna".into(),
+                ..query("ACGTACGTACGTACGTACGTACGT", None, &[])
             },
+            query(&PROTEASE[..50], None, &[]),
         ];
-        assert_eq!(own_methods(&chains), vec![Some(PDB), None]);
+        let lookups =
+            vec![Some(none()), None, Some(none()), Some(none()), Some(none())];
+        let related = HashSet::from([0, 2, 3]);
+        assert_eq!(
+            related_flags(&queries, &lookups, &related),
+            vec![Some(true), None, Some(false)]
+        );
+    }
+
+    /// A polymer is related to its declared PDB entry when a SIFTS accession
+    /// of it aligns at 70% or more over 20 or more residues, whatever the
+    /// coverage; other rows, and rows of accessions SIFTS does not list for
+    /// it, do not count
+    #[test]
+    fn related_to_pdb_rows() {
+        let listed: HashSet<(String, String)> = [
+            ("p0".to_string(), "P01857".to_string()),
+            ("p1".to_string(), "P01857".to_string()),
+            ("p2".to_string(), "P01857".to_string()),
+            ("p3".to_string(), "P01857".to_string()),
+        ]
+        .into();
+        let rows = [
+            // p0: the constant half of a 220-residue Fab chain, 100%
+            blast_row("p0", "P01857", 100.0, 0, (111, 210), 220, 200.0),
+            // p1: 69% identical
+            blast_row("p1", "P01857", 69.0, 31, (1, 100), 220, 80.0),
+            // p2: 19 residues
+            blast_row("p2", "P01857", 100.0, 0, (1, 19), 220, 40.0),
+            // p3: an accession SIFTS does not list for it; p4: no SIFTS
+            blast_row("p3", "sp|P04585|POL_HV1H2", 100.0, 0, (1, 99), 99, 200.0),
+            blast_row("p4", "P01857", 100.0, 0, (1, 99), 99, 200.0),
+        ];
+        assert_eq!(related_to_pdb(&rows, &listed), HashSet::from([0]));
+    }
+
+    /// Step 2 reports which polymers their declared PDB entry is about, by
+    /// blastp: not one whose entry is another protein (84136's case); yes for
+    /// a fusion whose entry SIFTS maps only over a third of it (an antibody's
+    /// constant half), though that is no match; yes when a declared UniProt
+    /// ID outscores the SIFTS accession and becomes the reference (1hxw)
+    #[test]
+    fn declared_step_reports_polymers_related_to_their_pdb() {
+        if !has_blastp() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let cache = dir.path().join("uniprot");
+        // A mutant protease for SIFTS: every tenth residue changed, 90%
+        let mutant: String = PROTEASE
+            .chars()
+            .enumerate()
+            .map(|(i, c)| match (i % 10 == 5, c) {
+                (true, 'A') => 'S',
+                (true, _) => 'A',
+                (false, c) => c,
+            })
+            .collect();
+        cache_with(
+            &cache,
+            &[
+                ("P0DP23", CALM40),
+                ("Q99999", &mutant),
+                ("P04585", PROTEASE),
+            ],
+        );
+        let sifts = sifts_with(
+            dir.path(),
+            &[("9cal", "A", "P0DP23"), ("9mut", "A", "Q99999")],
+        );
+        let queries = vec![
+            query(PROTEASE, Some("9cal"), &[]),
+            query(&format!("{PROTEASE}{CALM40}"), Some("9cal"), &[]),
+            query(PROTEASE, Some("9mut"), &["P04585"]),
+        ];
+        let wanted: Vec<usize> = (0..queries.len()).collect();
+        let (got, _, warnings, related) =
+            declared_matches(&queries, &wanted, &sifts, dir.path(), Some(&cache))
+                .unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(related, HashSet::from([1, 2]));
+        assert_eq!(got[&0], Declared::NoMatch);
+        assert_eq!(got[&1], Declared::NoMatch);
+        let declared = matched(&got, 2);
+        assert_eq!(
+            (declared.accession.as_str(), declared.match_method),
+            ("P04585", DECLARED)
+        );
     }
 }

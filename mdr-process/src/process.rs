@@ -1690,23 +1690,6 @@ pub fn make_import_json(
         &declared_uniprot_ids,
         &chains,
     ));
-    if let Some(pdb_id) = args.meta.pdb_id.as_deref() {
-        let sifts = args.blast_dir.join(reference::PDB_SIFTS);
-        let code = pdb_id.to_lowercase();
-        if sifts.is_file() {
-            match reference::sifts_accessions(&sifts, &[code.clone()].into()) {
-                Ok(mut listed) => {
-                    reference_warnings.extend(reference::declared_pdb_not_matched(
-                        pdb_id,
-                        &listed.remove(&code).unwrap_or_default(),
-                        &reference::own_methods(&chains),
-                    ))
-                }
-                Err(e) => reference_warnings
-                    .push(format!("The declared PDB ID was not checked: {e}")),
-            }
-        }
-    }
     let blast_elapsed = blast_start.elapsed();
 
     let (ligands, ligand_warnings) = resolve_ligands(
