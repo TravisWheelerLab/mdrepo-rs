@@ -445,15 +445,7 @@ pub fn declared_matches(
         })
         .collect();
     let coverage = sifts_coverage(&rows, &sifts_listed);
-    let pass = |hit: &PolymerBlastHit| {
-        let pair = (hit.qaccver.clone(), accession(&hit.saccver));
-        (hit.qlen > 0
-            && identity(hit) >= MIN_SIFTS_IDENTITY
-            && coverage
-                .get(&pair)
-                .is_some_and(|&n| n as f64 / hit.qlen as f64 >= MIN_SIFTS_COVERAGE))
-            || passes(hit)
-    };
+    let pass = |hit: &PolymerBlastHit| passes_sifts(hit, &coverage) || passes(hit);
     let representatives = representatives(&top_ties_by(&rows, &pass), uniprot_cache);
     let best = best_hits_by(&rows, &representatives, &pass);
 
@@ -527,6 +519,23 @@ fn sifts_coverage(
             (pair, total)
         })
         .collect()
+}
+
+/// Whether a row of a SIFTS accession passes: at `MIN_SIFTS_IDENTITY` or
+/// more itself, and its accession's rows (`coverage`, from `sifts_coverage`)
+/// covering `MIN_SIFTS_COVERAGE` of the chain together. A row whose
+/// accession is not in `coverage` (not listed by SIFTS for this chain, or
+/// no row at 70%) does not.
+fn passes_sifts(
+    hit: &PolymerBlastHit,
+    coverage: &HashMap<(String, String), u32>,
+) -> bool {
+    let pair = (hit.qaccver.clone(), accession(&hit.saccver));
+    hit.qlen > 0
+        && identity(hit) >= MIN_SIFTS_IDENTITY
+        && coverage
+            .get(&pair)
+            .is_some_and(|&n| n as f64 / hit.qlen as f64 >= MIN_SIFTS_COVERAGE)
 }
 
 /// One `blastp` of `members` (FASTA IDs `p<i>`) against the sequences of
@@ -1518,9 +1527,77 @@ mod tests {
         ];
         assert_eq!(cover(&distant), 50);
 
+        // Two inserts: three rows, all counted
+        let three = [
+            row((1, 40), (1, 40), 100.0, 80.0),
+            row((61, 100), (41, 80), 100.0, 79.0),
+            row((121, 160), (81, 120), 100.0, 78.0),
+        ];
+        assert_eq!(cover(&three), 120);
+
+        // Taken by bit score, not file order: the full row first, so a
+        // lower one out of order with it adds nothing (in file order, the
+        // low row would be counted and the full one refused: 50)
+        let low_first = [
+            row((101, 150), (1, 50), 100.0, 60.0),
+            row((1, 100), (1, 100), 100.0, 180.0),
+        ];
+        assert_eq!(cover(&low_first), 100);
+
         // A pair SIFTS does not list is absent
         let other = [blast_row("p1", "P04585", 100.0, 0, (1, 99), 99, 180.0)];
         assert!(sifts_coverage(&other, &listed).is_empty());
+
+        // Each listed pair is counted on its own rows, and a search
+        // database's `sp|...|` name is read as its accession
+        let listed2: HashSet<(String, String)> = [
+            ("p0".to_string(), "P04585".to_string()),
+            ("p0".to_string(), "P0DP23".to_string()),
+        ]
+        .into();
+        let mixed = [
+            row((1, 50), (1, 50), 100.0, 100.0),
+            PolymerBlastHit {
+                sstart: 1,
+                send: 30,
+                ..blast_row("p0", "sp|P0DP23|CALM_HUMAN", 100.0, 0, (60, 89), 200, 50.0)
+            },
+        ];
+        let got = sifts_coverage(&mixed, &listed2);
+        assert_eq!(got[&pair], 50);
+        assert_eq!(got[&("p0".to_string(), "P0DP23".to_string())], 30);
+    }
+
+    /// A SIFTS row passes on its accession's coverage together, at half the
+    /// chain or more, when the row itself is 70% identical
+    #[test]
+    fn passes_sifts_rule() {
+        let pair = ("p0".to_string(), "P04585".to_string());
+        let coverage = |n: u32| HashMap::from([(pair.clone(), n)]);
+        let hit = blast_row("p0", "P04585", 100.0, 0, (1, 50), 200, 100.0);
+
+        // The row is 25% of the chain; its accession's rows 50% or more
+        assert!(passes_sifts(&hit, &coverage(100)));
+        assert!(passes_sifts(&hit, &coverage(150)));
+        assert!(!passes_sifts(&hit, &coverage(99)));
+
+        // Under 70% itself, whatever the coverage
+        let low = blast_row("p0", "P04585", 60.0, 0, (1, 50), 200, 100.0);
+        assert!(!passes_sifts(&low, &coverage(200)));
+
+        // Not in `coverage`: another accession, or another chain
+        assert!(!passes_sifts(&hit, &HashMap::new()));
+        let other = blast_row("p0", "P0DP23", 100.0, 0, (1, 50), 200, 100.0);
+        assert!(!passes_sifts(&other, &coverage(200)));
+        let chain = blast_row("p1", "P04585", 100.0, 0, (1, 50), 200, 100.0);
+        assert!(!passes_sifts(&chain, &coverage(200)));
+
+        // A row with no chain length never passes
+        let empty = PolymerBlastHit {
+            qlen: 0,
+            ..hit.clone()
+        };
+        assert!(!passes_sifts(&empty, &coverage(200)));
     }
 
     /// A structure file with residues `(number, one-letter)` laid as a
