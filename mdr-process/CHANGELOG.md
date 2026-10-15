@@ -29,7 +29,10 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   simulation decided, logs the warning, counts it, and adds a column
   `pdb_id_check` (`no match`) to its report. A warning, not an error: the
   structure is what was simulated. It does not see a system with one
-  right protein and one foreign (2wva, 5hi4, 5km5, 5v03).
+  right protein and one foreign (2wva, 5hi4, 5km5, 5v03). On 3,023
+  simulations (the 21 and 3,002 random) it flagged 24: 17 of the 21, and
+  7 whose PDB ID is right but only a part SIFTS does not map was
+  simulated (a Fab, a peptide; about 0.2%), which the warning says.
   `declared_matches` and `lookup_polymers` return the related set too.
 
 ## 0.12.0 (unreleased)

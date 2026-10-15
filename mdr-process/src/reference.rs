@@ -1114,6 +1114,9 @@ fn best_hits_by(
 /// hydrolase 2 (2026-10-15). A warning, not an error: the structure is what
 /// was simulated, and the PDB ID is metadata to correct. It does not see a
 /// system with one right protein and one foreign (2wva, 5hi4, 5km5, 5v03).
+/// It also fires when only an unmapped part of the entry was simulated: 7
+/// of 3,000 random simulations (a Fab of 3u0t, 8tmz, 6uud; 6okd's peptide;
+/// 3cf6's Epac2, where SIFTS maps only Rap1b; 1lbk's GST chimera).
 pub fn declared_pdb_not_matched(
     pdb_id: &str,
     listed: &[String],
@@ -1123,7 +1126,7 @@ pub fn declared_pdb_not_matched(
         return None;
     }
     Some(format!(
-        r#"PDB ID "{pdb_id}" was declared, but no chain matches a UniProt entry that PDBe maps to it ({}): is it the PDB entry that was simulated?"#,
+        r#"PDB ID "{pdb_id}" was declared, but no chain matches a UniProt entry that PDBe maps to it ({}). Check that it is the entry that was simulated. This is expected when only a part PDBe does not map was simulated, such as an antibody or a peptide."#,
         listed.join(", ")
     ))
 }
