@@ -11,6 +11,30 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.13.0 (unreleased)
+
+- **A warning when the declared PDB ID matches no chain** (Ken,
+  2026-10-15). 21 PLAS-20K simulations declare the PDB entry of another
+  protein (84136: 4tq8, transthyretin, on an epoxide hydrolase 2 chain),
+  and nothing said so: the SIFTS candidates failed and the chain went to
+  the search. Now step 2 also notes which polymers a SIFTS accession of
+  their declared entry aligns to at 70% identity or more over 20 or more
+  residues, at any coverage (`related_to_pdb`), and when SIFTS maps the
+  entry, every protein polymer was looked up, and none is related, the
+  import warns (`declared_pdb_not_matched`, from `lookup_chains`). Looser
+  than the SIFTS rule on purpose, so a Fab whose entry SIFTS maps only
+  over its constant half, or a chain whose declared UniProt ID outscores
+  the SIFTS accession, is not flagged. The backfill judges each
+  simulation by its own declared IDs, not by a reference another
+  simulation decided, logs the warning, counts it, and adds a column
+  `pdb_id_check` (`no match`) to its report. A warning, not an error: the
+  structure is what was simulated. It does not see a system with one
+  right protein and one foreign (2wva, 5hi4, 5km5, 5v03). On 3,023
+  simulations (the 21 and 3,002 random) it flagged 24: 17 of the 21, and
+  7 whose PDB ID is right but only a part SIFTS does not map was
+  simulated (a Fab, a peptide; about 0.2%), which the warning says.
+  `declared_matches` and `lookup_polymers` return the related set too.
+
 ## 0.12.0 (unreleased)
 
 - **A SIFTS accession split by an insert is taken** (Ken, 2026-10-15). A
