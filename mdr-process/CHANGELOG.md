@@ -11,6 +11,21 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.13.0 (unreleased)
+
+- **A warning when the declared PDB ID matches no chain** (Ken,
+  2026-10-15). 21 PLAS-20K simulations declare the PDB entry of another
+  protein (84136: 4tq8, transthyretin, on an epoxide hydrolase 2 chain),
+  and nothing said so: the SIFTS candidates failed and the chain went to
+  the search. Now, when SIFTS maps the declared entry and no protein
+  chain matches one of its entries by step 2's SIFTS rule, the import
+  warns (`reference::declared_pdb_not_matched`). The backfill judges
+  each simulation by its own lookups, not by a reference another
+  simulation decided, logs the warning, counts it, and adds a column
+  `pdb_id_check` (`no match`) to its report. No warning when a polymer
+  could not be looked up or the entry is not in SIFTS. A warning, not an
+  error: the structure is what was simulated.
+
 ## 0.12.0 (unreleased)
 
 - **A SIFTS accession split by an insert is taken** (Ken, 2026-10-15). A

@@ -43,7 +43,7 @@ use anyhow::{Result, anyhow, bail};
 use log::{debug, info, warn};
 use rayon::prelude::*;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env,
     fs::{self, File},
     io::Write,
@@ -123,7 +123,7 @@ pub fn backfill_chains(args: &BackfillArgs) -> Result<()> {
     for warning in &warnings {
         warn!("{warning}");
     }
-    let disagreeing = disagreements(
+    let (disagreeing, own) = disagreements(
         &queries,
         &lookups,
         &sharing,
@@ -131,6 +131,18 @@ pub fn backfill_chains(args: &BackfillArgs) -> Result<()> {
         &args.work_dir.join("disagreements"),
         &cache,
     )?;
+
+    // The UniProt entries SIFTS lists for each declared PDB ID, read once
+    let sifts = blast_dir.join(reference::PDB_SIFTS);
+    let listed = if sifts.is_file() {
+        let pdb_ids: HashSet<String> = rows
+            .iter()
+            .filter_map(|r| r.pdb_id.as_ref().map(|p| p.to_lowercase()))
+            .collect();
+        reference::sifts_accessions(&sifts, &pdb_ids)?
+    } else {
+        HashMap::new()
+    };
 
     // Write, simulation by simulation, in ID order
     let mut conn = match (&args.server, args.dry_run) {
@@ -149,10 +161,12 @@ pub fn backfill_chains(args: &BackfillArgs) -> Result<()> {
         out,
         "simulation_id\tpdb_id\tstatus\tchain_order\tchain_label\tpolymer_type\t\
          num_residues\tbreaks\tmatch_method\taccession\tquery_start\tquery_end\t\
-         reference_start\treference_end\tidentity\tdecided_by\tdisagreeing_sims"
+         reference_start\treference_end\tidentity\tdecided_by\tdisagreeing_sims\t\
+         pdb_id_check"
     )?;
     let (mut written, mut had_chains, mut references_set, mut replaced, mut failed) =
         (0, 0, 0, 0, 0);
+    let mut pdb_mismatches = 0;
     for (row, chains) in rows.iter().zip(split) {
         let pdb = row.pdb_id.as_deref().unwrap_or("");
         let mut chains = match chains {
@@ -168,6 +182,19 @@ pub fn backfill_chains(args: &BackfillArgs) -> Result<()> {
             let i = keys[&(chain.polymer_type.clone(), chain.residues.clone())];
             chain.reference = lookups[i].clone();
             polymer_of.push(i);
+        }
+        let pdb_check = pdb_check(
+            row,
+            &polymer_of,
+            &queries,
+            &lookups,
+            &decided_by,
+            &own,
+            &listed,
+        );
+        if let Some(warning) = &pdb_check {
+            pdb_mismatches += 1;
+            warn!("{}: {warning}", row.simulation_id);
         }
 
         let status = match conn.as_mut() {
@@ -211,7 +238,7 @@ pub fn backfill_chains(args: &BackfillArgs) -> Result<()> {
         for (chain, &i) in chains.iter().zip(&polymer_of) {
             writeln!(
                 out,
-                "{}\t{pdb}\t{status}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{pdb}\t{status}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 row.simulation_id,
                 chain.chain_order,
                 chain.chain_label,
@@ -221,17 +248,20 @@ pub fn backfill_chains(args: &BackfillArgs) -> Result<()> {
                 report_lookup(chain.reference.as_ref()),
                 decided_by[i],
                 disagreeing[i],
+                if pdb_check.is_some() { "no match" } else { "" },
             )?;
         }
     }
     info!(
         "{} written, {} chains replaced, {} had chains ({} untried polymers \
-         given a reference), {} failed (report: {})",
+         given a reference), {} failed, {} with a PDB ID no chain matches \
+         (report: {})",
         written,
         replaced,
         had_chains,
         references_set,
         failed,
+        pdb_mismatches,
         args.out.display()
     );
     Ok(())
@@ -295,9 +325,14 @@ fn chains_of(structure: &Path) -> Result<Vec<ImportChain>> {
         .collect())
 }
 
+/// Each other simulation's own step 2 for a polymer it shares: (polymer,
+/// simulation ID) -> outcome
+type OwnMatches = HashMap<(usize, i64), Declared>;
+
 /// For each polymer, how many of the other simulations sharing it would
 /// have matched their own declared candidates (step 2) to a different
-/// accession than the one decided. Their BLAST files go in `work_dir`.
+/// accession than the one decided; and each of those simulations' own
+/// outcome, for the PDB ID check. Their BLAST files go in `work_dir`.
 fn disagreements(
     queries: &[PolymerQuery],
     lookups: &[Option<PolymerLookup>],
@@ -305,16 +340,17 @@ fn disagreements(
     blast_dir: &Path,
     work_dir: &Path,
     cache: &Path,
-) -> Result<Vec<usize>> {
+) -> Result<(Vec<usize>, OwnMatches)> {
     let mut counts = vec![0; queries.len()];
+    let mut own = HashMap::new();
     let sifts = blast_dir.join(reference::PDB_SIFTS);
     if !sifts.is_file() {
-        return Ok(counts);
+        return Ok((counts, own));
     }
 
     // One query per polymer and other simulation that declares something
     let mut others: Vec<PolymerQuery> = vec![];
-    let mut polymer_of: Vec<usize> = vec![];
+    let mut polymer_of: Vec<(usize, i64)> = vec![];
     for (i, q) in queries.iter().enumerate() {
         if q.polymer_type != "protein" || q.num_residues < reference::MIN_RESIDUES {
             continue;
@@ -328,17 +364,17 @@ fn disagreements(
                 uniprot_ids: row.uniprot_ids.clone(),
                 ..q.clone()
             });
-            polymer_of.push(i);
+            polymer_of.push((i, row.simulation_id));
         }
     }
     if others.is_empty() {
-        return Ok(counts);
+        return Ok((counts, own));
     }
 
     let wanted: Vec<usize> = (0..others.len()).collect();
     let (declared, _, _) =
         reference::declared_matches(&others, &wanted, &sifts, work_dir, Some(cache))?;
-    for (j, &i) in polymer_of.iter().enumerate() {
+    for (j, &(i, sim)) in polymer_of.iter().enumerate() {
         let decided = lookups[i]
             .as_ref()
             .and_then(|l| l.hit.as_ref())
@@ -349,8 +385,51 @@ fn disagreements(
         {
             counts[i] += 1;
         }
+        if let Some(outcome) = declared.get(&j) {
+            own.insert((i, sim), outcome.clone());
+        }
     }
-    Ok(counts)
+    Ok((counts, own))
+}
+
+/// The PDB ID check (`reference::declared_pdb_not_matched`) for one
+/// simulation, from its own lookups: a polymer it decided, by its lookup;
+/// one another simulation decided, by its own step 2 (`own`), where no
+/// match means not by SIFTS
+fn pdb_check(
+    row: &Row,
+    polymers: &[usize],
+    queries: &[PolymerQuery],
+    lookups: &[Option<PolymerLookup>],
+    decided_by: &[i64],
+    own: &OwnMatches,
+    listed: &HashMap<String, Vec<String>>,
+) -> Option<String> {
+    let pdb_id = row.pdb_id.as_deref()?;
+    let listed = listed.get(&pdb_id.to_lowercase())?;
+    let mut seen = vec![];
+    let methods: Vec<Option<&str>> = polymers
+        .iter()
+        .filter(|&&i| {
+            let q = &queries[i];
+            let new = !seen.contains(&i);
+            seen.push(i);
+            new && q.polymer_type == "protein"
+                && q.num_residues >= reference::MIN_RESIDUES
+        })
+        .map(|&i| {
+            if decided_by[i] == row.simulation_id {
+                lookups[i].as_ref().map(|l| l.match_method.as_str())
+            } else {
+                match own.get(&(i, row.simulation_id)) {
+                    Some(Declared::Match(c)) => Some(c.match_method),
+                    Some(Declared::NoMatch) => Some(reference::NONE),
+                    Some(Declared::Unfinished) | None => None,
+                }
+            }
+        })
+        .collect();
+    reference::declared_pdb_not_matched(pdb_id, listed, &methods)
 }
 
 /// match_method, accession, query and reference ranges, identity
@@ -373,5 +452,106 @@ fn report_lookup(lookup: Option<&PolymerLookup>) -> String {
             h.reference_end,
             h.identity
         ),
+    }
+}
+
+// --------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reference::{ALIGNED, Candidate, NONE, PDB};
+
+    fn row(id: i64, pdb: &str) -> Row {
+        Row {
+            simulation_id: id,
+            pdb_id: Some(pdb.into()),
+            structure: PathBuf::new(),
+            uniprot_ids: vec![],
+        }
+    }
+
+    fn protein(n: usize) -> PolymerQuery {
+        PolymerQuery {
+            polymer_type: "protein".into(),
+            num_residues: n,
+            sequence: "A".repeat(n),
+            pdb_id: None,
+            uniprot_ids: vec![],
+        }
+    }
+
+    fn lookup(method: &str) -> Option<PolymerLookup> {
+        Some(PolymerLookup {
+            match_method: method.into(),
+            hit: None,
+        })
+    }
+
+    fn matched(method: &'static str) -> Declared {
+        Declared::Match(Candidate {
+            match_method: method,
+            accession: "P34913".into(),
+            query_start: 1,
+            query_end: 100,
+            reference_start: 1,
+            reference_end: 100,
+            identity: 100.0,
+        })
+    }
+
+    /// A polymer the simulation decided is judged by its lookup; one
+    /// another simulation decided, by the simulation's own step 2, so a
+    /// reference matched through someone else's PDB ID does not hide a
+    /// wrong one (84136 shares its polymer with 11551, 3wk5)
+    #[test]
+    fn pdb_check_uses_each_simulations_own_match() {
+        // Polymer 0: decided by 11551 by SIFTS (its 3wk5). Polymer 1: a
+        // peptide, too short to count.
+        let queries = vec![protein(546), protein(9)];
+        let lookups = vec![lookup(PDB), lookup(NONE)];
+        let decided_by = vec![11551, 84136];
+        let listed: HashMap<String, Vec<String>> = [
+            ("4tq8".to_string(), vec!["P02766".to_string()]),
+            ("3wk5".to_string(), vec!["P34913".to_string()]),
+        ]
+        .into();
+        let check = |sim: &Row, own: &OwnMatches| {
+            pdb_check(
+                sim,
+                &[0, 0, 1],
+                &queries,
+                &lookups,
+                &decided_by,
+                own,
+                &listed,
+            )
+        };
+
+        // 84136's own 4tq8 candidates do not match: warned, though the
+        // decided reference came by SIFTS
+        let own: OwnMatches = [((0, 84136), Declared::NoMatch)].into();
+        assert!(check(&row(84136, "4tq8"), &own).unwrap().contains("4tq8"));
+
+        // Its own step 2 matching by SIFTS, or by a declared UniProt ID
+        let own: OwnMatches = [((0, 84136), matched(PDB))].into();
+        assert_eq!(check(&row(84136, "4TQ8"), &own), None);
+        let own: OwnMatches = [((0, 84136), matched(ALIGNED))].into();
+        assert!(check(&row(84136, "4tq8"), &own).is_some());
+
+        // Not known (a fetch failed, or no step 2 recorded): no warning
+        let own: OwnMatches = [((0, 84136), Declared::Unfinished)].into();
+        assert_eq!(check(&row(84136, "4tq8"), &own), None);
+        assert_eq!(check(&row(84136, "4tq8"), &HashMap::new()), None);
+
+        // The decider is judged by its lookup
+        assert_eq!(check(&row(11551, "3wk5"), &HashMap::new()), None);
+
+        // A PDB ID SIFTS does not list, or none: no check
+        assert_eq!(check(&row(84136, "9zzz"), &HashMap::new()), None);
+        let no_pdb = Row {
+            pdb_id: None,
+            ..row(84136, "")
+        };
+        assert_eq!(check(&no_pdb, &HashMap::new()), None);
     }
 }

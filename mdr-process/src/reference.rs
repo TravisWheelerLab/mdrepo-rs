@@ -1051,6 +1051,54 @@ fn best_hits_by(
 }
 
 // --------------------------------------------------
+/// A warning when the declared PDB ID looks wrong: SIFTS maps the entry to
+/// UniProt (`listed`), but no protein chain of the simulation matched one of
+/// those entries by step 2's SIFTS rule. `own_methods` is the match_method
+/// each of the simulation's protein polymers got from its OWN declared IDs
+/// (`None`: not looked up, e.g. a UniProt fetch failed), so a backfill must
+/// not pass a reference that another simulation decided. No warning when
+/// anything was not looked up, or the entry is not in SIFTS (nothing to
+/// compare). 21 PLAS-20K simulations declare a PDB entry of another
+/// protein, e.g. 84136: 4tq8 (transthyretin) with epoxide hydrolase 2
+/// (2026-10-15). A warning, not an error: the structure is what was
+/// simulated, and the PDB ID is metadata to correct.
+pub fn declared_pdb_not_matched(
+    pdb_id: &str,
+    listed: &[String],
+    own_methods: &[Option<&str>],
+) -> Option<String> {
+    if listed.is_empty()
+        || own_methods.is_empty()
+        || own_methods.iter().any(Option::is_none)
+        || own_methods.contains(&Some(PDB))
+    {
+        return None;
+    }
+    Some(format!(
+        r#"PDB ID "{pdb_id}" was declared, but no chain matches a UniProt entry that PDBe maps to it ({}): is it the PDB entry that was simulated?"#,
+        listed.join(", ")
+    ))
+}
+
+/// The match_method of each protein polymer of `chains` long enough to be
+/// looked up (`MIN_RESIDUES`), each polymer once, from the chains' own
+/// lookup: what `declared_pdb_not_matched` takes when the chains were
+/// looked up for this simulation alone, as in an import
+pub fn own_methods(chains: &[ImportChain]) -> Vec<Option<&str>> {
+    let mut seen: Vec<&[String]> = vec![];
+    chains
+        .iter()
+        .filter(|c| c.polymer_type == "protein" && c.residues.len() >= MIN_RESIDUES)
+        .filter(|c| {
+            let new = !seen.contains(&c.residues.as_slice());
+            seen.push(&c.residues);
+            new
+        })
+        .map(|c| c.reference.as_ref().map(|r| r.match_method.as_str()))
+        .collect()
+}
+
+// --------------------------------------------------
 /// A warning for each declared accession that is no chain's reference, when
 /// some chain has one. The link from the TOML is kept regardless (item 5).
 pub fn declared_not_referenced(
@@ -2004,5 +2052,58 @@ mod tests {
 
         a.reference = Some(none());
         assert!(declared_not_referenced(&declared, &[a]).is_empty());
+    }
+
+    /// A declared PDB ID warns only when SIFTS maps it, every protein
+    /// polymer was looked up, and none matched by SIFTS (84136: 4tq8's
+    /// transthyretin entry on an epoxide hydrolase)
+    #[test]
+    fn declared_pdb_that_no_chain_matches_warns() {
+        let listed = vec!["P02766".to_string()];
+        let got =
+            declared_pdb_not_matched("4tq8", &listed, &[Some(ALIGNED), Some(NONE)])
+                .unwrap();
+        assert!(got.contains(r#""4tq8""#), "{got}");
+        assert!(got.contains("P02766"), "{got}");
+
+        // One polymer matched by SIFTS is enough
+        assert_eq!(
+            declared_pdb_not_matched("4tq8", &listed, &[Some(NONE), Some(PDB)]),
+            None
+        );
+        // A polymer not looked up: not known
+        assert_eq!(
+            declared_pdb_not_matched("4tq8", &listed, &[Some(NONE), None]),
+            None
+        );
+        // Not in SIFTS, or no protein polymer: nothing to compare
+        assert_eq!(declared_pdb_not_matched("4tq8", &[], &[Some(NONE)]), None);
+        assert_eq!(declared_pdb_not_matched("4tq8", &listed, &[]), None);
+    }
+
+    /// Each protein polymer long enough to look up, once, with its own
+    /// lookup's method; `None` for one not looked up
+    #[test]
+    fn own_methods_of_the_chains() {
+        let looked = |order, seq: &str, method: Option<&str>| {
+            let mut c = chain(order, "protein", seq);
+            c.reference = method.map(|m| PolymerLookup {
+                match_method: m.into(),
+                hit: None,
+            });
+            c
+        };
+        let chains = vec![
+            looked(1, PROTEASE, Some(PDB)),
+            looked(2, PROTEASE, Some(PDB)),
+            looked(3, CALM40, None),
+            looked(4, "ACDEFGHIK", Some(NONE)),
+            {
+                let mut dna = chain(5, "dna", "ACGTACGTACGTACGTACGTACGT");
+                dna.reference = Some(none());
+                dna
+            },
+        ];
+        assert_eq!(own_methods(&chains), vec![Some(PDB), None]);
     }
 }
