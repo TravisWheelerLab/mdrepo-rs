@@ -11,7 +11,8 @@
 //!    the chain by `blastp -subject`, with no database. A SIFTS accession is
 //!    PDBe's assignment and is taken whenever BLAST aligns it over at least
 //!    `MIN_SIFTS_COVERAGE` of the chain (a guard against a wrong declared
-//!    PDB ID) at `MIN_SIFTS_IDENTITY` or more, with no mismatch limit, so a
+//!    PDB ID) at `MIN_SIFTS_IDENTITY` or more, in one piece or in several
+//!    (`sifts_coverage`: a protein with an insert), with no mismatch limit, so a
 //!    mutant or engineered construct keeps its entry, as in 0.6.0 (Ken,
 //!    2026-10-13, after the DDD dry run); a declared UniProt ID must pass the
 //!    pass rule below. The identity floor is there because SIFTS lists
@@ -433,7 +434,7 @@ pub fn declared_matches(
         rows.extend(hits?);
     }
     // A SIFTS accession passes when BLAST aligns it over half the chain at
-    // 70% identity or more
+    // 70% identity or more, in one piece or several (`sifts_coverage`)
     let sifts_listed: HashSet<(String, String)> = candidates
         .iter()
         .flat_map(|(&i, found)| {
@@ -443,11 +444,14 @@ pub fn declared_matches(
                 .map(move |(acc, _)| (format!("p{i}"), acc.clone()))
         })
         .collect();
+    let coverage = sifts_coverage(&rows, &sifts_listed);
     let pass = |hit: &PolymerBlastHit| {
-        (sifts_listed.contains(&(hit.qaccver.clone(), accession(&hit.saccver)))
-            && hit.qlen > 0
-            && covered(hit) as f64 / hit.qlen as f64 >= MIN_SIFTS_COVERAGE
-            && identity(hit) >= MIN_SIFTS_IDENTITY)
+        let pair = (hit.qaccver.clone(), accession(&hit.saccver));
+        (hit.qlen > 0
+            && identity(hit) >= MIN_SIFTS_IDENTITY
+            && coverage
+                .get(&pair)
+                .is_some_and(|&n| n as f64 / hit.qlen as f64 >= MIN_SIFTS_COVERAGE))
             || passes(hit)
     };
     let representatives = representatives(&top_ties_by(&rows, &pass), uniprot_cache);
@@ -467,6 +471,62 @@ pub fn declared_matches(
         outcome.insert(i, result);
     }
     Ok((outcome, entries, warnings))
+}
+
+/// For each (FASTA ID, accession) in `listed`, our residues that its BLAST
+/// rows at `MIN_SIFTS_IDENTITY` or more cover together. A protein with
+/// another inserted in a loop (CXCR4 with T4 lysozyme, 3odu) comes back
+/// from BLAST as two rows, one each side of the insert, each under half the
+/// chain; together they are 63% of it (sim 10488, 2026-10-15). The rows are
+/// taken by bit score; a row counts only if it runs in the same order as
+/// those counted before, in our chain and in the entry, and only for what
+/// it adds: residues already counted, in our chain or in the entry, are
+/// taken off (BLAST's rows can share a few residues at the insert). So a
+/// repeat cannot count twice: a second row on the same residues of the
+/// entry adds nothing.
+fn sifts_coverage(
+    rows: &[PolymerBlastHit],
+    listed: &HashSet<(String, String)>,
+) -> HashMap<(String, String), u32> {
+    let span = |a: u32, b: u32| (a.min(b), a.max(b));
+    let overlap =
+        |x: (u32, u32), y: (u32, u32)| (x.1.min(y.1) + 1).saturating_sub(x.0.max(y.0));
+    let mut by_pair: HashMap<(String, String), Vec<&PolymerBlastHit>> = HashMap::new();
+    for hit in rows {
+        let pair = (hit.qaccver.clone(), accession(&hit.saccver));
+        if listed.contains(&pair) && identity(hit) >= MIN_SIFTS_IDENTITY {
+            by_pair.entry(pair).or_default().push(hit);
+        }
+    }
+    by_pair
+        .into_iter()
+        .map(|(pair, mut hits)| {
+            hits.sort_by(|a, b| {
+                b.bitscore
+                    .total_cmp(&a.bitscore)
+                    .then_with(|| a.qstart.cmp(&b.qstart))
+            });
+            let mut kept: Vec<((u32, u32), (u32, u32))> = vec![];
+            let mut total = 0;
+            for hit in hits {
+                let q = span(hit.qstart, hit.qend);
+                let s = span(hit.sstart, hit.send);
+                if !kept.iter().all(|&(kq, ks)| (q.0 < kq.0) == (s.0 < ks.0)) {
+                    continue;
+                }
+                let shared: u32 = kept
+                    .iter()
+                    .map(|&(kq, ks)| overlap(q, kq).max(overlap(s, ks)))
+                    .sum();
+                let adds = (q.1 - q.0 + 1).saturating_sub(shared);
+                if adds > 0 {
+                    total += adds;
+                    kept.push((q, s));
+                }
+            }
+            (pair, total)
+        })
+        .collect()
 }
 
 /// One `blastp` of `members` (FASTA IDs `p<i>`) against the sequences of
@@ -1375,6 +1435,92 @@ mod tests {
             ("P04585", PDB)
         );
         assert_eq!((fused.query_start, fused.query_end), (1, 99));
+    }
+
+    /// The protease with 80 residues inserted after its 50th (3odu's CXCR4
+    /// with T4 lysozyme in a loop): BLAST gives two rows, 1-50 and 129-179,
+    /// each 28% of the chain, sharing two residues of the entry at the
+    /// insert. Together they are 55%, so the SIFTS accession is taken, with
+    /// the range of the row with the top bit score. Declared only by UniProt
+    /// ID, it still fails.
+    #[test]
+    fn a_sifts_accession_split_by_an_insert_is_taken() {
+        if !has_blastp() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let cache = dir.path().join("uniprot");
+        cache_with(&cache, &[("P04585", PROTEASE)]);
+        let sifts = sifts_with(dir.path(), &[("9iii", "A", "P04585")]);
+        let inserted =
+            format!("{}{CALM40}{CALM40}{}", &PROTEASE[..50], &PROTEASE[50..]);
+        let queries = vec![
+            query(&inserted, Some("9iii"), &[]),
+            query(&inserted, None, &["P04585"]),
+        ];
+        let got = declared(&queries, &sifts, dir.path(), &cache);
+        let split = matched(&got, 0);
+        assert_eq!(
+            (split.accession.as_str(), split.match_method),
+            ("P04585", PDB)
+        );
+        assert_eq!(split.identity, 100.0);
+        assert!(
+            [(1, 50), (129, 179)].contains(&(split.query_start, split.query_end)),
+            "{split:?}"
+        );
+        assert_eq!(got[&1], Declared::NoMatch);
+    }
+
+    /// Rows count together only in the same order in the chain and the
+    /// entry, and only for the residues they add: a repeat's second row on
+    /// the same residues of the entry adds nothing, and a row under 70%
+    /// identity is not counted
+    #[test]
+    fn sifts_coverage_counts_each_residue_once() {
+        let row = |qse: (u32, u32), sse: (u32, u32), pident: f64, bits: f64| {
+            PolymerBlastHit {
+                sstart: sse.0,
+                send: sse.1,
+                ..blast_row("p0", "P04585", pident, 0, qse, 200, bits)
+            }
+        };
+        let listed: HashSet<(String, String)> =
+            [("p0".to_string(), "P04585".to_string())].into();
+        let pair = ("p0".to_string(), "P04585".to_string());
+        let cover = |rows: &[PolymerBlastHit]| sifts_coverage(rows, &listed)[&pair];
+
+        // An insert: 1-50 and 129-179 on the entry's 1-50 and 49-99
+        let insert = [
+            row((1, 50), (1, 50), 100.0, 100.0),
+            row((129, 179), (49, 99), 100.0, 99.0),
+        ];
+        assert_eq!(cover(&insert), 99);
+
+        // A repeat: two units of ours on the same 40 residues of the entry
+        let repeat = [
+            row((1, 40), (10, 49), 100.0, 80.0),
+            row((41, 80), (10, 49), 100.0, 79.0),
+        ];
+        assert_eq!(cover(&repeat), 40);
+
+        // Out of order: our second half on the entry's first half
+        let swapped = [
+            row((1, 50), (51, 100), 100.0, 100.0),
+            row((101, 150), (1, 50), 100.0, 99.0),
+        ];
+        assert_eq!(cover(&swapped), 50);
+
+        // A row under 70% identity is not counted
+        let distant = [
+            row((1, 50), (1, 50), 100.0, 100.0),
+            row((101, 150), (51, 100), 60.0, 40.0),
+        ];
+        assert_eq!(cover(&distant), 50);
+
+        // A pair SIFTS does not list is absent
+        let other = [blast_row("p1", "P04585", 100.0, 0, (1, 99), 99, 180.0)];
+        assert!(sifts_coverage(&other, &listed).is_empty());
     }
 
     /// A structure file with residues `(number, one-letter)` laid as a
