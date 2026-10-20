@@ -510,7 +510,9 @@ fn upsert_simulation(
                 protonation_method: Some(sim.protonation_method.clone()),
                 is_placeholder: Some(is_placeholder),
                 is_deprecated: Some(is_deprecated),
-                is_embargoed: Some(sim.is_embargoed.unwrap_or(false)),
+                // is_embargoed is left alone: after the first import the
+                // site owns it (admin toggle, My Simulations release), and
+                // the TOML would undo those changes (MDR-100).
                 is_coarse_grained: Some(sim.is_coarse_grained.unwrap_or(false)),
                 // Only overwrite the ticket link when this run has one; a
                 // ticket-less reprocess leaves the existing value untouched.

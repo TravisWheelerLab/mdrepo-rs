@@ -1113,3 +1113,86 @@ fn replace_structure_chains_splits_a_merged_chain() {
         declared_id
     );
 }
+
+/// Reprocess `sim_id` with `sim`, keeping its files
+fn reprocess(c: &mut PgConnection, sim_id: i64, sim: &ExportSimulation) {
+    let opts = ImportOpts {
+        reprocess_simulation_id: Some(sim_id as u64),
+        replace_original_files: false,
+        ticket_id: None,
+    };
+    let id =
+        import::import_simulation(c, sim, &opts).expect("reprocess should succeed");
+    assert_eq!(id, sim_id);
+}
+
+/// Set is_embargoed on the row, as the site's admin toggle and My
+/// Simulations release do
+fn set_embargo(c: &mut PgConnection, sim_id: i64, value: bool) {
+    ops::update_simulation(
+        c,
+        sim_id,
+        SimulationUpdate {
+            is_embargoed: Some(value),
+            ..Default::default()
+        },
+    )
+    .expect("set is_embargoed");
+}
+
+#[test]
+fn import_new_simulation_takes_embargo_from_toml() {
+    let mut c = conn_or_skip!();
+    let orcid = "0000-0001-import-embargo-new";
+    seed_user_with_orcid(&mut c, "embargo-new", orcid);
+
+    let sim = ExportSimulation {
+        is_embargoed: Some(true),
+        ..base_sim("embargo-new", orcid)
+    };
+    let sim_id =
+        import::import_simulation(&mut c, &sim, &ImportOpts::default()).unwrap();
+    assert!(ops::get_simulation(&mut c, sim_id).unwrap().is_embargoed);
+}
+
+#[test]
+fn reprocess_keeps_embargo_set_on_the_site() {
+    let mut c = conn_or_skip!();
+    let orcid = "0000-0001-import-embargo-keep";
+    seed_user_with_orcid(&mut c, "embargo-keep", orcid);
+
+    // The TOML never mentions embargo; the site embargoes it later
+    let sim = base_sim("embargo-keep", orcid);
+    let sim_id =
+        import::import_simulation(&mut c, &sim, &ImportOpts::default()).unwrap();
+    assert!(!ops::get_simulation(&mut c, sim_id).unwrap().is_embargoed);
+    set_embargo(&mut c, sim_id, true);
+
+    reprocess(&mut c, sim_id, &sim);
+    assert!(
+        ops::get_simulation(&mut c, sim_id).unwrap().is_embargoed,
+        "a reprocess must not release a simulation embargoed on the site"
+    );
+}
+
+#[test]
+fn reprocess_keeps_release_made_on_the_site() {
+    let mut c = conn_or_skip!();
+    let orcid = "0000-0001-import-embargo-release";
+    seed_user_with_orcid(&mut c, "embargo-release", orcid);
+
+    // The TOML embargoes it; the contributor releases it on the site
+    let sim = ExportSimulation {
+        is_embargoed: Some(true),
+        ..base_sim("embargo-release", orcid)
+    };
+    let sim_id =
+        import::import_simulation(&mut c, &sim, &ImportOpts::default()).unwrap();
+    set_embargo(&mut c, sim_id, false);
+
+    reprocess(&mut c, sim_id, &sim);
+    assert!(
+        !ops::get_simulation(&mut c, sim_id).unwrap().is_embargoed,
+        "a reprocess must not re-embargo a simulation released on the site"
+    );
+}
