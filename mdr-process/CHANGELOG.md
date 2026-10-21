@@ -11,6 +11,17 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.15.1 (unreleased)
+
+- **TLS dependency update** (2026-10-21). No change in behavior. Cargo.lock
+  moves rustls 0.23.45 -> 0.23.46, rustls-webpki 0.103.15 -> 0.103.16 and
+  webpki-roots/webpki-root-certs 1.0.9 -> 1.0.10 for RUSTSEC-2026-0381/0382/
+  0383 (certificate paths through distrusted emSign intermediates, whose
+  private keys are public) and RUSTSEC-2026-0346..0349, all in the TLS
+  under its HTTPS requests (reqwest). The member's own
+  `mdr-process/Cargo.lock`, stale since the 03-18 move into the workspace
+  and never read by cargo, is removed.
+
 ## 0.14.0 (unreleased)
 
 - **Fix: a SIFTS accession's coverage is never less than its longest
