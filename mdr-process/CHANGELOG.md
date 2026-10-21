@@ -11,6 +11,37 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.16.0 (unreleased)
+
+**Needs md-repo-app migrations 0293-0295, and the other way round:**
+0.15.x and earlier fail against a database with 0294 or 0295 applied, as
+they write md_polymer's dropped hit columns (0294) and
+md_simulation.fasta_sequence (0295). Deploy the two together.
+
+- **A polymer's UniProt hit is an `md_polymer_uniprot` row** (Travis and
+  Ken, 2026-10-21). md-repo-app 0293 creates the table, one row per part
+  of a polymer, so a fused receptor + T4 lysozyme can name both proteins
+  later, and copies each polymer's hit into it; 0294 drops md_polymer's
+  `uniprot_id`, `query_start/end`, `reference_start/end` and `identity`.
+  `md_polymer.match_method` stays, as the outcome of the search for the
+  whole polymer. `ops::set_polymer_reference` keeps its signature and
+  write-once rule: in one transaction it claims a polymer still untried
+  and inserts the hit's row, so a hit the table refuses (past the
+  polymer's end, now a trigger) leaves the polymer untried instead of
+  claimed with no row. Still one row per polymer: nothing here splits a
+  fused chain into parts yet. `ops::list_polymer_uniprots` reads them;
+  the import's reference-disagreement warning compares with the first.
+- **md_simulation.fasta_sequence is no longer written** (Ken, 2026-10-14
+  and 10-21). md-repo-app 0295 drops it: it was a second copy of the
+  chains' sequences, and the two drifted. The API builds a simulation's
+  `fasta_sequence` from its md_chain rows, by `sequence::fasta_from_chains`'s
+  rule. The import no longer sets it, `ops::set_fasta_sequence` is gone, and
+  `backfill-chains --replace-chains` compares the chains alone, so a
+  simulation whose chains match and whose stored FASTA did not is now left
+  as it is. `import.json` loses its `fasta_sequence` key (nothing read it;
+  `push_sim_files.py` reads the files). The processed `sequence.fa`, which
+  BLAST reads, is written as before.
+
 ## 0.15.1 (unreleased)
 
 - **TLS dependency update** (2026-10-21). No change in behavior. Cargo.lock

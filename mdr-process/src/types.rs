@@ -140,8 +140,8 @@ pub struct BackfillArgs {
     pub blast_num_threads: usize,
 
     /// A simulation that already has chains: if its structure chains differ
-    /// from the structure file's, replace them (keeping its declared chains)
-    /// and its fasta_sequence, as an import of that file would write them
+    /// from the structure file's, replace them (keeping its declared
+    /// chains) as an import of that file would write them
     #[arg(long)]
     pub replace_chains: bool,
 }
@@ -698,8 +698,6 @@ pub struct ExportSimulation {
 
     pub temperature_kelvin: u32,
 
-    pub fasta_sequence: String,
-
     pub num_replicates: u32,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -791,7 +789,8 @@ pub struct ImportChain {
 }
 
 // --------------------------------------------------
-/// What one polymer's UniProt lookup found, written to md_polymer once
+/// What one polymer's UniProt lookup found, written once, to
+/// md_polymer.match_method and a md_polymer_uniprot row
 /// (`ops::set_polymer_reference`)
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct PolymerLookup {

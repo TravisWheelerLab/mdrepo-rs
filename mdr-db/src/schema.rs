@@ -100,10 +100,14 @@ diesel::table! {
     }
 }
 
-// The UniProt reference is md_polymer's (uniprot_id .. identity, 0289),
-// decided from the residues alone; a chain has none of its own. The columns
-// it replaced (md_polymer.reference_db/_accession, md_chain.match_method/
-// reference_*) were dropped in md-repo-app 0291.
+// A polymer's UniProt references are md_polymer_uniprot rows, one per part
+// (a fused receptor + T4 lysozyme has two), decided from the residues alone; a
+// chain has none of its own. md_polymer keeps only match_method, the outcome
+// of the search for the whole polymer: NULL not tried, 'none' nothing found,
+// else the method of its first part. md-repo-app 0293 created the table and
+// copied the single hit 0289 had put on md_polymer (uniprot_id .. identity),
+// which 0294 dropped; 0291 had dropped md_polymer.reference_db/_accession and
+// md_chain.match_method/reference_* before that.
 diesel::table! {
     use diesel::sql_types::*;
     md_polymer (id) {
@@ -113,13 +117,25 @@ diesel::table! {
         residues -> Array<Varchar>,
         residues_hash -> Varchar,
         num_residues -> Int4,
-        uniprot_id -> Nullable<Int8>,
         match_method -> Nullable<Varchar>,
-        query_start -> Nullable<Int4>,
-        query_end -> Nullable<Int4>,
-        reference_start -> Nullable<Int4>,
-        reference_end -> Nullable<Int4>,
-        identity -> Nullable<Float8>,
+    }
+}
+
+// Unique on (polymer_id, query_start). query_end <= md_polymer.num_residues
+// crosses tables, so it is a trigger (md_polymer_uniprot_within_polymer), not
+// a CHECK; it raises check_violation all the same.
+diesel::table! {
+    use diesel::sql_types::*;
+    md_polymer_uniprot (id) {
+        id -> Int8,
+        polymer_id -> Int8,
+        uniprot_id -> Int8,
+        match_method -> Varchar,
+        query_start -> Int4,
+        query_end -> Int4,
+        reference_start -> Int4,
+        reference_end -> Int4,
+        identity -> Float8,
     }
 }
 
@@ -218,7 +234,6 @@ diesel::table! {
         short_description -> Text,
         pdb_id -> Nullable<Int8>,
         is_public -> Bool,
-        fasta_sequence -> Nullable<Text>,
         alias -> Nullable<Text>,
         is_embargoed -> Bool,
         is_coarse_grained -> Bool,
@@ -440,6 +455,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     md_ligand,
     md_pdb,
     md_polymer,
+    md_polymer_uniprot,
     md_processed_file,
     md_pub,
     md_replicate,

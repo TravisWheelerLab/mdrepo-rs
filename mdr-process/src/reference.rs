@@ -34,8 +34,8 @@
 //! then to the lowest accession. The query and reference ranges and the
 //! identity are BLAST's for every method.
 //!
-//! The reference is md_polymer's, shared by every simulation with the same
-//! residues, and set once: the import writes it only to a polymer never
+//! The reference is the polymer's (md_polymer_uniprot), shared by every
+//! simulation with the same residues, and set once: the import writes it only to a polymer never
 //! looked up (`ops::set_polymer_reference`). Step 2 reads the simulation's
 //! own PDB and UniProt IDs, so simulations sharing a polymer can disagree;
 //! the first to import decides, and a later one that disagrees gets a

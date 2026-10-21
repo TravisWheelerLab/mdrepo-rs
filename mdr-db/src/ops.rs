@@ -761,22 +761,54 @@ pub fn find_polymer(
 /// Only a polymer not yet looked up (`match_method` null) is written, so a
 /// polymer's reference is set once and the first import decides: a later
 /// one, with other declared IDs or a newer UniProt release, must not quietly
-/// change it for every simulation sharing the row. Returns whether this call wrote it.
+/// change it for every simulation sharing the row. The hit becomes the
+/// polymer's one `md_polymer_uniprot` row (md-repo-app 0293), inserted in the
+/// same transaction as the claim on `match_method`, so a hit the table's
+/// CHECKs or trigger refuse (`query_end` past the polymer's end) leaves the
+/// polymer untried rather than claimed with no row. Returns whether this call
+/// wrote it.
 pub fn set_polymer_reference(
     conn: &mut PgConnection,
     rid: i64,
     hit: Option<&PolymerReference>,
 ) -> QueryResult<bool> {
-    let untried = md_polymer::table
-        .filter(md_polymer::id.eq(rid))
-        .filter(md_polymer::match_method.is_null());
-    let n = match hit {
-        Some(hit) => diesel::update(untried).set(hit).execute(conn)?,
-        None => diesel::update(untried)
-            .set(md_polymer::match_method.eq("none"))
-            .execute(conn)?,
-    };
-    Ok(n == 1)
+    conn.transaction(|conn| {
+        let method = hit.map_or("none", |h| h.match_method.as_str());
+        let n = diesel::update(
+            md_polymer::table
+                .filter(md_polymer::id.eq(rid))
+                .filter(md_polymer::match_method.is_null()),
+        )
+        .set(md_polymer::match_method.eq(method))
+        .execute(conn)?;
+        if let (1, Some(h)) = (n, hit) {
+            diesel::insert_into(md_polymer_uniprot::table)
+                .values(NewPolymerUniprot {
+                    polymer_id: rid,
+                    uniprot_id: h.uniprot_id,
+                    match_method: &h.match_method,
+                    query_start: h.query_start,
+                    query_end: h.query_end,
+                    reference_start: h.reference_start,
+                    reference_end: h.reference_end,
+                    identity: h.identity,
+                })
+                .execute(conn)?;
+        }
+        Ok(n == 1)
+    })
+}
+
+/// A polymer's UniProt references, one per part, in sequence order
+pub fn list_polymer_uniprots(
+    conn: &mut PgConnection,
+    polymer_id: i64,
+) -> QueryResult<Vec<PolymerUniprot>> {
+    md_polymer_uniprot::table
+        .filter(md_polymer_uniprot::polymer_id.eq(polymer_id))
+        .order(md_polymer_uniprot::query_start)
+        .select(PolymerUniprot::as_select())
+        .load(conn)
 }
 
 pub fn get_polymer(conn: &mut PgConnection, rid: i64) -> QueryResult<Polymer> {
@@ -2755,17 +2787,6 @@ pub fn set_chain_order(
     use crate::schema::md_chain::dsl as c;
     diesel::update(c::md_chain.find(rid))
         .set(c::chain_order.eq(order))
-        .execute(conn)
-}
-
-/// Replace a simulation's `fasta_sequence`
-pub fn set_fasta_sequence(
-    conn: &mut PgConnection,
-    sim_id: i64,
-    fasta: &str,
-) -> QueryResult<usize> {
-    diesel::update(md_simulation::table.find(sim_id))
-        .set(md_simulation::fasta_sequence.eq(fasta))
         .execute(conn)
 }
 

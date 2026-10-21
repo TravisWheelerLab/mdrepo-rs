@@ -125,7 +125,6 @@ fn base_sim(key: &str, orcid: &str) -> ExportSimulation {
         sampling_frequency_ps: None,
         integration_timestep_fs: 2,
         temperature_kelvin: 300,
-        fasta_sequence: String::new(),
         num_replicates: 1,
         water_type: None,
         water_density: None,
@@ -740,16 +739,13 @@ fn polymer_reference_is_written_once() {
         .unwrap()
         .unwrap();
     assert_eq!(polymer.match_method.as_deref(), Some("pdb"));
-    assert_eq!(polymer.uniprot_id, Some(q1));
-    assert_eq!(
-        (polymer.query_start, polymer.query_end),
-        (Some(1), Some(25))
-    );
-    assert_eq!(
-        (polymer.reference_start, polymer.reference_end),
-        (Some(11), Some(35))
-    );
-    assert_eq!(polymer.identity, Some(96.0));
+    let parts = ops::list_polymer_uniprots(&mut c, polymer.id).unwrap();
+    assert_eq!(parts.len(), 1, "one md_polymer_uniprot row");
+    let part = &parts[0];
+    assert_eq!((part.uniprot_id, part.match_method.as_str()), (q1, "pdb"));
+    assert_eq!((part.query_start, part.query_end), (1, 25));
+    assert_eq!((part.reference_start, part.reference_end), (11, 35));
+    assert_eq!(part.identity, 96.0);
     let uniprot = ops::get_uniprot(&mut c, q1).unwrap();
     assert_eq!(uniprot.entry_version, Some(7));
     assert_eq!(
@@ -772,8 +768,12 @@ fn polymer_reference_is_written_once() {
     let chains = ops::list_chains_for_simulation(&mut c, second_id).unwrap();
     assert_eq!(chains[0].polymer_id, polymer.id, "one polymer row");
     let again = ops::get_polymer(&mut c, polymer.id).unwrap();
-    assert_eq!(again.uniprot_id, Some(q1));
     assert_eq!(again.match_method.as_deref(), Some("pdb"));
+    assert_eq!(
+        ops::list_polymer_uniprots(&mut c, polymer.id).unwrap(),
+        parts,
+        "the stored hit is unchanged"
+    );
     assert_eq!(
         ops::find_uniprot_id_by_accession(&mut c, "Q00002-importref").unwrap(),
         None,
@@ -796,7 +796,14 @@ fn declared_match_is_written() {
     let chains = ops::list_chains_for_simulation(&mut c, id).unwrap();
     let polymer = ops::get_polymer(&mut c, chains[0].polymer_id).unwrap();
     assert_eq!(polymer.match_method.as_deref(), Some("declared"));
-    assert!(polymer.uniprot_id.is_some());
+    let parts = ops::list_polymer_uniprots(&mut c, polymer.id).unwrap();
+    assert_eq!(
+        parts
+            .iter()
+            .map(|u| u.match_method.as_str())
+            .collect::<Vec<_>>(),
+        ["declared"]
+    );
 }
 
 /// No lookup (None) leaves the polymer untried for a later run; `none` is
@@ -829,9 +836,11 @@ fn polymer_lookup_none_and_untried() {
     };
     import::import_simulation(&mut c, &none, &ImportOpts::default()).unwrap();
     let polymer = ops::get_polymer(&mut c, polymer_id).unwrap();
-    assert_eq!(
-        (polymer.match_method.as_deref(), polymer.uniprot_id),
-        (Some("none"), None)
+    assert_eq!(polymer.match_method.as_deref(), Some("none"));
+    assert!(
+        ops::list_polymer_uniprots(&mut c, polymer_id)
+            .unwrap()
+            .is_empty()
     );
 }
 
@@ -1006,8 +1015,8 @@ fn backfill_sets_untried_references_of_a_sim_with_chains() {
 
 /// `--replace-chains`: two chains stored as one (a file that gave every
 /// chain the same ID, relabeled since) are replaced by the structure's two;
-/// the declared chain keeps its row and follows them; fasta_sequence is the
-/// new one. A second run changes nothing.
+/// the declared chain keeps its row and follows them. A second run changes
+/// nothing.
 #[test]
 fn replace_structure_chains_splits_a_merged_chain() {
     let mut c = conn_or_skip!();
@@ -1064,9 +1073,8 @@ fn replace_structure_chains_splits_a_merged_chain() {
             ..looked_up_chain(None)
         },
     ];
-    let fasta = format!(">H\n{heavy}\n>L\n{light}\n");
     assert_eq!(
-        import::replace_structure_chains(&mut c, sim_id, &split, &fasta).unwrap(),
+        import::replace_structure_chains(&mut c, sim_id, &split).unwrap(),
         Backfilled::Replaced
     );
     let got = ops::list_chains_for_simulation(&mut c, sim_id).unwrap();
@@ -1095,17 +1103,10 @@ fn replace_structure_chains_splits_a_merged_chain() {
         methods,
         vec![Some("pdb".into()), Some("pdb".into()), Some("none".into())]
     );
-    assert_eq!(
-        ops::get_simulation(&mut c, sim_id)
-            .unwrap()
-            .fasta_sequence
-            .as_deref(),
-        Some(fasta.as_str())
-    );
 
-    // Again: the same chains and FASTA, so nothing is replaced
+    // Again: the same chains, so nothing is replaced
     assert_eq!(
-        import::replace_structure_chains(&mut c, sim_id, &split, &fasta).unwrap(),
+        import::replace_structure_chains(&mut c, sim_id, &split).unwrap(),
         Backfilled::ReferencesSet(0)
     );
     assert_eq!(

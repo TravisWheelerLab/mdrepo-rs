@@ -1746,7 +1746,6 @@ pub fn make_import_json(
         _ => (None, None),
     };
 
-    let fasta_sequence = fs::read_to_string(fasta_sequence_file)?;
     let simulation = ExportSimulation {
         simulation_id: args.reprocess_simulation_id,
         lead_contributor_orcid: args.meta.lead_contributor_orcid,
@@ -1771,7 +1770,6 @@ pub fn make_import_json(
         rmsd_values: rmsd_rmsf.rmsd,
         rmsf_values: rmsd_rmsf.rmsf,
         temperature_kelvin: args.meta.temperature_kelvin,
-        fasta_sequence,
         num_replicates: args.meta.trajectory_file_names.len() as u32,
         water_type,
         water_density,

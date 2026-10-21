@@ -122,7 +122,6 @@ fn seed_sim_with_flags(
             is_deprecated: deprecated,
             is_public: public,
             protonation_method: None,
-            fasta_sequence: None,
             alias: None,
             pdb_id: None,
             is_embargoed: embargoed,
@@ -1039,8 +1038,10 @@ fn upserts_keep_a_stored_response_unless_given_a_new_one() {
 
 /// A polymer's reference is decided from its residues and written once: the
 /// first lookup sets it, a later one does not change it, "none" records a
-/// lookup that found nothing, and md_polymer_uniprot_hit refuses a hit past
-/// the polymer's end. A hit may be `pdb` (0290) or `aligned`.
+/// lookup that found nothing, and the md_polymer_uniprot_within_polymer
+/// trigger refuses a hit past the polymer's end, leaving the polymer untried.
+/// A hit may be `pdb` (0290) or `aligned`; it is an md_polymer_uniprot row
+/// (0293), md_polymer keeping only the match_method.
 #[test]
 fn set_polymer_reference_writes_once() {
     let mut c = conn_or_skip!();
@@ -1095,11 +1096,15 @@ fn set_polymer_reference_writes_once() {
     assert!(!ops::set_polymer_reference(&mut c, found, Some(&hit(calm2))).unwrap());
     assert!(!ops::set_polymer_reference(&mut c, found, None).unwrap());
     let p = ops::get_polymer(&mut c, found).unwrap();
-    assert_eq!(p.uniprot_id, Some(calm1));
     assert_eq!(p.match_method.as_deref(), Some("aligned"));
-    assert_eq!((p.query_start, p.query_end), (Some(1), Some(5)));
-    assert_eq!((p.reference_start, p.reference_end), (Some(2), Some(6)));
-    assert_eq!(p.identity, Some(100.0));
+    let parts = ops::list_polymer_uniprots(&mut c, found).unwrap();
+    assert_eq!(parts.len(), 1);
+    let u = &parts[0];
+    assert_eq!((u.polymer_id, u.uniprot_id), (found, calm1));
+    assert_eq!(u.match_method, "aligned");
+    assert_eq!((u.query_start, u.query_end), (1, 5));
+    assert_eq!((u.reference_start, u.reference_end), (2, 6));
+    assert_eq!(u.identity, 100.0);
 
     let by_pdb = polymer(&mut c, "cc");
     let pdb_hit = PolymerReference {
@@ -1108,26 +1113,43 @@ fn set_polymer_reference_writes_once() {
     };
     assert!(ops::set_polymer_reference(&mut c, by_pdb, Some(&pdb_hit)).unwrap());
     let p = ops::get_polymer(&mut c, by_pdb).unwrap();
+    assert_eq!(p.match_method.as_deref(), Some("pdb"));
+    let parts = ops::list_polymer_uniprots(&mut c, by_pdb).unwrap();
     assert_eq!(
-        (p.uniprot_id, p.match_method.as_deref()),
-        (Some(calm2), Some("pdb"))
+        parts
+            .iter()
+            .map(|u| (u.uniprot_id, u.match_method.as_str()))
+            .collect::<Vec<_>>(),
+        [(calm2, "pdb")]
     );
 
     let not_found = polymer(&mut c, "ce");
     assert!(ops::set_polymer_reference(&mut c, not_found, None).unwrap());
     let p = ops::get_polymer(&mut c, not_found).unwrap();
-    assert_eq!(
-        (p.uniprot_id, p.match_method.as_deref()),
-        (None, Some("none"))
+    assert_eq!(p.match_method.as_deref(), Some("none"));
+    assert!(
+        ops::list_polymer_uniprots(&mut c, not_found)
+            .unwrap()
+            .is_empty()
     );
 
-    // Last statement: the CHECK failure aborts the transaction.
+    // The trigger's check_violation rolls back the savepoint
+    // set_polymer_reference runs in, claim on match_method included, so the
+    // test's transaction goes on and the polymer is still untried.
     let past_the_end = polymer(&mut c, "cf");
     let bad = PolymerReference {
         query_end: 6,
         ..hit(calm1)
     };
-    assert!(ops::set_polymer_reference(&mut c, past_the_end, Some(&bad)).is_err());
+    let err = ops::set_polymer_reference(&mut c, past_the_end, Some(&bad)).unwrap_err();
+    assert!(err.to_string().contains("past the end of polymer"), "{err}");
+    let p = ops::get_polymer(&mut c, past_the_end).unwrap();
+    assert_eq!(p.match_method, None);
+    assert!(
+        ops::list_polymer_uniprots(&mut c, past_the_end)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]

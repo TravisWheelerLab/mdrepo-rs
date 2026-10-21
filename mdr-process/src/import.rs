@@ -277,15 +277,16 @@ fn none_for_short_untried(
 /// pointing at them stay linked; they are renumbered to follow the new
 /// structure chains, which is where an import puts a declared chain matched
 /// to a blob after the polymers. A simulation with a declared chain between
-/// structure chains is refused. `fasta_sequence` becomes `fasta`, the
-/// import's FASTA of the same chains. New polymers are looked up as in
+/// structure chains is refused. New polymers are looked up as in
 /// `backfill_chains`; polymers that already have a reference keep it.
-/// Identical chains and FASTA: nothing replaced, as `backfill_chains`.
+/// Identical chains: nothing replaced, as `backfill_chains`. (It used to
+/// replace md_simulation.fasta_sequence too, and count a differing FASTA as
+/// a difference; md-repo-app 0295 dropped the column, the API now building
+/// the FASTA from these chains.)
 pub fn replace_structure_chains(
     conn: &mut PgConnection,
     sim_id: i64,
     chains: &[ImportChain],
-    fasta: &str,
 ) -> Result<Backfilled> {
     conn.transaction(|conn| {
         let existing = ops::list_chains_for_simulation(conn, sim_id)?;
@@ -322,8 +323,7 @@ pub fn replace_structure_chains(
                 )
             })
             .collect();
-        let fasta_now = ops::get_simulation(conn, sim_id)?.fasta_sequence;
-        if stored == wanted && fasta_now.as_deref() == Some(fasta) {
+        if stored == wanted {
             return backfill_chains(conn, sim_id, chains);
         }
 
@@ -353,7 +353,6 @@ pub fn replace_structure_chains(
         }
         let ids: Vec<i64> = declared.iter().map(|c| c.polymer_id).collect();
         none_for_short_untried(conn, &ids)?;
-        ops::set_fasta_sequence(conn, sim_id, fasta)?;
         Ok(Backfilled::Replaced)
     })
 }
@@ -389,8 +388,11 @@ pub fn reference_disagreements(
         let Some(stored_method) = polymer.match_method.as_deref() else {
             continue;
         };
-        let stored = match polymer.uniprot_id {
-            Some(id) => Some(ops::get_uniprot(conn, id)?.uniprot_id),
+        // The first part's entry (lowest query_start), the one a lookup's
+        // single hit would be compared against; mdr-process writes no more
+        // than one md_polymer_uniprot row per polymer
+        let stored = match ops::list_polymer_uniprots(conn, polymer.id)?.first() {
+            Some(part) => Some(ops::get_uniprot(conn, part.uniprot_id)?.uniprot_id),
             None => None,
         };
         let ours = lookup.hit.as_ref().map(|h| h.uniprot.uniprot_id.clone());
@@ -503,8 +505,6 @@ fn upsert_simulation(
                 rmsf_values: Some(Some(sim.rmsf_values.clone())),
                 forcefield: Some(sim.forcefield.clone()),
                 forcefield_comments: Some(sim.forcefield_comments.clone()),
-                // Empty for a DNA- or RNA-only structure: no protein chains
-                fasta_sequence: Some(non_empty(&sim.fasta_sequence)),
                 num_replicates: Some(Some(sim.num_replicates as i32)),
                 temperature: Some(Some(sim.temperature_kelvin as i32)),
                 protonation_method: Some(sim.protonation_method.clone()),
@@ -544,7 +544,6 @@ fn upsert_simulation(
             rmsf_values: Some(sim.rmsf_values.clone()),
             forcefield: sim.forcefield.clone(),
             forcefield_comments: sim.forcefield_comments.clone(),
-            fasta_sequence: non_empty(&sim.fasta_sequence),
             num_replicates: Some(sim.num_replicates as i32),
             temperature: Some(sim.temperature_kelvin as i32),
             protonation_method: sim.protonation_method.clone(),
@@ -843,11 +842,6 @@ fn upsert_ligand(
         },
     )?
     .id)
-}
-
-// --------------------------------------------------
-fn non_empty(text: &str) -> Option<String> {
-    (!text.trim().is_empty()).then(|| text.to_string())
 }
 
 // --------------------------------------------------
