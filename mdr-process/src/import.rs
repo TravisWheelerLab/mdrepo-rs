@@ -249,10 +249,7 @@ fn none_for_short_untried(
     conn: &mut PgConnection,
     polymer_ids: &[i64],
 ) -> Result<usize> {
-    let none = PolymerLookup {
-        match_method: reference::NONE.to_string(),
-        hit: None,
-    };
+    let none = reference::none();
     let mut set = 0;
     for &id in polymer_ids {
         let polymer = ops::get_polymer(conn, id)?;
@@ -388,18 +385,24 @@ pub fn reference_disagreements(
         let Some(stored_method) = polymer.match_method.as_deref() else {
             continue;
         };
-        // The first part's entry (lowest query_start), the one a lookup's
-        // single hit would be compared against; mdr-process writes no more
-        // than one md_polymer_uniprot row per polymer
-        let stored = match ops::list_polymer_uniprots(conn, polymer.id)?.first() {
-            Some(part) => Some(ops::get_uniprot(conn, part.uniprot_id)?.uniprot_id),
-            None => None,
-        };
-        let ours = lookup.hit.as_ref().map(|h| h.uniprot.uniprot_id.clone());
+        // The parts' entries in sequence order, against this lookup's (one
+        // per part since 0.17.0; a polymer looked up before has one)
+        let stored = ops::list_polymer_uniprots(conn, polymer.id)?
+            .iter()
+            .map(|part| Ok(ops::get_uniprot(conn, part.uniprot_id)?.uniprot_id))
+            .collect::<Result<Vec<String>>>()?;
+        let ours: Vec<String> = lookup
+            .hits
+            .iter()
+            .map(|h| h.uniprot.uniprot_id.clone())
+            .collect();
         if stored != ours {
-            let name = |acc: &Option<String>| {
-                acc.clone()
-                    .unwrap_or_else(|| "no UniProt entry".to_string())
+            let name = |accs: &[String]| {
+                if accs.is_empty() {
+                    "no UniProt entry".to_string()
+                } else {
+                    accs.join(" + ")
+                }
             };
             let label = match chain.chain_label.trim() {
                 "" => format!("Chain {}", chain.chain_order),
@@ -904,9 +907,10 @@ fn insert_chain(
 
 // --------------------------------------------------
 /// Write a polymer's UniProt lookup, unless it was looked up before: a
-/// polymer's reference is set once (`ops::set_polymer_reference`). A hit's
-/// UniProt entry is upserted only when it will be written, and is not linked
-/// to the simulation; md_simulation_uniprot keeps the TOML's accessions.
+/// polymer's reference is set once (`ops::set_polymer_reference`), all its
+/// parts in one transaction. A hit's UniProt entry is upserted only when it
+/// will be written, and is not linked to the simulation;
+/// md_simulation_uniprot keeps the TOML's accessions.
 fn set_polymer_reference(
     conn: &mut PgConnection,
     polymer_id: i64,
@@ -917,20 +921,33 @@ fn set_polymer_reference(
         debug!("Polymer {polymer_id} was looked up before; keeping its reference");
         return Ok(());
     }
-    let reference = match &lookup.hit {
-        Some(hit) => Some(PolymerReference {
-            match_method: lookup.match_method.clone(),
-            uniprot_id: ops::upsert_uniprot(conn, new_uniprot(&hit.uniprot))?.id,
-            query_start: hit.query_start,
-            query_end: hit.query_end,
-            reference_start: hit.reference_start,
-            reference_end: hit.reference_end,
-            identity: hit.identity,
-        }),
-        None => None,
-    };
-    ops::set_polymer_reference(conn, polymer_id, reference.as_ref())?;
+    let parts = polymer_references(conn, lookup)?;
+    ops::set_polymer_reference(conn, polymer_id, &parts)?;
     Ok(())
+}
+
+/// A lookup's hits as md_polymer_uniprot rows, each UniProt entry upserted
+/// first (the row's foreign key). The UniProt backfill
+/// (`backfill_uniprot`) writes its parts with them too.
+pub fn polymer_references(
+    conn: &mut PgConnection,
+    lookup: &PolymerLookup,
+) -> Result<Vec<PolymerReference>> {
+    lookup
+        .hits
+        .iter()
+        .map(|hit| {
+            Ok(PolymerReference {
+                match_method: lookup.match_method.clone(),
+                uniprot_id: ops::upsert_uniprot(conn, new_uniprot(&hit.uniprot))?.id,
+                query_start: hit.query_start,
+                query_end: hit.query_end,
+                reference_start: hit.reference_start,
+                reference_end: hit.reference_end,
+                identity: hit.identity,
+            })
+        })
+        .collect()
 }
 
 // --------------------------------------------------

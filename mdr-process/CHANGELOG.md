@@ -11,6 +11,49 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.18.0 (unreleased)
+
+- **A fused chain gets a UniProt reference per part** (Ken, 2026-10-21).
+  CXCR4 with T4 lysozyme in a loop (3odu) is three md_polymer_uniprot rows,
+  CXCR4, T4L, CXCR4; a BRIL fusion two. Parts come only from SIFTS: every
+  accession `pdb_chain_uniprot.tsv` lists for any chain of the declared
+  entry, compared with the chain by BLAST as before. A row is a part at 70%
+  identity over 20 or more residues; rows are taken by bit score, one that
+  overlaps a part already kept by more than `JUNCTION_OVERLAP` (5) of our
+  residues is dropped (an ortholog, an isoform), one that overlaps by 5 or
+  fewer is trimmed, the shared residues going to the higher score. Two rows
+  of one entry with no part between them, in order in our chain and the
+  entry and fewer than 20 of ours between, are one row (BLAST broke an
+  alignment at a gap); a tethered dimer's two copies stay two. The 50%
+  coverage floor applies to the parts together, so a fusion that no single
+  protein covered half of, `none` before, is found. When the parts cover
+  too little, the single best candidate is taken as in 0.16.0. Declared
+  UniProt IDs and the search still give one reference.
+  `md_polymer.match_method` is the first part's. The import writes all the
+  parts in `ops::set_polymer_reference`'s one transaction, which now takes
+  a list of hits (empty for `none`); `PolymerLookup.hit` is `hits` (and
+  `import.json`'s key with it), and the reference-disagreement warning
+  compares every part's entry.
+- **BLAST's tabular output adds `qseq sseq`**, walked to trim a part's
+  ranges exactly and count its identity again over what is left. A search
+  result file from an older work dir (15 columns) still reads, without the
+  alignment; any other column count is an error naming the file.
+- **New `backfill-polymer-uniprot`** rewrites existing polymers' references
+  by the rule above: input from
+  `mdr-process/sql/backfill-polymer-uniprot-candidates.sql`; `--dry-run`,
+  `--out` (one row per polymer: current and proposed rows, coverage before
+  and after, the accessions not yet in md_uniprot, and flags such as
+  `none_to_found`, `t4l_only_gains_parts`, `first_accession_changes`,
+  `coverage_shrinks`, `unchanged`, `skipped_not_pdb_or_none`,
+  `several_pdb_ids`), `--overlaps-out` (every pair of overlapping SIFTS
+  rows, its overlap and whether it was trimmed or dropped, to tune
+  `JUNCTION_OVERLAP`), `-w` (the UniProt cache the real run reuses). Both
+  runs read the database; the real run writes only polymers that are `pdb`
+  or `none`, unchanged since read and with different rows, through the new
+  `ops::replace_polymer_uniprots` (delete, insert and set `match_method` in
+  one transaction: the one override of write-once), upserting their UniProt
+  entries first.
+
 ## 0.17.0 (unreleased)
 
 **Needs no migration.** `md_simulation.unique_file_hash_string` becomes a

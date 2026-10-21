@@ -357,9 +357,11 @@ pub struct NewPolymer {
     pub num_residues: i32,
 }
 
-/// A polymer's UniProt hit, as the lookup hands it to
-/// `ops::set_polymer_reference`, which writes it as an `md_polymer_uniprot`
-/// row (it lived on md_polymer from md-repo-app 0289 until 0294). The row's
+/// A polymer's UniProt hit, one part of it, as the lookup hands it to
+/// `ops::set_polymer_reference` (or the backfill to
+/// `ops::replace_polymer_uniprots`), which writes it as an
+/// `md_polymer_uniprot` row (it lived on md_polymer from md-repo-app 0289
+/// until 0294). The row's
 /// CHECKs want all of it, so there are no optional fields. `match_method` is
 /// how it was found: `pdb` (an entry SIFTS lists for the declared PDB ID;
 /// 0290), `declared` (a declared UniProt ID; 0292) or `aligned` (the search),
