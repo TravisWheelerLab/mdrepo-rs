@@ -28,8 +28,8 @@
 //! reference (the DDD peptides, imported on 0.4.0 with chains and no
 //! references; Ken, 2026-10-14). With `--replace-chains`, a simulation whose
 //! stored structure chains differ from the structure file's has them
-//! replaced, with its `fasta_sequence` (`import::replace_structure_chains`;
-//! the DDD peptides' chains, written before their files were relabeled). `--dry-run` reads no database and
+//! replaced (`import::replace_structure_chains`; the DDD peptides' chains,
+//! written before their files were relabeled). `--dry-run` reads no database and
 //! writes none; the report is the same.
 
 use crate::{
@@ -202,14 +202,7 @@ pub fn backfill_chains(args: &BackfillArgs) -> Result<()> {
             None => "dry run".to_string(),
             Some(conn) => {
                 let result = if args.replace_chains {
-                    sequence::chains_from_pdb(&row.structure).and_then(|split| {
-                        import::replace_structure_chains(
-                            conn,
-                            row.simulation_id,
-                            &chains,
-                            &sequence::fasta_from_chains(&split),
-                        )
-                    })
+                    import::replace_structure_chains(conn, row.simulation_id, &chains)
                 } else {
                     import::backfill_chains(conn, row.simulation_id, &chains)
                 };

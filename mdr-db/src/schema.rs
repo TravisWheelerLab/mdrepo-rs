@@ -234,7 +234,6 @@ diesel::table! {
         short_description -> Text,
         pdb_id -> Nullable<Int8>,
         is_public -> Bool,
-        fasta_sequence -> Nullable<Text>,
         alias -> Nullable<Text>,
         is_embargoed -> Bool,
         is_coarse_grained -> Bool,

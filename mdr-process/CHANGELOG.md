@@ -14,8 +14,9 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
 ## 0.16.0 (unreleased)
 
 **Needs md-repo-app migrations 0293-0295, and the other way round:**
-0.15.x and earlier fail against a database migrated past 0294, as they
-write md_polymer's dropped hit columns. Deploy the two together.
+0.15.x and earlier fail against a database with 0294 or 0295 applied, as
+they write md_polymer's dropped hit columns (0294) and
+md_simulation.fasta_sequence (0295). Deploy the two together.
 
 - **A polymer's UniProt hit is an `md_polymer_uniprot` row** (Travis and
   Ken, 2026-10-21). md-repo-app 0293 creates the table, one row per part
@@ -30,6 +31,16 @@ write md_polymer's dropped hit columns. Deploy the two together.
   claimed with no row. Still one row per polymer: nothing here splits a
   fused chain into parts yet. `ops::list_polymer_uniprots` reads them;
   the import's reference-disagreement warning compares with the first.
+- **md_simulation.fasta_sequence is no longer written** (Ken, 2026-10-14
+  and 10-21). md-repo-app 0295 drops it: it was a second copy of the
+  chains' sequences, and the two drifted. The API builds a simulation's
+  `fasta_sequence` from its md_chain rows, by `sequence::fasta_from_chains`'s
+  rule. The import no longer sets it, `ops::set_fasta_sequence` is gone, and
+  `backfill-chains --replace-chains` compares the chains alone, so a
+  simulation whose chains match and whose stored FASTA did not is now left
+  as it is. `import.json` loses its `fasta_sequence` key (nothing read it;
+  `push_sim_files.py` reads the files). The processed `sequence.fa`, which
+  BLAST reads, is written as before.
 
 ## 0.15.1 (unreleased)
 

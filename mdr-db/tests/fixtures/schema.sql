@@ -22,8 +22,9 @@
 --
 -- Since then (2026-10-21): md-repo-app 0293 (md_polymer_uniprot, its CHECKs,
 -- unique (polymer_id, query_start) and the md_polymer_uniprot_within_polymer
--- trigger) and 0294 (md_polymer's hit columns and md_polymer_uniprot_hit
--- dropped, CHECK md_polymer_match_method added), applied to that snapshot in
+-- trigger), 0294 (md_polymer's hit columns and md_polymer_uniprot_hit
+-- dropped, CHECK md_polymer_match_method added) and 0295
+-- (md_simulation.fasta_sequence dropped), applied to that snapshot in
 -- the test container and merged in as the diff of two pg_dumps of it. The
 -- old pghistory functions writing md_repo_app_simulationevent are left as
 -- dumped: no trigger calls them.
@@ -1609,7 +1610,6 @@ CREATE TABLE public.md_simulation (
     short_description text NOT NULL,
     pdb_id bigint,
     is_public boolean NOT NULL,
-    fasta_sequence text,
     alias text,
     num_replicates integer,
     is_embargoed boolean NOT NULL,

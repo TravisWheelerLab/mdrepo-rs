@@ -2790,17 +2790,6 @@ pub fn set_chain_order(
         .execute(conn)
 }
 
-/// Replace a simulation's `fasta_sequence`
-pub fn set_fasta_sequence(
-    conn: &mut PgConnection,
-    sim_id: i64,
-    fasta: &str,
-) -> QueryResult<usize> {
-    diesel::update(md_simulation::table.find(sim_id))
-        .set(md_simulation::fasta_sequence.eq(fasta))
-        .execute(conn)
-}
-
 /// Delete a simulation's `md_simulation_uniprot` links. Used on the reprocess
 /// path.
 ///

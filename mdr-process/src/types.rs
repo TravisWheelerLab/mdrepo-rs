@@ -140,8 +140,8 @@ pub struct BackfillArgs {
     pub blast_num_threads: usize,
 
     /// A simulation that already has chains: if its structure chains differ
-    /// from the structure file's, replace them (keeping its declared chains)
-    /// and its fasta_sequence, as an import of that file would write them
+    /// from the structure file's, replace them (keeping its declared
+    /// chains) as an import of that file would write them
     #[arg(long)]
     pub replace_chains: bool,
 }
@@ -697,8 +697,6 @@ pub struct ExportSimulation {
     pub integration_timestep_fs: u32,
 
     pub temperature_kelvin: u32,
-
-    pub fasta_sequence: String,
 
     pub num_replicates: u32,
 

@@ -125,7 +125,6 @@ fn base_sim(key: &str, orcid: &str) -> ExportSimulation {
         sampling_frequency_ps: None,
         integration_timestep_fs: 2,
         temperature_kelvin: 300,
-        fasta_sequence: String::new(),
         num_replicates: 1,
         water_type: None,
         water_density: None,
@@ -1016,8 +1015,8 @@ fn backfill_sets_untried_references_of_a_sim_with_chains() {
 
 /// `--replace-chains`: two chains stored as one (a file that gave every
 /// chain the same ID, relabeled since) are replaced by the structure's two;
-/// the declared chain keeps its row and follows them; fasta_sequence is the
-/// new one. A second run changes nothing.
+/// the declared chain keeps its row and follows them. A second run changes
+/// nothing.
 #[test]
 fn replace_structure_chains_splits_a_merged_chain() {
     let mut c = conn_or_skip!();
@@ -1074,9 +1073,8 @@ fn replace_structure_chains_splits_a_merged_chain() {
             ..looked_up_chain(None)
         },
     ];
-    let fasta = format!(">H\n{heavy}\n>L\n{light}\n");
     assert_eq!(
-        import::replace_structure_chains(&mut c, sim_id, &split, &fasta).unwrap(),
+        import::replace_structure_chains(&mut c, sim_id, &split).unwrap(),
         Backfilled::Replaced
     );
     let got = ops::list_chains_for_simulation(&mut c, sim_id).unwrap();
@@ -1105,17 +1103,10 @@ fn replace_structure_chains_splits_a_merged_chain() {
         methods,
         vec![Some("pdb".into()), Some("pdb".into()), Some("none".into())]
     );
-    assert_eq!(
-        ops::get_simulation(&mut c, sim_id)
-            .unwrap()
-            .fasta_sequence
-            .as_deref(),
-        Some(fasta.as_str())
-    );
 
-    // Again: the same chains and FASTA, so nothing is replaced
+    // Again: the same chains, so nothing is replaced
     assert_eq!(
-        import::replace_structure_chains(&mut c, sim_id, &split, &fasta).unwrap(),
+        import::replace_structure_chains(&mut c, sim_id, &split).unwrap(),
         Backfilled::ReferencesSet(0)
     );
     assert_eq!(

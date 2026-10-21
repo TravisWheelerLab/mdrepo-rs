@@ -122,7 +122,6 @@ fn seed_sim_with_flags(
             is_deprecated: deprecated,
             is_public: public,
             protonation_method: None,
-            fasta_sequence: None,
             alias: None,
             pdb_id: None,
             is_embargoed: embargoed,
