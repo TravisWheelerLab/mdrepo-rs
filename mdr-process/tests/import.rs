@@ -740,16 +740,13 @@ fn polymer_reference_is_written_once() {
         .unwrap()
         .unwrap();
     assert_eq!(polymer.match_method.as_deref(), Some("pdb"));
-    assert_eq!(polymer.uniprot_id, Some(q1));
-    assert_eq!(
-        (polymer.query_start, polymer.query_end),
-        (Some(1), Some(25))
-    );
-    assert_eq!(
-        (polymer.reference_start, polymer.reference_end),
-        (Some(11), Some(35))
-    );
-    assert_eq!(polymer.identity, Some(96.0));
+    let parts = ops::list_polymer_uniprots(&mut c, polymer.id).unwrap();
+    assert_eq!(parts.len(), 1, "one md_polymer_uniprot row");
+    let part = &parts[0];
+    assert_eq!((part.uniprot_id, part.match_method.as_str()), (q1, "pdb"));
+    assert_eq!((part.query_start, part.query_end), (1, 25));
+    assert_eq!((part.reference_start, part.reference_end), (11, 35));
+    assert_eq!(part.identity, 96.0);
     let uniprot = ops::get_uniprot(&mut c, q1).unwrap();
     assert_eq!(uniprot.entry_version, Some(7));
     assert_eq!(
@@ -772,8 +769,12 @@ fn polymer_reference_is_written_once() {
     let chains = ops::list_chains_for_simulation(&mut c, second_id).unwrap();
     assert_eq!(chains[0].polymer_id, polymer.id, "one polymer row");
     let again = ops::get_polymer(&mut c, polymer.id).unwrap();
-    assert_eq!(again.uniprot_id, Some(q1));
     assert_eq!(again.match_method.as_deref(), Some("pdb"));
+    assert_eq!(
+        ops::list_polymer_uniprots(&mut c, polymer.id).unwrap(),
+        parts,
+        "the stored hit is unchanged"
+    );
     assert_eq!(
         ops::find_uniprot_id_by_accession(&mut c, "Q00002-importref").unwrap(),
         None,
@@ -796,7 +797,14 @@ fn declared_match_is_written() {
     let chains = ops::list_chains_for_simulation(&mut c, id).unwrap();
     let polymer = ops::get_polymer(&mut c, chains[0].polymer_id).unwrap();
     assert_eq!(polymer.match_method.as_deref(), Some("declared"));
-    assert!(polymer.uniprot_id.is_some());
+    let parts = ops::list_polymer_uniprots(&mut c, polymer.id).unwrap();
+    assert_eq!(
+        parts
+            .iter()
+            .map(|u| u.match_method.as_str())
+            .collect::<Vec<_>>(),
+        ["declared"]
+    );
 }
 
 /// No lookup (None) leaves the polymer untried for a later run; `none` is
@@ -829,9 +837,11 @@ fn polymer_lookup_none_and_untried() {
     };
     import::import_simulation(&mut c, &none, &ImportOpts::default()).unwrap();
     let polymer = ops::get_polymer(&mut c, polymer_id).unwrap();
-    assert_eq!(
-        (polymer.match_method.as_deref(), polymer.uniprot_id),
-        (Some("none"), None)
+    assert_eq!(polymer.match_method.as_deref(), Some("none"));
+    assert!(
+        ops::list_polymer_uniprots(&mut c, polymer_id)
+            .unwrap()
+            .is_empty()
     );
 }
 

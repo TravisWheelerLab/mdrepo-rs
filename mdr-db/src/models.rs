@@ -339,13 +339,10 @@ pub struct Polymer {
     pub residues: Vec<String>,
     pub residues_hash: String,
     pub num_residues: i32,
-    pub uniprot_id: Option<i64>,
+    /// The outcome of the UniProt search for the whole polymer: null not yet
+    /// tried, `none` nothing found, else the method of its first
+    /// `md_polymer_uniprot` row (lowest `query_start`)
     pub match_method: Option<String>,
-    pub query_start: Option<i32>,
-    pub query_end: Option<i32>,
-    pub reference_start: Option<i32>,
-    pub reference_end: Option<i32>,
-    pub identity: Option<f64>,
 }
 
 /// A new polymer has not been looked up yet; `ops::set_polymer_reference`
@@ -360,17 +357,65 @@ pub struct NewPolymer {
     pub num_residues: i32,
 }
 
-/// A polymer's UniProt hit (md-repo-app 0289). The CHECK
-/// md_polymer_uniprot_hit wants all of it or none of it, so there are no
-/// optional fields. `match_method` is how it was found: `pdb` (an entry SIFTS
-/// lists for the declared PDB ID; 0290), `declared` (a declared UniProt ID;
-/// 0292) or `aligned` (the search), each passing the same BLAST rule. `query_*` are 1-based positions in the polymer's sequence,
-/// `reference_*` in the UniProt one; `identity` is a percent.
-#[derive(Debug, Clone, PartialEq, AsChangeset)]
-#[diesel(table_name = md_polymer)]
+/// A polymer's UniProt hit, as the lookup hands it to
+/// `ops::set_polymer_reference`, which writes it as an `md_polymer_uniprot`
+/// row (it lived on md_polymer from md-repo-app 0289 until 0294). The row's
+/// CHECKs want all of it, so there are no optional fields. `match_method` is
+/// how it was found: `pdb` (an entry SIFTS lists for the declared PDB ID;
+/// 0290), `declared` (a declared UniProt ID; 0292) or `aligned` (the search),
+/// each passing the same BLAST rule. `query_*` are 1-based positions in the
+/// polymer's sequence, `reference_*` in the UniProt one; `identity` is a
+/// percent.
+#[derive(Debug, Clone, PartialEq)]
 pub struct PolymerReference {
     pub match_method: String,
     pub uniprot_id: i64,
+    pub query_start: i32,
+    pub query_end: i32,
+    pub reference_start: i32,
+    pub reference_end: i32,
+    pub identity: f64,
+}
+
+// ── md_polymer_uniprot ────────────────────────────────────────────────────────
+
+/// One UniProt reference of a polymer, i.e. of one part of it (md-repo-app
+/// 0293): most polymers have one, a fused one (receptor + T4 lysozyme/BRIL)
+/// one per part. Unique on (`polymer_id`, `query_start`); `query_end` cannot
+/// pass the polymer's `num_residues` (a trigger, since that crosses tables).
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Queryable,
+    Selectable,
+    Identifiable,
+    Associations,
+    Serialize,
+    Deserialize,
+    ToSchema,
+)]
+#[diesel(table_name = md_polymer_uniprot)]
+#[diesel(belongs_to(Polymer))]
+#[diesel(belongs_to(Uniprot))]
+pub struct PolymerUniprot {
+    pub id: i64,
+    pub polymer_id: i64,
+    pub uniprot_id: i64,
+    pub match_method: String,
+    pub query_start: i32,
+    pub query_end: i32,
+    pub reference_start: i32,
+    pub reference_end: i32,
+    pub identity: f64,
+}
+
+#[derive(Debug, Insertable)]
+#[diesel(table_name = md_polymer_uniprot)]
+pub struct NewPolymerUniprot<'a> {
+    pub polymer_id: i64,
+    pub uniprot_id: i64,
+    pub match_method: &'a str,
     pub query_start: i32,
     pub query_end: i32,
     pub reference_start: i32,

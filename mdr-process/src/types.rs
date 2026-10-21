@@ -791,7 +791,8 @@ pub struct ImportChain {
 }
 
 // --------------------------------------------------
-/// What one polymer's UniProt lookup found, written to md_polymer once
+/// What one polymer's UniProt lookup found, written once, to
+/// md_polymer.match_method and a md_polymer_uniprot row
 /// (`ops::set_polymer_reference`)
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct PolymerLookup {

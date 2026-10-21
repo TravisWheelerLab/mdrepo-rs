@@ -11,6 +11,26 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.16.0 (unreleased)
+
+**Needs md-repo-app migrations 0293-0295, and the other way round:**
+0.15.x and earlier fail against a database migrated past 0294, as they
+write md_polymer's dropped hit columns. Deploy the two together.
+
+- **A polymer's UniProt hit is an `md_polymer_uniprot` row** (Travis and
+  Ken, 2026-10-21). md-repo-app 0293 creates the table, one row per part
+  of a polymer, so a fused receptor + T4 lysozyme can name both proteins
+  later, and copies each polymer's hit into it; 0294 drops md_polymer's
+  `uniprot_id`, `query_start/end`, `reference_start/end` and `identity`.
+  `md_polymer.match_method` stays, as the outcome of the search for the
+  whole polymer. `ops::set_polymer_reference` keeps its signature and
+  write-once rule: in one transaction it claims a polymer still untried
+  and inserts the hit's row, so a hit the table refuses (past the
+  polymer's end, now a trigger) leaves the polymer untried instead of
+  claimed with no row. Still one row per polymer: nothing here splits a
+  fused chain into parts yet. `ops::list_polymer_uniprots` reads them;
+  the import's reference-disagreement warning compares with the first.
+
 ## 0.15.1 (unreleased)
 
 - **TLS dependency update** (2026-10-21). No change in behavior. Cargo.lock

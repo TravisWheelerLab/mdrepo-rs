@@ -389,8 +389,11 @@ pub fn reference_disagreements(
         let Some(stored_method) = polymer.match_method.as_deref() else {
             continue;
         };
-        let stored = match polymer.uniprot_id {
-            Some(id) => Some(ops::get_uniprot(conn, id)?.uniprot_id),
+        // The first part's entry (lowest query_start), the one a lookup's
+        // single hit would be compared against; mdr-process writes no more
+        // than one md_polymer_uniprot row per polymer
+        let stored = match ops::list_polymer_uniprots(conn, polymer.id)?.first() {
+            Some(part) => Some(ops::get_uniprot(conn, part.uniprot_id)?.uniprot_id),
             None => None,
         };
         let ours = lookup.hit.as_ref().map(|h| h.uniprot.uniprot_id.clone());
