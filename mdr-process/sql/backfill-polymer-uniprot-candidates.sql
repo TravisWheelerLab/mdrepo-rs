@@ -1,0 +1,14 @@
+-- Input for `mdr-process backfill-polymer-uniprot` (0.17.0): the polymers
+-- that may have more than one UniProt reference. Protein, 20 or more
+-- residues, from a simulation with a declared PDB ID, and either "none" or
+-- leaving 20 or more residues outside its row(s). pdb_ids is every PDB ID
+-- the polymer's simulations declare. Run with psql against the database the
+-- backfill will read:
+--
+--   psql "$DSN" -f mdr-process/sql/backfill-polymer-uniprot-candidates.sql \
+--       > candidates.tsv
+--
+-- Ken's laptop copy of prod as of 2026-10-18 gave 3,002 polymers (1,968
+-- none, 1,033 pdb, 1 declared).
+-- \copy must be one line.
+\copy (SELECT p.id AS polymer_id, string_agg(DISTINCT lower(d.pdb_id), ',' ORDER BY lower(d.pdb_id)) AS pdb_ids, p.match_method, p.num_residues, p.sequence FROM md_polymer p JOIN md_chain c ON c.polymer_id = p.id JOIN md_simulation s ON s.id = c.simulation_id JOIN md_pdb d ON d.id = s.pdb_id WHERE p.polymer_type = 'protein' AND p.num_residues >= 20 AND (p.match_method = 'none' OR EXISTS (SELECT 1 FROM md_polymer_uniprot u WHERE u.polymer_id = p.id GROUP BY u.polymer_id HAVING p.num_residues - sum(u.query_end - u.query_start + 1) >= 20)) GROUP BY p.id ORDER BY p.id) TO STDOUT WITH (FORMAT csv, HEADER, DELIMITER E'\t')

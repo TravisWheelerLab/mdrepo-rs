@@ -18,6 +18,19 @@
 //!    pass rule below. The identity floor is there because SIFTS lists
 //!    entries per PDB entry, not per chain: without it an antibody's heavy
 //!    chain took its light chain's entry at 26.7% (1etz, 2026-10-14).
+//!
+//!    **A fused chain's parts** (0.17.0, Ken, 2026-10-21): a polymer can be
+//!    several proteins, a receptor with T4 lysozyme or BRIL inserted, or
+//!    two chains of the entry bonded into one, and gets a reference per
+//!    part. Parts come only from SIFTS: its accessions' BLAST rows, each at
+//!    `MIN_SIFTS_IDENTITY` over `MIN_RESIDUES` or more, taken by bit score,
+//!    a row that claims residues a part already has (more than
+//!    `JUNCTION_SHARE` of the shorter, or `JUNCTION_OVERLAP` for the same
+//!    entry) dropped, those shared at a junction trimmed off the lower
+//!    (`sifts_parts`). `MIN_SIFTS_COVERAGE` then applies to the
+//!    parts together. They take the place of the single SIFTS candidate;
+//!    when they cover too little, the single candidate is taken as before.
+//!    A declared UniProt ID, and the search, still give one reference.
 //! 3. **The search** (`aligned`): Swiss-Prot, then TrEMBL for what Swiss-Prot
 //!    did not pass.
 //! 4. Otherwise `none`.
@@ -34,7 +47,7 @@
 //! then to the lowest accession. The query and reference ranges and the
 //! identity are BLAST's for every method.
 //!
-//! The reference is the polymer's (md_polymer_uniprot), shared by every
+//! The references are the polymer's (md_polymer_uniprot), shared by every
 //! simulation with the same residues, and set once: the import writes it only to a polymer never
 //! looked up (`ops::set_polymer_reference`). Step 2 reads the simulation's
 //! own PDB and UniProt IDs, so simulations sharing a polymer can disagree;
@@ -94,11 +107,36 @@ const MIN_SIFTS_IDENTITY: f64 = 70.0;
 /// entries, and at the old 20 CALM1 (P0DP23) was cut from the list
 const MAX_TARGET_SEQS: &str = "500";
 
-/// Plain `-outfmt 6` plus the lengths the coverage floor needs and the
-/// count of identical residues `identity` needs
+/// Plain `-outfmt 6` plus the lengths the coverage floor needs, the count
+/// of identical residues `identity` needs, and the aligned sequences, which
+/// `realign` walks to trim a fusion's part exactly (0.17.0)
 const BLAST_OUTFMT: &str = "6 qaccver saccver pident length mismatch gapopen \
                             qstart qend sstart send evalue bitscore qlen slen \
-                            nident";
+                            nident qseq sseq";
+
+/// `BLAST_OUTFMT`'s columns, and the columns before 0.17.0 added `qseq
+/// sseq`: a search's results are reused from the work dir when they exist,
+/// so an older run's file can still be read (`read_hits`)
+const BLAST_COLUMNS: usize = 17;
+const BLAST_COLUMNS_BEFORE_ALIGNMENTS: usize = 15;
+
+/// Two rows of one entry may share this many of our residues and both be
+/// parts (`sifts_parts`); a row of one entry overlapping another of it by
+/// more is the same residues claimed again (a second BLAST row over a
+/// repeat). Rows of different entries go by `JUNCTION_SHARE` instead.
+pub const JUNCTION_OVERLAP: u32 = 5;
+
+/// Two parts of different entries may share up to this share of the
+/// shorter's residues, BLAST's local alignments running past the junction;
+/// the shared ones go to the part with the higher bit score
+/// (`sifts_parts`). A row overlapping a part by more is another candidate
+/// for the same residues (an ortholog, an isoform), not a part. Ken,
+/// 2026-10-22, from the backfill's laptop dry run (`--overlaps-out`): real
+/// junctions overlap by up to ~30 residues (receptor and BRIL 15-23,
+/// annexin and S100 12-28), competing candidates from ~25, so no count separates
+/// them; as a share of the shorter row, junctions are <= 0.5 and
+/// competing candidates 0.7-1.0.
+pub const JUNCTION_SHARE: f64 = 0.5;
 
 /// A tie's entries asked for their UniRef100 representative, at most
 const UNIREF_TRIES: usize = 5;
@@ -145,17 +183,26 @@ pub struct PolymerBlastHit {
     pub qlen: u32,
     pub slen: u32,
     pub nident: u32,
+    /// The alignment, ours and the entry's, gaps as `-`; None in a file
+    /// written before 0.17.0
+    #[serde(default)]
+    pub qseq: Option<String>,
+    #[serde(default)]
+    pub sseq: Option<String>,
 }
 
 // --------------------------------------------------
 /// One polymer to look up: what it is, and the declared PDB ID and UniProt
-/// IDs of the simulation that decides it
+/// IDs of the simulation that decides it. An import has one PDB ID at most;
+/// the UniProt backfill (`backfill_uniprot`) gives a polymer every PDB ID
+/// its simulations declare, and SIFTS's accessions for all of them are its
+/// candidates.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PolymerQuery {
     pub polymer_type: String,
     pub num_residues: usize,
     pub sequence: String,
-    pub pdb_id: Option<String>,
+    pub pdb_ids: Vec<String>,
     pub uniprot_ids: Vec<String>,
 }
 
@@ -163,21 +210,60 @@ pub struct PolymerQuery {
 /// queries related to their declared PDB entry
 pub type Lookups = (Vec<Option<PolymerLookup>>, Vec<String>, HashSet<usize>);
 
-/// `declared_matches`'s result: step 2 per polymer, the entries fetched,
-/// warnings, and the polymers related to their declared PDB entry
-pub type DeclaredMatches = (
-    HashMap<usize, Declared>,
-    Entries,
-    Vec<String>,
-    HashSet<usize>,
-);
+/// `declared_matches`'s result
+#[derive(Debug, Default)]
+pub struct DeclaredMatches {
+    /// Step 2 per polymer that has candidates
+    pub outcome: HashMap<usize, Declared>,
+    /// The UniProt entries fetched
+    pub entries: Entries,
+    pub warnings: Vec<String>,
+    /// The polymers related to their declared PDB entry (`related_to_pdb`)
+    pub related: HashSet<usize>,
+    /// Per polymer, its SIFTS rows that overlap (`sifts_parts`)
+    pub overlaps: HashMap<usize, Vec<Overlap>>,
+}
+
+// --------------------------------------------------
+/// Two of a polymer's SIFTS rows that overlap in our chain, and what came
+/// of it (`sifts_parts`), for the UniProt backfill's overlap report
+#[derive(Debug, Clone, PartialEq)]
+pub struct Overlap {
+    /// The row ranked first (`ACC:qstart-qend`, BLAST's range)
+    pub first: String,
+    /// The row ranked after it
+    pub second: String,
+    pub same_accession: bool,
+    /// Our residues the two share: against the first as kept when that
+    /// decided the second (it may have been trimmed by then), else as
+    /// BLAST gave them
+    pub length: u32,
+    /// `length` over the shorter of the two, measured as `length` is
+    pub share: f64,
+    /// `TRIMMED`, `DROPPED`, `TRIMMED_AWAY` or `MOOT`
+    pub outcome: &'static str,
+}
+
+/// The second row was kept as a part, without the shared residues
+pub const TRIMMED: &str = "trimmed";
+/// The second row overlapped the kept first by more than `JUNCTION_SHARE`
+/// of the shorter (`JUNCTION_OVERLAP` residues for the same entry): a
+/// competing candidate, not a part
+pub const DROPPED: &str = "dropped";
+/// The second row was trimmed to under `MIN_RESIDUES` or
+/// `MIN_SIFTS_IDENTITY`, or its alignment could not be walked
+pub const TRIMMED_AWAY: &str = "trimmed_away";
+/// The pair decided nothing: the first was not kept, or the second was
+/// dropped by another part
+pub const MOOT: &str = "moot";
 
 // --------------------------------------------------
 /// Step 2's outcome for one polymer that has candidates
 #[derive(Debug, Clone, PartialEq)]
 pub enum Declared {
-    /// The best candidate that passed
-    Match(Candidate),
+    /// What passed, in our sequence's order: a fused chain's parts
+    /// (`sifts_parts`), else the best candidate alone
+    Match(Vec<Candidate>),
     /// None passed: on to the search
     NoMatch,
     /// A candidate's UniProt entry could not be fetched, so this is not
@@ -213,7 +299,7 @@ pub fn lookup_chains(
                 polymer_type: chain.polymer_type.clone(),
                 num_residues: chain.residues.len(),
                 sequence: chain.sequence.clone(),
-                pdb_id: pdb_id.map(str::to_string),
+                pdb_ids: pdb_id.map(str::to_string).into_iter().collect(),
                 uniprot_ids: uniprot_ids.to_vec(),
             });
         }
@@ -287,15 +373,20 @@ pub fn lookup_polymers(
     }
 
     // 2. The declared candidates
-    let (declared, mut entries, declared_warnings, related) =
-        declared_matches(queries, &wanted, &sifts, work_dir, uniprot_cache)?;
+    let DeclaredMatches {
+        outcome: declared,
+        mut entries,
+        warnings: declared_warnings,
+        related,
+        ..
+    } = declared_matches(queries, &wanted, &sifts, work_dir, uniprot_cache)?;
     warnings.extend(declared_warnings);
     let mut to_search = vec![];
     for &i in &wanted {
         match declared.get(&i) {
-            Some(Declared::Match(candidate)) => {
+            Some(Declared::Match(parts)) => {
                 lookups[i] =
-                    finish(candidate, &queries[i].sequence, &entries, &mut warnings);
+                    finish(parts, &queries[i].sequence, &entries, &mut warnings);
             }
             Some(Declared::Unfinished) => {}
             Some(Declared::NoMatch) | None => to_search.push(i),
@@ -325,9 +416,12 @@ pub fn lookup_polymers(
         entries.extend(more);
         for &i in &to_search {
             lookups[i] = match found.get(&format!("p{i}")) {
-                Some(candidate) => {
-                    finish(candidate, &queries[i].sequence, &entries, &mut warnings)
-                }
+                Some(candidate) => finish(
+                    std::slice::from_ref(candidate),
+                    &queries[i].sequence,
+                    &entries,
+                    &mut warnings,
+                ),
                 // 4. Nothing passed
                 None => Some(none()),
             };
@@ -337,34 +431,39 @@ pub fn lookup_polymers(
     Ok((lookups, warnings, related))
 }
 
-/// A candidate's lookup once its UniProt entry is in hand; `none` when
-/// BLAST's range is past the entry's sequence (a search database older than
-/// the release UniProt serves now); None, with a warning, when the entry
-/// could not be fetched
-fn finish(
-    candidate: &Candidate,
+/// A lookup once the UniProt entries of its candidates (one, or a fused
+/// chain's parts) are in hand; `none` when a BLAST range is past its entry's
+/// sequence (a search database older than the release UniProt serves now):
+/// all the parts or none of them. None, with a warning, when an entry could
+/// not be fetched.
+pub fn finish(
+    candidates: &[Candidate],
     sequence: &str,
     entries: &Entries,
     warnings: &mut Vec<String>,
 ) -> Option<PolymerLookup> {
-    match &entries[&candidate.accession] {
-        Ok(entry) => Some(match make_hit(candidate, sequence, entry) {
-            Some(hit) => lookup(candidate, hit),
-            None => {
-                debug!(
-                    "{}'s range {}-{} is past its sequence; no reference",
-                    candidate.accession,
-                    candidate.reference_start,
-                    candidate.reference_end
-                );
-                none()
+    let mut hits = vec![];
+    for candidate in candidates {
+        match &entries[&candidate.accession] {
+            Ok(entry) => match make_hit(candidate, sequence, entry) {
+                Some(hit) => hits.push(hit),
+                None => {
+                    debug!(
+                        "{}'s range {}-{} is past its sequence; no reference",
+                        candidate.accession,
+                        candidate.reference_start,
+                        candidate.reference_end
+                    );
+                    return Some(none());
+                }
+            },
+            Err(e) => {
+                warnings.push(not_recorded(candidate, e));
+                return None;
             }
-        }),
-        Err(e) => {
-            warnings.push(not_recorded(candidate, e));
-            None
         }
     }
+    Some(lookup(candidates, hits))
 }
 
 // --------------------------------------------------
@@ -384,7 +483,7 @@ pub fn declared_matches(
 ) -> Result<DeclaredMatches> {
     let pdb_ids: HashSet<String> = wanted
         .iter()
-        .filter_map(|&i| queries[i].pdb_id.as_ref().map(|p| p.to_lowercase()))
+        .flat_map(|&i| queries[i].pdb_ids.iter().map(|p| p.to_lowercase()))
         .collect();
     let listed = sifts_accessions(sifts, &pdb_ids)?;
 
@@ -400,10 +499,10 @@ pub fn declared_matches(
                 found.insert(acc, DECLARED);
             }
         }
-        if let Some(accs) = q
-            .pdb_id
-            .as_ref()
-            .and_then(|p| listed.get(&p.to_lowercase()))
+        for accs in q
+            .pdb_ids
+            .iter()
+            .filter_map(|p| listed.get(&p.to_lowercase()))
         {
             for acc in accs {
                 found.insert(acc.clone(), PDB);
@@ -478,21 +577,323 @@ pub fn declared_matches(
     let pass = |hit: &PolymerBlastHit| passes_sifts(hit, &coverage) || passes(hit);
     let representatives = representatives(&top_ties_by(&rows, &pass), uniprot_cache);
     let best = best_hits_by(&rows, &representatives, &pass);
+    let preferred: HashSet<&str> =
+        representatives.values().map(String::as_str).collect();
 
+    // A fused chain's parts come from SIFTS alone (Ken, 2026-10-21): every
+    // accession it lists for the declared entry, any chain, so a chain
+    // that is two of the entry's chains bonded into one finds both. They
+    // replace the best single candidate when it is a SIFTS one or there is
+    // none; a declared UniProt ID that outscores SIFTS stays the one
+    // reference, as before. When the parts together are too little,
+    // things go as before 0.17.0: the best single candidate, or the search.
+    let mut overlaps = HashMap::new();
     for (&i, found) in &candidates {
         if outcome.contains_key(&i) {
             continue;
         }
-        let result = match best.get(&format!("p{i}")) {
-            Some(c) => Declared::Match(Candidate {
-                match_method: found[&c.accession],
-                ..c.clone()
-            }),
+        let id = format!("p{i}");
+        let single = best.get(&id).map(|c| Candidate {
+            match_method: found[&c.accession],
+            ..c.clone()
+        });
+        let sifts_rows: Vec<&PolymerBlastHit> = rows
+            .iter()
+            .filter(|h| {
+                h.qaccver == id && found.get(&accession(&h.saccver)) == Some(&PDB)
+            })
+            .collect();
+        let (parts, pairs) =
+            sifts_parts(&sifts_rows, queries[i].num_residues, &preferred);
+        if !pairs.is_empty() {
+            overlaps.insert(i, pairs);
+        }
+        let result = match single {
+            Some(c) if c.match_method != PDB => Declared::Match(vec![c]),
+            _ if !parts.is_empty() => Declared::Match(parts),
+            Some(c) => Declared::Match(vec![c]),
             None => Declared::NoMatch,
         };
         outcome.insert(i, result);
     }
-    Ok((outcome, entries, warnings, related))
+    Ok(DeclaredMatches {
+        outcome,
+        entries,
+        warnings,
+        related,
+        overlaps,
+    })
+}
+
+// --------------------------------------------------
+/// A part of a fused chain while `sifts_parts` works: a BLAST row, perhaps
+/// trimmed, perhaps joined with the next row of its entry
+#[derive(Debug, Clone)]
+struct Part {
+    accession: String,
+    query: (u32, u32),
+    reference: (u32, u32),
+    nident: u32,
+}
+
+impl Part {
+    fn len(&self) -> u32 {
+        self.query.1 - self.query.0 + 1
+    }
+
+    fn identity(&self) -> f64 {
+        100.0 * self.nident as f64 / self.len() as f64
+    }
+}
+
+/// Our residues two ranges share
+fn shared(x: (u32, u32), y: (u32, u32)) -> u32 {
+    (x.1.min(y.1) + 1).saturating_sub(x.0.max(y.0))
+}
+
+/// The parts of a polymer from its SIFTS accessions' BLAST rows (`rows`,
+/// one query's), in our sequence's order, and every pair of rows that
+/// overlap, with what came of it. A fused chain's proteins each align to
+/// their own stretch of it: GPCR + T4 lysozyme in a loop (3odu: CXCR4,
+/// T4L, CXCR4), BRIL fusions, a chain that is two PDB chains bonded.
+///
+/// A row is a candidate at `MIN_SIFTS_IDENTITY` or more over `MIN_RESIDUES`
+/// or more of ours. They are taken best bit score first (ties: the UniRef100
+/// representative, `preferred`; a canonical entry over an isoform; the
+/// lowest accession; our order). One overlapping a part already kept of
+/// another entry by more than `JUNCTION_SHARE` of the shorter of the two,
+/// or of the same entry by more than `JUNCTION_OVERLAP` residues, is
+/// dropped: the same residues claimed again, by an ortholog, an isoform, or
+/// a second BLAST row over a repeat. One overlapping by that or less is
+/// kept without the shared residues, which the part with the higher bit
+/// score keeps; its alignment is walked (`realign`) so its reference range
+/// moves exactly and its identity is counted again over what is left, by
+/// `identity`'s rule.
+///
+/// Two kept rows of the same entry with no part between them become one
+/// when they run on in our chain and in the entry, with fewer than
+/// `MIN_RESIDUES` unaligned between them in each: BLAST broke one alignment
+/// in two at a gap (a mutated stretch), as `sifts_coverage` counts them
+/// together. The residues of ours between count against the identity, as a
+/// residue of ours UniProt lacks always does. Rows of one entry stay apart
+/// when another part lies between (3odu's two CXCR4 rows), when they are on
+/// the same residues of the entry (a tethered dimer, 3nxn's two copies of
+/// the HIV protease in one chain), when 20 or more of ours between them
+/// align to nothing SIFTS lists, or when 20 or more of the entry's lie
+/// between them (Ken, 2026-10-22): a construct with a domain deleted, as
+/// iGluR S1S2's two lobes with the transmembrane part replaced by a
+/// linker, is two rows, not one over the domain it lacks.
+///
+/// No parts unless they cover `MIN_SIFTS_COVERAGE` of the polymer's
+/// `num_residues` together: still the guard against a wrong declared PDB ID,
+/// now over the whole chain rather than one protein, so a fusion that no
+/// single protein covered half of is found.
+pub fn sifts_parts(
+    rows: &[&PolymerBlastHit],
+    num_residues: usize,
+    preferred: &HashSet<&str>,
+) -> (Vec<Candidate>, Vec<Overlap>) {
+    let span = |a: u32, b: u32| (a.min(b), a.max(b));
+    let mut ranked: Vec<&PolymerBlastHit> = rows
+        .iter()
+        .copied()
+        .filter(|h| {
+            identity(h) >= MIN_SIFTS_IDENTITY && covered(h) as usize >= MIN_RESIDUES
+        })
+        .collect();
+    ranked.sort_by(|a, b| {
+        let (acc_a, acc_b) = (accession(&a.saccver), accession(&b.saccver));
+        b.bitscore
+            .total_cmp(&a.bitscore)
+            .then_with(|| {
+                preferred
+                    .contains(acc_b.as_str())
+                    .cmp(&preferred.contains(acc_a.as_str()))
+            })
+            .then_with(|| acc_a.contains('-').cmp(&acc_b.contains('-')))
+            .then_with(|| acc_a.cmp(&acc_b))
+            .then_with(|| a.qstart.min(a.qend).cmp(&b.qstart.min(b.qend)))
+    });
+    let label = |h: &PolymerBlastHit| {
+        let q = span(h.qstart, h.qend);
+        format!("{}:{}-{}", accession(&h.saccver), q.0, q.1)
+    };
+
+    let share_of = |len: u32, x: (u32, u32), y: (u32, u32)| {
+        len as f64 / (x.1 - x.0 + 1).min(y.1 - y.0 + 1) as f64
+    };
+
+    // (kept part, the ranked row it came from)
+    let mut kept: Vec<(Part, usize)> = vec![];
+    // (first, second) -> (length, share, outcome), for pairs that decided
+    // something
+    let mut decided: HashMap<(usize, usize), (u32, f64, &'static str)> = HashMap::new();
+    for (n, hit) in ranked.iter().enumerate() {
+        let query = span(hit.qstart, hit.qend);
+        let acc = accession(&hit.saccver);
+        // (kept row, its range, residues shared, share, too much to trim)
+        let against: Vec<_> = kept
+            .iter()
+            .map(|(p, k)| {
+                let len = shared(query, p.query);
+                let share = share_of(len, query, p.query);
+                let too_much = if p.accession == acc {
+                    len > JUNCTION_OVERLAP
+                } else {
+                    share > JUNCTION_SHARE
+                };
+                (*k, p.query, len, share, too_much)
+            })
+            .filter(|&(_, _, len, _, _)| len > 0)
+            .collect();
+        if against.iter().any(|a| a.4) {
+            for &(k, _, len, share, too_much) in &against {
+                let outcome = if too_much { DROPPED } else { MOOT };
+                decided.insert((k, n), (len, share, outcome));
+            }
+            continue;
+        }
+        let (mut lo, mut hi) = query;
+        for &(_, (ks, ke), _, _, _) in &against {
+            if ks <= lo {
+                lo = lo.max(ke + 1);
+            } else {
+                hi = hi.min(ks - 1);
+            }
+        }
+        let part = if (lo, hi) == query {
+            Some(Part {
+                accession: accession(&hit.saccver),
+                query,
+                reference: span(hit.sstart, hit.send),
+                nident: hit.nident,
+            })
+        } else {
+            realign(hit, lo, hi).filter(|p| {
+                p.len() as usize >= MIN_RESIDUES && p.identity() >= MIN_SIFTS_IDENTITY
+            })
+        };
+        let outcome = if part.is_some() {
+            TRIMMED
+        } else {
+            TRIMMED_AWAY
+        };
+        for &(k, _, len, share, _) in &against {
+            decided.insert((k, n), (len, share, outcome));
+        }
+        if let Some(part) = part {
+            kept.push((part, n));
+        }
+    }
+
+    // Every overlapping pair, decided or not
+    let mut overlaps = vec![];
+    for (a, first) in ranked.iter().enumerate() {
+        for (b, second) in ranked.iter().enumerate().skip(a + 1) {
+            let (length, share, outcome) = match decided.get(&(a, b)) {
+                Some(&got) => got,
+                None => {
+                    let x = span(first.qstart, first.qend);
+                    let y = span(second.qstart, second.qend);
+                    let len = shared(x, y);
+                    (len, share_of(len, x, y), MOOT)
+                }
+            };
+            if length > 0 {
+                overlaps.push(Overlap {
+                    first: label(first),
+                    second: label(second),
+                    same_accession: accession(&first.saccver)
+                        == accession(&second.saccver),
+                    length,
+                    share,
+                    outcome,
+                });
+            }
+        }
+    }
+
+    // One entry's rows joined where BLAST broke one alignment in two
+    let mut parts: Vec<Part> = kept.into_iter().map(|(p, _)| p).collect();
+    parts.sort_by_key(|p| p.query.0);
+    let mut joined: Vec<Part> = vec![];
+    for part in parts {
+        if let Some(last) = joined.last_mut()
+            && last.accession == part.accession
+            && part.query.0 - last.query.1 - 1 < MIN_RESIDUES as u32
+            && part.reference.0.saturating_sub(last.reference.1 + 1)
+                < MIN_RESIDUES as u32
+            && part.reference.1 > last.reference.1
+            && shared(last.reference, part.reference) <= JUNCTION_OVERLAP
+        {
+            last.query.1 = part.query.1;
+            last.reference.1 = part.reference.1;
+            last.nident += part.nident;
+            continue;
+        }
+        joined.push(part);
+    }
+
+    let total: u32 = joined.iter().map(Part::len).sum();
+    if num_residues == 0 || (total as f64) / (num_residues as f64) < MIN_SIFTS_COVERAGE
+    {
+        return (vec![], overlaps);
+    }
+    let parts = joined
+        .iter()
+        .map(|p| Candidate {
+            match_method: PDB,
+            accession: p.accession.clone(),
+            query_start: p.query.0 as i32,
+            query_end: p.query.1 as i32,
+            reference_start: p.reference.0 as i32,
+            reference_end: p.reference.1 as i32,
+            identity: p.identity(),
+        })
+        .collect();
+    (parts, overlaps)
+}
+
+/// A BLAST row cut to our residues `lo..=hi`, by walking its alignment
+/// (`qseq`, `sseq`): it starts and ends on the first and last of them
+/// aligned to a residue of the entry, which give the new ranges, and its
+/// identical residues are counted again. None when the row has no
+/// alignment (a file from before 0.17.0), the alignment does not fit the
+/// row's ranges, or nothing of ours in `lo..=hi` is aligned.
+fn realign(hit: &PolymerBlastHit, lo: u32, hi: u32) -> Option<Part> {
+    let (qseq, sseq) = (hit.qseq.as_deref()?, hit.sseq.as_deref()?);
+    if qseq.len() != sseq.len() || hit.qstart > hit.qend || hit.sstart > hit.send {
+        return None;
+    }
+    // Per column: our position, the entry's, and whether they are identical
+    let (mut q, mut s) = (hit.qstart - 1, hit.sstart - 1);
+    let mut columns = vec![];
+    for (a, b) in qseq.bytes().zip(sseq.bytes()) {
+        let qp = (a != b'-').then(|| {
+            q += 1;
+            q
+        });
+        let sp = (b != b'-').then(|| {
+            s += 1;
+            s
+        });
+        columns.push((qp, sp, a != b'-' && a.eq_ignore_ascii_case(&b)));
+    }
+    if (q, s) != (hit.qend, hit.send) {
+        return None;
+    }
+    let inside = |&(qp, sp, _): &(Option<u32>, Option<u32>, bool)| {
+        sp.is_some() && qp.is_some_and(|qp| (lo..=hi).contains(&qp))
+    };
+    let first = columns.iter().position(inside)?;
+    let last = columns.iter().rposition(inside)?;
+    let cut = &columns[first..=last];
+    Some(Part {
+        accession: accession(&hit.saccver),
+        query: (cut[0].0?, cut[cut.len() - 1].0?),
+        reference: (cut[0].1?, cut[cut.len() - 1].1?),
+        nident: cut.iter().filter(|c| c.2).count() as u32,
+    })
 }
 
 /// The polymers (`p<i>` -> i) that some SIFTS accession of their declared
@@ -820,17 +1221,21 @@ fn uniref100_representative(accession: &str, cache: Option<&Path>) -> Option<Str
     }
 }
 
-fn none() -> PolymerLookup {
+pub fn none() -> PolymerLookup {
     PolymerLookup {
         match_method: NONE.to_string(),
-        hit: None,
+        hits: vec![],
     }
 }
 
-fn lookup(candidate: &Candidate, hit: PolymerHit) -> PolymerLookup {
+/// A lookup of `candidates` (in our order, a hit each): the polymer's
+/// method is its first part's
+fn lookup(candidates: &[Candidate], mut hits: Vec<PolymerHit>) -> PolymerLookup {
+    hits.sort_by_key(|h| h.query_start);
+    let first = candidates.iter().min_by_key(|c| c.query_start);
     PolymerLookup {
-        match_method: candidate.match_method.to_string(),
-        hit: Some(hit),
+        match_method: first.map_or(NONE, |c| c.match_method).to_string(),
+        hits,
     }
 }
 
@@ -959,20 +1364,46 @@ pub fn blast_candidates(
     Ok(found)
 }
 
-/// The rows of a `BLAST_OUTFMT` file
+/// The rows of a `BLAST_OUTFMT` file. A file from before 0.17.0 (a reused
+/// search, `BLAST_COLUMNS_BEFORE_ALIGNMENTS` columns) reads with no
+/// alignments, which only `realign` wants; a row with any other count of
+/// columns is an error, not a misread.
 pub fn read_hits(results: &Path) -> Result<Vec<PolymerBlastHit>> {
     if !file_exists(results) {
         return Ok(vec![]);
     }
     let file =
         File::open(results).map_err(|e| anyhow!("{}: {e}", results.display()))?;
-    csv::ReaderBuilder::new()
+    let mut reader = csv::ReaderBuilder::new()
         .delimiter(b'\t')
         .has_headers(false)
-        .from_reader(BufReader::new(file))
-        .deserialize()
-        .map(|row| row.map_err(|e| anyhow!("{}: {e}", results.display())))
-        .collect()
+        .flexible(true)
+        .from_reader(BufReader::new(file));
+    let mut rows = vec![];
+    for (n, record) in reader.records().enumerate() {
+        let mut record = record.map_err(|e| anyhow!("{}: {e}", results.display()))?;
+        match record.len() {
+            BLAST_COLUMNS => {}
+            BLAST_COLUMNS_BEFORE_ALIGNMENTS => {
+                // Empty reads as None
+                record.push_field("");
+                record.push_field("");
+            }
+            other => bail!(
+                "{} row {}: {other} columns, not {BLAST_COLUMNS} (\"{BLAST_OUTFMT}\") \
+                 or the {BLAST_COLUMNS_BEFORE_ALIGNMENTS} before 0.17.0; delete it to \
+                 run BLAST again",
+                results.display(),
+                n + 1
+            ),
+        }
+        rows.push(
+            record
+                .deserialize(None)
+                .map_err(|e| anyhow!("{} row {}: {e}", results.display(), n + 1))?,
+        );
+    }
+    Ok(rows)
 }
 
 /// Our residues inside a hit's alignment
@@ -1173,7 +1604,8 @@ pub fn declared_not_referenced(
 ) -> Vec<String> {
     let mut references: Vec<&str> = chains
         .iter()
-        .filter_map(|c| c.reference.as_ref()?.hit.as_ref())
+        .filter_map(|c| c.reference.as_ref())
+        .flat_map(|r| &r.hits)
         .map(|h| h.uniprot.uniprot_id.as_str())
         .collect();
     references.sort();
@@ -1231,6 +1663,8 @@ mod tests {
             qlen,
             slen: 500,
             nident: (pident * length as f64 / 100.0).round() as u32,
+            qseq: None,
+            sseq: None,
         }
     }
 
@@ -1260,7 +1694,7 @@ mod tests {
             polymer_type: "protein".into(),
             num_residues: sequence.len(),
             sequence: sequence.into(),
-            pdb_id: pdb_id.map(str::to_string),
+            pdb_ids: pdb_id.map(str::to_string).into_iter().collect(),
             uniprot_ids: uniprot_ids.iter().map(|s| s.to_string()).collect(),
         }
     }
@@ -1311,16 +1745,24 @@ mod tests {
         cache: &Path,
     ) -> HashMap<usize, Declared> {
         let wanted: Vec<usize> = (0..queries.len()).collect();
-        let (got, _, warnings, _) =
-            declared_matches(queries, &wanted, sifts, work, Some(cache)).unwrap();
-        assert!(warnings.is_empty(), "{warnings:?}");
-        got
+        let got = declared_matches(queries, &wanted, sifts, work, Some(cache)).unwrap();
+        assert!(got.warnings.is_empty(), "{:?}", got.warnings);
+        got.outcome
     }
 
-    fn matched(got: &HashMap<usize, Declared>, i: usize) -> &Candidate {
+    /// A match's parts
+    fn parts_of(got: &HashMap<usize, Declared>, i: usize) -> &[Candidate] {
         match &got[&i] {
-            Declared::Match(c) => c,
+            Declared::Match(parts) => parts,
             other => panic!("polymer {i}: {other:?}"),
+        }
+    }
+
+    /// A match of one part
+    fn matched(got: &HashMap<usize, Declared>, i: usize) -> &Candidate {
+        match parts_of(got, i) {
+            [c] => c,
+            parts => panic!("polymer {i}: {} parts: {parts:?}", parts.len()),
         }
     }
 
@@ -1364,7 +1806,8 @@ mod tests {
         assert!(warnings.is_empty(), "{warnings:?}");
         let lookup = lookups[0].as_ref().unwrap();
         assert_eq!(lookup.match_method, DECLARED);
-        let hit = lookup.hit.as_ref().unwrap();
+        assert_eq!(lookup.hits.len(), 1);
+        let hit = &lookup.hits[0];
         assert_eq!(hit.uniprot.uniprot_id, "P38858");
         assert_eq!((hit.query_start, hit.query_end), (1, 99));
         assert_eq!((hit.reference_start, hit.reference_end), (1, 99));
@@ -1535,9 +1978,9 @@ mod tests {
     }
 
     /// A fusion (the protease, then 40 of calmodulin) whose PDB entry SIFTS
-    /// maps to both partners: neither covers 90% of the chain, but SIFTS
-    /// accessions skip the pass rule, so the partner with the top bit score
-    /// is taken, as 0.6.0 took SIFTS's largest segment (D3)
+    /// maps to both partners: each is a part (0.17.0; before, only the
+    /// partner with the top bit score was taken, as 0.6.0 took SIFTS's
+    /// largest segment, D3), the polymer's method the first's
     #[test]
     fn a_fusion_takes_the_best_sifts_partner() {
         if !has_blastp() {
@@ -1552,20 +1995,48 @@ mod tests {
         );
         let queries = vec![query(&format!("{PROTEASE}{CALM40}"), Some("9zzz"), &[])];
         let got = declared(&queries, &sifts, dir.path(), &cache);
-        let fused = matched(&got, 0);
+        let fused: Vec<(&str, &str, i32, i32, i32, i32)> = parts_of(&got, 0)
+            .iter()
+            .map(|c| {
+                (
+                    c.accession.as_str(),
+                    c.match_method,
+                    c.query_start,
+                    c.query_end,
+                    c.reference_start,
+                    c.reference_end,
+                )
+            })
+            .collect();
         assert_eq!(
-            (fused.accession.as_str(), fused.match_method),
-            ("P04585", PDB)
+            fused,
+            [
+                ("P04585", PDB, 1, 99, 1, 99),
+                ("P0DP23", PDB, 100, 139, 1, 40)
+            ]
         );
-        assert_eq!((fused.query_start, fused.query_end), (1, 99));
+
+        // Through the lookup: two hits, in our order
+        let (lookups, warnings, _) =
+            lookup_polymers(&queries, dir.path(), dir.path(), 1, Some(&cache)).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let lookup = lookups[0].as_ref().unwrap();
+        assert_eq!(lookup.match_method, PDB);
+        let accs: Vec<&str> = lookup
+            .hits
+            .iter()
+            .map(|h| h.uniprot.uniprot_id.as_str())
+            .collect();
+        assert_eq!(accs, ["P04585", "P0DP23"]);
     }
 
     /// The protease with 80 residues inserted after its 50th (3odu's CXCR4
     /// with T4 lysozyme in a loop): BLAST gives two rows, 1-50 and 129-179,
     /// each 28% of the chain, sharing two residues of the entry at the
-    /// insert. Together they are 55%, so the SIFTS accession is taken, with
-    /// the range of the row with the top bit score. Declared only by UniProt
-    /// ID, it still fails.
+    /// insert. Together they are 55%, so the SIFTS accession is taken, as
+    /// two parts (0.17.0; before, the row with the top bit score alone):
+    /// the 78 residues between align to nothing SIFTS lists, too many to
+    /// join the rows over. Declared only by UniProt ID, it still fails.
     #[test]
     fn a_sifts_accession_split_by_an_insert_is_taken() {
         if !has_blastp() {
@@ -1582,16 +2053,25 @@ mod tests {
             query(&inserted, None, &["P04585"]),
         ];
         let got = declared(&queries, &sifts, dir.path(), &cache);
-        let split = matched(&got, 0);
+        let split = parts_of(&got, 0);
+        assert_eq!(split.len(), 2, "{split:?}");
+        for part in split {
+            assert_eq!(
+                (part.accession.as_str(), part.match_method),
+                ("P04585", PDB)
+            );
+        }
+        assert_eq!((split[0].query_start, split[0].query_end), (1, 50));
+        assert_eq!(split[0].identity, 100.0);
+        // BLAST's second row as it is (130-179 on the entry's 50-99, one
+        // mismatch): the rows share a residue of the entry, none of ours,
+        // so nothing is trimmed
         assert_eq!(
-            (split.accession.as_str(), split.match_method),
-            ("P04585", PDB)
-        );
-        assert_eq!(split.identity, 100.0);
-        assert!(
-            [(1, 50), (129, 179)].contains(&(split.query_start, split.query_end)),
+            (split[1].query_end, split[1].reference_end),
+            (179, 99),
             "{split:?}"
         );
+        assert!(split[1].identity >= 95.0, "{split:?}");
         assert_eq!(got[&1], Declared::NoMatch);
     }
 
@@ -1721,6 +2201,334 @@ mod tests {
             ..hit.clone()
         };
         assert!(!passes_sifts(&empty, &coverage(200)));
+    }
+
+    /// A SIFTS row for `sifts_parts`: our `q` on the entry's `r`, its
+    /// alignment `qseq`/`sseq`, or all identical and gapless when None
+    fn sifts_row(
+        acc: &str,
+        q: (u32, u32),
+        r: (u32, u32),
+        bits: f64,
+        qlen: u32,
+        alignment: Option<(&str, &str)>,
+    ) -> PolymerBlastHit {
+        let (qseq, sseq) = match alignment {
+            Some((a, b)) => (a.to_string(), b.to_string()),
+            None => {
+                let a = "A".repeat((q.1 - q.0 + 1) as usize);
+                (a.clone(), a)
+            }
+        };
+        let nident = qseq
+            .bytes()
+            .zip(sseq.bytes())
+            .filter(|(a, b)| a == b && *a != b'-')
+            .count() as u32;
+        PolymerBlastHit {
+            sstart: r.0,
+            send: r.1,
+            nident,
+            length: qseq.len() as u32,
+            qseq: Some(qseq),
+            sseq: Some(sseq),
+            ..blast_row("p0", acc, 100.0, 0, q, qlen, bits)
+        }
+    }
+
+    /// `sifts_parts` as (accession, our range, the entry's range, identity
+    /// to 0.01), and its overlaps as (length, outcome)
+    #[allow(clippy::type_complexity)]
+    fn parts(
+        rows: &[PolymerBlastHit],
+        num_residues: usize,
+    ) -> (
+        Vec<(String, (i32, i32), (i32, i32), f64)>,
+        Vec<(u32, &'static str)>,
+    ) {
+        let refs: Vec<&PolymerBlastHit> = rows.iter().collect();
+        let (got, overlaps) = sifts_parts(&refs, num_residues, &HashSet::new());
+        assert!(got.iter().all(|c| c.match_method == PDB));
+        (
+            got.into_iter()
+                .map(|c| {
+                    (
+                        c.accession,
+                        (c.query_start, c.query_end),
+                        (c.reference_start, c.reference_end),
+                        (c.identity * 100.0).round() / 100.0,
+                    )
+                })
+                .collect(),
+            overlaps.iter().map(|o| (o.length, o.outcome)).collect(),
+        )
+    }
+
+    fn part(
+        acc: &str,
+        q: (i32, i32),
+        r: (i32, i32),
+        identity: f64,
+    ) -> (String, (i32, i32), (i32, i32), f64) {
+        (acc.to_string(), q, r, identity)
+    }
+
+    /// 3odu's shape: CXCR4, T4 lysozyme in its third loop, CXCR4 again.
+    /// BLAST's rows run two residues past each junction; the shared ones
+    /// go to the higher bit score, so T4L loses its first two and the second
+    /// CXCR4 row two to T4L, each entry range moved with them. Three rows,
+    /// the two CXCR4 ones apart, T4L between them.
+    #[test]
+    fn sifts_parts_of_a_receptor_with_t4l_inserted() {
+        let rows = [
+            sifts_row("P61073", (1, 230), (12, 241), 450.0, 482, None),
+            sifts_row("P00720", (229, 392), (1, 164), 320.0, 482, None),
+            sifts_row("P61073", (391, 482), (240, 331), 180.0, 482, None),
+        ];
+        let (got, overlaps) = parts(&rows, 482);
+        assert_eq!(
+            got,
+            [
+                part("P61073", (1, 230), (12, 241), 100.0),
+                part("P00720", (231, 392), (3, 164), 100.0),
+                part("P61073", (393, 482), (242, 331), 100.0),
+            ]
+        );
+        assert_eq!(overlaps, [(2, TRIMMED), (2, TRIMMED)]);
+    }
+
+    /// A BRIL fusion: BRIL then the receptor, two parts, neither half the
+    /// chain alone being the point: 106 of 420 and 314 of 420
+    #[test]
+    fn sifts_parts_of_a_bril_fusion() {
+        let rows = [
+            sifts_row("P29274", (107, 420), (1, 314), 620.0, 420, None),
+            sifts_row("P0ABE7", (1, 106), (23, 128), 210.0, 420, None),
+        ];
+        let (got, overlaps) = parts(&rows, 420);
+        assert_eq!(
+            got,
+            [
+                part("P0ABE7", (1, 106), (23, 128), 100.0),
+                part("P29274", (107, 420), (1, 314), 100.0),
+            ]
+        );
+        assert!(overlaps.is_empty());
+    }
+
+    /// Thrombin's light and heavy chains, two chains of the PDB entry (both
+    /// prothrombin, P00734), bonded into one chain of ours: SIFTS's
+    /// accessions are read over every chain of the entry, so both are
+    /// candidates. In prothrombin the heavy chain follows the light one, so
+    /// two rows that BLAST gives run on in our chain and in the entry, and
+    /// are one part; a missing residue of ours between them (36 of the
+    /// light chain's 37) costs nothing.
+    #[test]
+    fn sifts_parts_of_thrombin_light_and_heavy() {
+        let rows = [
+            sifts_row("P00734", (37, 295), (364, 622), 530.0, 295, None),
+            sifts_row("P00734", (1, 36), (327, 362), 70.0, 295, None),
+        ];
+        let (got, _) = parts(&rows, 295);
+        assert_eq!(got, [part("P00734", (1, 295), (327, 622), 100.0)]);
+
+        // SIFTS lists the entry's accession once, whichever chain
+        let dir = tempdir().unwrap();
+        let sifts = sifts_with(
+            dir.path(),
+            &[("1ppb", "L", "P00734"), ("1ppb", "H", "P00734")],
+        );
+        let got = sifts_accessions(&sifts, &["1ppb".to_string()].into()).unwrap();
+        assert_eq!(got["1ppb"], vec!["P00734"]);
+    }
+
+    /// T4 lysozyme alone (a chain of 3odu's entry, whose SIFTS lists CXCR4
+    /// too) stays one row; so does T4L whose alignment BLAST broke in two
+    /// at three residues of ours it does not align, the three counted
+    /// against the identity (161 identical of 164)
+    #[test]
+    fn sifts_parts_of_t4l_alone() {
+        let rows = [sifts_row("P00720", (1, 164), (1, 164), 330.0, 164, None)];
+        assert_eq!(
+            parts(&rows, 164).0,
+            [part("P00720", (1, 164), (1, 164), 100.0)]
+        );
+
+        let broken = [
+            sifts_row("P00720", (1, 80), (1, 80), 160.0, 164, None),
+            sifts_row("P00720", (84, 164), (85, 165), 158.0, 164, None),
+        ];
+        assert_eq!(
+            parts(&broken, 164).0,
+            [part("P00720", (1, 164), (1, 165), 98.17)]
+        );
+    }
+
+    /// A tethered dimer (3nxn: two copies of the HIV protease in one chain)
+    /// is two rows of the same entry, both on the same residues of it
+    #[test]
+    fn sifts_parts_of_a_tethered_dimer() {
+        let rows = [
+            sifts_row("P04585", (1, 99), (491, 589), 191.0, 202, None),
+            sifts_row("P04585", (104, 202), (491, 589), 190.0, 202, None),
+        ];
+        assert_eq!(
+            parts(&rows, 202).0,
+            [
+                part("P04585", (1, 99), (491, 589), 100.0),
+                part("P04585", (104, 202), (491, 589), 100.0),
+            ]
+        );
+    }
+
+    /// An ortholog (or isoform) of the same stretch, 100 of ours shared
+    /// with the part kept, is dropped, not a part; a row under 70% or
+    /// under 20 residues is no candidate at all
+    #[test]
+    fn sifts_parts_drop_an_overlapping_ortholog() {
+        let ortholog = PolymerBlastHit {
+            nident: 85,
+            ..sifts_row("Q9XXX1", (51, 150), (51, 150), 150.0, 300, None)
+        };
+        let distant = PolymerBlastHit {
+            nident: 60,
+            ..sifts_row("Q9XXX2", (201, 300), (1, 100), 120.0, 300, None)
+        };
+        let rows = [
+            sifts_row("P61073", (1, 300), (1, 300), 600.0, 300, None),
+            ortholog,
+            distant,
+        ];
+        let (got, overlaps) = parts(&rows, 300);
+        assert_eq!(got, [part("P61073", (1, 300), (1, 300), 100.0)]);
+        assert_eq!(overlaps, [(100, DROPPED)]);
+    }
+
+    /// A receptor + BRIL junction where BLAST's rows share 20 of ours, a
+    /// sixth of BRIL's 120: a junction, trimmed off BRIL, not a competing
+    /// candidate (the receptor + BRIL fusions of the laptop dry run shared
+    /// 15-23, 2026-10-21)
+    #[test]
+    fn sifts_parts_trim_a_wide_junction() {
+        let rows = [
+            sifts_row("P29274", (101, 420), (1, 320), 620.0, 420, None),
+            sifts_row("P0ABE7", (1, 120), (9, 128), 210.0, 420, None),
+        ];
+        let (got, overlaps) = parts(&rows, 420);
+        assert_eq!(
+            got,
+            [
+                part("P0ABE7", (1, 100), (9, 108), 100.0),
+                part("P29274", (101, 420), (1, 320), 100.0),
+            ]
+        );
+        assert_eq!(overlaps, [(20, TRIMMED)]);
+    }
+
+    /// Another entry on 70 of a 100-residue row's residues is over
+    /// `JUNCTION_SHARE` of the shorter: a competing candidate, dropped
+    #[test]
+    fn sifts_parts_drop_most_of_the_shorter() {
+        let rows = [
+            sifts_row("P61073", (1, 300), (1, 300), 600.0, 330, None),
+            sifts_row("Q9XXX1", (231, 330), (1, 100), 150.0, 330, None),
+        ];
+        let (got, overlaps) = parts(&rows, 330);
+        assert_eq!(got, [part("P61073", (1, 300), (1, 300), 100.0)]);
+        assert_eq!(overlaps, [(70, DROPPED)]);
+    }
+
+    /// Two rows of one entry sharing 10 of ours are the same residues
+    /// claimed again, though 10 is well under half of either: for the same
+    /// entry the limit is `JUNCTION_OVERLAP` residues
+    #[test]
+    fn sifts_parts_drop_the_same_entry_over_junction_overlap() {
+        let rows = [
+            sifts_row("P04585", (1, 110), (491, 600), 200.0, 210, None),
+            sifts_row("P04585", (101, 210), (491, 600), 190.0, 210, None),
+        ];
+        let (got, overlaps) = parts(&rows, 210);
+        assert_eq!(got, [part("P04585", (1, 110), (491, 600), 100.0)]);
+        assert_eq!(overlaps, [(10, DROPPED)]);
+    }
+
+    /// iGluR S1S2: the two lobes of GluA2's ligand-binding domain, the
+    /// transmembrane part between them (119 of the entry's) replaced by a
+    /// short linker of ours (3). Two rows, not one over a domain the chain
+    /// lacks (polymer 1954, 2026-10-21 dry run)
+    #[test]
+    fn sifts_parts_keep_a_deleted_domain_apart() {
+        let rows = [
+            sifts_row("P19491", (1, 120), (414, 533), 240.0, 258, None),
+            sifts_row("P19491", (124, 258), (653, 787), 270.0, 258, None),
+        ];
+        assert_eq!(
+            parts(&rows, 258).0,
+            [
+                part("P19491", (1, 120), (414, 533), 100.0),
+                part("P19491", (124, 258), (653, 787), 100.0),
+            ]
+        );
+    }
+
+    /// An overlap of 3: the lower row loses our residues 98-100, and the
+    /// columns they are in, a gap of the entry's among them, so its entry
+    /// range starts at 7, not 5 + 3; its identity is counted again over
+    /// what is left (59 of 60, from 59 of 63)
+    #[test]
+    fn sifts_parts_trim_exactly() {
+        // Our 98-160 on the entry's 5-66: columns 0 and 2 mismatched, 1 a
+        // residue of ours the entry lacks, 10 another mismatch
+        let mut qseq = "C".repeat(3) + &"A".repeat(60);
+        qseq.replace_range(10..11, "C");
+        let sseq = "A-A".to_string() + &"A".repeat(60);
+        let lower = sifts_row(
+            "P0ABE7",
+            (98, 160),
+            (5, 66),
+            100.0,
+            160,
+            Some((&qseq, &sseq)),
+        );
+        assert!((identity(&lower) - 100.0 * 59.0 / 63.0).abs() < 1e-9);
+        let rows = [
+            sifts_row("P29274", (1, 100), (1, 100), 200.0, 160, None),
+            lower,
+        ];
+        let (got, overlaps) = parts(&rows, 160);
+        assert_eq!(
+            got,
+            [
+                part("P29274", (1, 100), (1, 100), 100.0),
+                part("P0ABE7", (101, 160), (7, 66), 98.33),
+            ]
+        );
+        assert_eq!(overlaps, [(3, TRIMMED)]);
+
+        // With no alignment (a file from before 0.17.0) it cannot be
+        // trimmed, and goes
+        let rows = [
+            rows[0].clone(),
+            PolymerBlastHit {
+                qseq: None,
+                sseq: None,
+                ..rows[1].clone()
+            },
+        ];
+        let (got, overlaps) = parts(&rows, 160);
+        assert_eq!(got.len(), 1);
+        assert_eq!(overlaps, [(3, TRIMMED_AWAY)]);
+    }
+
+    /// Parts that cover under half the chain together are no parts
+    #[test]
+    fn sifts_parts_under_half_together_are_none() {
+        let rows = [
+            sifts_row("P29274", (1, 100), (1, 100), 200.0, 400, None),
+            sifts_row("P0ABE7", (101, 180), (1, 80), 150.0, 400, None),
+        ];
+        assert!(parts(&rows, 400).0.is_empty());
+        assert_eq!(parts(&rows, 360).0.len(), 2);
     }
 
     /// A structure file with residues `(number, one-letter)` laid as a
@@ -2062,12 +2870,38 @@ mod tests {
             (rows[0].qlen, rows[0].slen, rows[0].mismatch, rows[0].nident),
             (99, 1435, 3, 96)
         );
+        // A file from before 0.17.0: no alignment
+        assert_eq!(rows[0].qseq, None);
         let best = best_hits(&rows, &HashMap::new());
         assert_eq!(best["p0"].accession, "P04585");
         assert_eq!(
             (best["p0"].reference_start, best["p0"].reference_end),
             (489, 587)
         );
+    }
+
+    /// 0.17.0's columns read with the alignment; any count but 17 or the
+    /// old 15 is an error
+    #[test]
+    fn reads_blast_tsv_with_alignments() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("0.tsv");
+        fs::write(
+            &file,
+            "p0\tP04585\t100.000\t5\t0\t0\t1\t5\t3\t7\t1e-1\t11\t5\t9\t5\tPQITL\tPQITL\n",
+        )
+        .unwrap();
+        let rows = read_hits(&file).unwrap();
+        assert_eq!(rows[0].qseq.as_deref(), Some("PQITL"));
+        assert_eq!(rows[0].sseq.as_deref(), Some("PQITL"));
+
+        fs::write(
+            &file,
+            "p0\tP04585\t100.000\t5\t0\t0\t1\t5\t3\t7\t1e-1\t11\t5\t9\t5\tPQITL\n",
+        )
+        .unwrap();
+        let err = read_hits(&file).unwrap_err().to_string();
+        assert!(err.contains("16 columns"), "{err}");
     }
 
     /// A chain under 20 residues and a DNA chain get `none` with no index
@@ -2108,7 +2942,7 @@ mod tests {
         let mut a = chain(1, "protein", PROTEASE);
         a.reference = Some(PolymerLookup {
             match_method: PDB.into(),
-            hit: Some(PolymerHit {
+            hits: vec![PolymerHit {
                 uniprot: UniprotEntry {
                     uniprot_id: "P04585".into(),
                     ..Default::default()
@@ -2118,7 +2952,7 @@ mod tests {
                 reference_start: 489,
                 reference_end: 587,
                 identity: 96.0,
-            }),
+            }],
         });
         let declared = vec!["P04585-2".to_string(), "P03367".to_string()];
         let got = declared_not_referenced(&declared, &[a.clone()]);
@@ -2246,9 +3080,13 @@ mod tests {
             query(PROTEASE, Some("9mut"), &["P04585"]),
         ];
         let wanted: Vec<usize> = (0..queries.len()).collect();
-        let (got, _, warnings, related) =
-            declared_matches(&queries, &wanted, &sifts, dir.path(), Some(&cache))
-                .unwrap();
+        let DeclaredMatches {
+            outcome: got,
+            warnings,
+            related,
+            ..
+        } = declared_matches(&queries, &wanted, &sifts, dir.path(), Some(&cache))
+            .unwrap();
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(related, HashSet::from([1, 2]));
         assert_eq!(got[&0], Declared::NoMatch);

@@ -698,24 +698,105 @@ fn looked_up_chain(lookup: Option<PolymerLookup>) -> ImportChain {
 }
 
 fn hit(method: &str, accession: &str) -> PolymerLookup {
+    parts(method, &[(accession, 1, 25)])
+}
+
+/// A lookup of several parts: (accession, query_start, query_end)
+fn parts(method: &str, parts: &[(&str, i32, i32)]) -> PolymerLookup {
     PolymerLookup {
         match_method: method.into(),
-        hit: Some(PolymerHit {
-            uniprot: UniprotEntry {
-                uniprot_id: accession.into(),
-                name: format!("{accession} protein"),
-                sequence: "M".repeat(40),
-                response: Some(serde_json::json!({"primaryAccession": accession})),
-                entry_version: Some(7),
-                fetched_at: Some(chrono::Utc::now()),
-            },
-            query_start: 1,
-            query_end: 25,
-            reference_start: 11,
-            reference_end: 35,
-            identity: 96.0,
-        }),
+        hits: parts
+            .iter()
+            .map(|&(accession, start, end)| PolymerHit {
+                uniprot: UniprotEntry {
+                    uniprot_id: accession.into(),
+                    name: format!("{accession} protein"),
+                    sequence: "M".repeat(40),
+                    response: Some(serde_json::json!({"primaryAccession": accession})),
+                    entry_version: Some(7),
+                    fetched_at: Some(chrono::Utc::now()),
+                },
+                query_start: start,
+                query_end: end,
+                reference_start: start + 10,
+                reference_end: end + 10,
+                identity: 96.0,
+            })
+            .collect(),
     }
+}
+
+/// A fused chain's lookup (0.17.0): every part is a row, each UniProt
+/// entry upserted for it, in one write; a later simulation whose lookup
+/// names the same parts agrees, one with the first part alone disagrees
+#[test]
+fn import_writes_every_part() {
+    let mut c = conn_or_skip!();
+    let orcid = "0000-0002-0000-0293";
+    seed_user_with_orcid(&mut c, "refp", orcid);
+    let fused = parts(
+        "pdb",
+        &[
+            ("Q00051-importref", 1, 10),
+            ("Q00052-importref", 11, 18),
+            ("Q00051-importref", 19, 25),
+        ],
+    );
+    let sim = ExportSimulation {
+        chains: vec![looked_up_chain(Some(fused.clone()))],
+        ..base_sim("refp", orcid)
+    };
+    let sim_id =
+        import::import_simulation(&mut c, &sim, &ImportOpts::default()).unwrap();
+    let polymer_id =
+        ops::list_chains_for_simulation(&mut c, sim_id).unwrap()[0].polymer_id;
+    assert_eq!(
+        ops::get_polymer(&mut c, polymer_id)
+            .unwrap()
+            .match_method
+            .as_deref(),
+        Some("pdb")
+    );
+    let rows: Vec<(String, i32, i32)> = ops::list_polymer_uniprots(&mut c, polymer_id)
+        .unwrap()
+        .iter()
+        .map(|u| {
+            (
+                ops::get_uniprot(&mut c, u.uniprot_id).unwrap().uniprot_id,
+                u.query_start,
+                u.query_end,
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("Q00051-importref".to_string(), 1, 10),
+            ("Q00052-importref".to_string(), 11, 18),
+            ("Q00051-importref".to_string(), 19, 25)
+        ]
+    );
+
+    let same = ExportSimulation {
+        chains: vec![looked_up_chain(Some(fused))],
+        ..base_sim("refq", orcid)
+    };
+    assert!(
+        import::reference_disagreements(&mut c, &same)
+            .unwrap()
+            .is_empty()
+    );
+    let first_only = ExportSimulation {
+        chains: vec![looked_up_chain(Some(hit("pdb", "Q00051-importref")))],
+        ..base_sim("refr", orcid)
+    };
+    let got = import::reference_disagreements(&mut c, &first_only).unwrap();
+    assert_eq!(got.len(), 1);
+    assert!(
+        got[0].contains("Q00051-importref + Q00052-importref"),
+        "{}",
+        got[0]
+    );
 }
 
 /// The first import's lookup sets the polymer's reference, with the UniProt
@@ -831,7 +912,7 @@ fn polymer_lookup_none_and_untried() {
     let none = ExportSimulation {
         chains: vec![looked_up_chain(Some(PolymerLookup {
             match_method: "none".into(),
-            hit: None,
+            hits: vec![],
         }))],
         ..base_sim("ref4", orcid)
     };

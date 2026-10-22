@@ -102,6 +102,10 @@ pub enum Command {
     /// Fill md_chain, md_polymer and the polymers' UniProt references for
     /// simulations imported before mdr-process wrote them
     BackfillChains(BackfillArgs),
+
+    /// Rewrite the UniProt references of polymers looked up before a fused
+    /// chain could have one per part (SIFTS's parts; pdb and none only)
+    BackfillPolymerUniprot(BackfillPolymerUniprotArgs),
 }
 
 // --------------------------------------------------
@@ -144,6 +148,44 @@ pub struct BackfillArgs {
     /// chains) as an import of that file would write them
     #[arg(long)]
     pub replace_chains: bool,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Parser)]
+pub struct BackfillPolymerUniprotArgs {
+    /// TSV with a header: polymer_id, pdb_ids (comma-separated, lower
+    /// case), match_method, num_residues, sequence; built by
+    /// mdr-process/sql/backfill-polymer-uniprot-candidates.sql
+    #[arg(value_name = "TSV")]
+    pub input: PathBuf,
+
+    /// Server to read, and unless --dry-run to write
+    #[arg(short, long, value_name = "SERVER")]
+    pub server: Server,
+
+    /// Look everything up and write the reports, reading the database but
+    /// writing nothing to it
+    #[arg(short, long)]
+    pub dry_run: bool,
+
+    /// The report: one row per polymer, current and proposed rows, flags
+    #[arg(short, long, value_name = "FILE")]
+    pub out: PathBuf,
+
+    /// The second report: every pair of a polymer's SIFTS rows that
+    /// overlap, by how much, and whether the lower was trimmed or dropped
+    #[arg(long, value_name = "FILE")]
+    pub overlaps_out: PathBuf,
+
+    /// Directory for the BLAST files and the UniProt and UniRef cache
+    /// (`uniprot/`); give the real run its dry run's, so it writes the
+    /// entries the dry run reported
+    #[arg(short, long, value_name = "DIR")]
+    pub work_dir: PathBuf,
+
+    /// BLAST dir holding the PDB index (default: $MDREPO_WORK_DIR/blast)
+    #[arg(long, value_name = "DIR")]
+    pub blast_dir: Option<PathBuf>,
 }
 
 // --------------------------------------------------
@@ -796,16 +838,20 @@ pub struct ImportChain {
 
 // --------------------------------------------------
 /// What one polymer's UniProt lookup found, written once, to
-/// md_polymer.match_method and a md_polymer_uniprot row
+/// md_polymer.match_method and an md_polymer_uniprot row per hit
 /// (`ops::set_polymer_reference`)
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct PolymerLookup {
-    /// `pdb`, `aligned` or `none`
+    /// `pdb`, `declared`, `aligned` or `none`; with several hits, the first
+    /// part's
     pub match_method: String,
 
-    /// Set unless `match_method` is `none`
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hit: Option<PolymerHit>,
+    /// One per part, in the polymer's order: several for a fused chain's
+    /// SIFTS parts (0.17.0, `reference::sifts_parts`), else one; empty when
+    /// `match_method` is `none`. (Before 0.17.0 `import.json` had a single
+    /// `hit`; nothing reads the file back.)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hits: Vec<PolymerHit>,
 }
 
 // --------------------------------------------------

@@ -95,7 +95,7 @@ pub fn backfill_chains(args: &BackfillArgs) -> Result<()> {
                     polymer_type: chain.polymer_type.clone(),
                     num_residues: chain.residues.len(),
                     sequence: chain.sequence.clone(),
-                    pdb_id: row.pdb_id.clone(),
+                    pdb_ids: row.pdb_id.iter().cloned().collect(),
                     uniprot_ids: row.uniprot_ids.clone(),
                 });
                 decided_by.push(row.simulation_id);
@@ -356,7 +356,7 @@ fn disagreements(
                 continue;
             }
             others.push(PolymerQuery {
-                pdb_id: row.pdb_id.clone(),
+                pdb_ids: row.pdb_id.iter().cloned().collect(),
                 uniprot_ids: row.uniprot_ids.clone(),
                 ..q.clone()
             });
@@ -368,16 +368,24 @@ fn disagreements(
     }
 
     let wanted: Vec<usize> = (0..others.len()).collect();
-    let (declared, _, _, related) =
-        reference::declared_matches(&others, &wanted, &sifts, work_dir, Some(cache))?;
+    let reference::DeclaredMatches {
+        outcome: declared,
+        related,
+        ..
+    } = reference::declared_matches(&others, &wanted, &sifts, work_dir, Some(cache))?;
     for (j, &(i, sim)) in polymer_of.iter().enumerate() {
-        let decided = lookups[i]
-            .as_ref()
-            .and_then(|l| l.hit.as_ref())
-            .map(|h| h.uniprot.uniprot_id.as_str());
+        let decided: Vec<&str> = lookups[i]
+            .iter()
+            .flat_map(|l| &l.hits)
+            .map(|h| h.uniprot.uniprot_id.as_str())
+            .collect();
         // Only a simulation whose own candidates match can disagree
-        if let Some(Declared::Match(c)) = declared.get(&j)
-            && Some(c.accession.as_str()) != decided
+        if let Some(Declared::Match(parts)) = declared.get(&j)
+            && parts
+                .iter()
+                .map(|c| c.accession.as_str())
+                .collect::<Vec<_>>()
+                != decided
         {
             counts[i] += 1;
         }
@@ -427,27 +435,25 @@ fn pdb_check(
     reference::declared_pdb_not_matched(pdb_id, listed, &flags)
 }
 
-/// match_method, accession, query and reference ranges, identity
+/// match_method, accession, query and reference ranges, identity; a fused
+/// chain's parts `;`-separated in each column
 fn report_lookup(lookup: Option<&PolymerLookup>) -> String {
-    match lookup {
-        None => "untried\t\t\t\t\t\t".to_string(),
-        Some(PolymerLookup {
-            match_method,
-            hit: None,
-        }) => format!("{match_method}\t\t\t\t\t\t"),
-        Some(PolymerLookup {
-            match_method,
-            hit: Some(h),
-        }) => format!(
-            "{match_method}\t{}\t{}\t{}\t{}\t{}\t{:.1}",
-            h.uniprot.uniprot_id,
-            h.query_start,
-            h.query_end,
-            h.reference_start,
-            h.reference_end,
-            h.identity
-        ),
-    }
+    let Some(lookup) = lookup else {
+        return "untried\t\t\t\t\t\t".to_string();
+    };
+    let column = |f: &dyn Fn(&crate::types::PolymerHit) -> String| {
+        lookup.hits.iter().map(f).collect::<Vec<_>>().join(";")
+    };
+    format!(
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        lookup.match_method,
+        column(&|h| h.uniprot.uniprot_id.clone()),
+        column(&|h| h.query_start.to_string()),
+        column(&|h| h.query_end.to_string()),
+        column(&|h| h.reference_start.to_string()),
+        column(&|h| h.reference_end.to_string()),
+        column(&|h| format!("{:.1}", h.identity)),
+    )
 }
 
 // --------------------------------------------------
@@ -470,7 +476,7 @@ mod tests {
             polymer_type: "protein".into(),
             num_residues: n,
             sequence: "A".repeat(n),
-            pdb_id: None,
+            pdb_ids: vec![],
             uniprot_ids: vec![],
         }
     }
@@ -478,7 +484,7 @@ mod tests {
     fn lookup(method: &str) -> Option<PolymerLookup> {
         Some(PolymerLookup {
             match_method: method.into(),
-            hit: None,
+            hits: vec![],
         })
     }
 

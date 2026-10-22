@@ -1092,9 +1092,9 @@ fn set_polymer_reference_writes_once() {
 
     let found = polymer(&mut c, "cd");
     assert_eq!(ops::get_polymer(&mut c, found).unwrap().match_method, None);
-    assert!(ops::set_polymer_reference(&mut c, found, Some(&hit(calm1))).unwrap());
-    assert!(!ops::set_polymer_reference(&mut c, found, Some(&hit(calm2))).unwrap());
-    assert!(!ops::set_polymer_reference(&mut c, found, None).unwrap());
+    assert!(ops::set_polymer_reference(&mut c, found, &[hit(calm1)]).unwrap());
+    assert!(!ops::set_polymer_reference(&mut c, found, &[hit(calm2)]).unwrap());
+    assert!(!ops::set_polymer_reference(&mut c, found, &[]).unwrap());
     let p = ops::get_polymer(&mut c, found).unwrap();
     assert_eq!(p.match_method.as_deref(), Some("aligned"));
     let parts = ops::list_polymer_uniprots(&mut c, found).unwrap();
@@ -1111,7 +1111,7 @@ fn set_polymer_reference_writes_once() {
         match_method: "pdb".into(),
         ..hit(calm2)
     };
-    assert!(ops::set_polymer_reference(&mut c, by_pdb, Some(&pdb_hit)).unwrap());
+    assert!(ops::set_polymer_reference(&mut c, by_pdb, &[pdb_hit]).unwrap());
     let p = ops::get_polymer(&mut c, by_pdb).unwrap();
     assert_eq!(p.match_method.as_deref(), Some("pdb"));
     let parts = ops::list_polymer_uniprots(&mut c, by_pdb).unwrap();
@@ -1124,7 +1124,7 @@ fn set_polymer_reference_writes_once() {
     );
 
     let not_found = polymer(&mut c, "ce");
-    assert!(ops::set_polymer_reference(&mut c, not_found, None).unwrap());
+    assert!(ops::set_polymer_reference(&mut c, not_found, &[]).unwrap());
     let p = ops::get_polymer(&mut c, not_found).unwrap();
     assert_eq!(p.match_method.as_deref(), Some("none"));
     assert!(
@@ -1141,7 +1141,7 @@ fn set_polymer_reference_writes_once() {
         query_end: 6,
         ..hit(calm1)
     };
-    let err = ops::set_polymer_reference(&mut c, past_the_end, Some(&bad)).unwrap_err();
+    let err = ops::set_polymer_reference(&mut c, past_the_end, &[bad]).unwrap_err();
     assert!(err.to_string().contains("past the end of polymer"), "{err}");
     let p = ops::get_polymer(&mut c, past_the_end).unwrap();
     assert_eq!(p.match_method, None);
@@ -1150,6 +1150,190 @@ fn set_polymer_reference_writes_once() {
             .unwrap()
             .is_empty()
     );
+}
+
+/// Seeds for the multi-part tests: a UniProt row per accession, and a
+/// 300-residue protein polymer (the residues do not matter here)
+fn seed_parts(c: &mut PgConnection, key: &str, accs: &[&str]) -> (i64, Vec<i64>) {
+    let ids = accs
+        .iter()
+        .map(|acc| {
+            ops::insert_uniprot(
+                c,
+                NewUniprot {
+                    uniprot_id: format!("{acc}-{key}"),
+                    name: acc.to_string(),
+                    amino_length: 500,
+                    sequence: "M".into(),
+                    response: None,
+                    entry_version: None,
+                    fetched_at: None,
+                },
+            )
+            .unwrap()
+            .id
+        })
+        .collect();
+    let residues: Vec<String> = (0..300).map(|_| "ALA".to_string()).collect();
+    let polymer = ops::find_or_insert_polymer(
+        c,
+        &NewPolymer {
+            polymer_type: "protein".into(),
+            sequence: "A".repeat(300),
+            residues,
+            residues_hash: key.repeat(64 / key.len()),
+            num_residues: 300,
+        },
+    )
+    .unwrap();
+    (polymer, ids)
+}
+
+fn part(uniprot_id: i64, q: (i32, i32), r: (i32, i32)) -> PolymerReference {
+    PolymerReference {
+        match_method: "pdb".into(),
+        uniprot_id,
+        query_start: q.0,
+        query_end: q.1,
+        reference_start: r.0,
+        reference_end: r.1,
+        identity: 98.5,
+    }
+}
+
+/// 3odu's shape: CXCR4, T4 lysozyme, CXCR4 again, written in one go. The
+/// parts are rows in sequence order whatever order they come in, and the
+/// polymer takes the first part's method; a second lookup changes nothing.
+/// Two parts at one query_start (the table's unique key) fail the whole
+/// write, leaving the polymer untried.
+#[test]
+fn set_polymer_reference_with_several_parts() {
+    let mut c = conn_or_skip!();
+    let (polymer, ids) = seed_parts(&mut c, "a1", &["P61073", "P00720"]);
+    let (cxcr4, t4l) = (ids[0], ids[1]);
+    let parts = [
+        part(t4l, (100, 260), (2, 162)),
+        PolymerReference {
+            match_method: "declared".into(),
+            ..part(cxcr4, (263, 300), (230, 267))
+        },
+        part(cxcr4, (1, 98), (27, 124)),
+    ];
+    assert!(ops::set_polymer_reference(&mut c, polymer, &parts).unwrap());
+    assert!(!ops::set_polymer_reference(&mut c, polymer, &parts[..1]).unwrap());
+    let p = ops::get_polymer(&mut c, polymer).unwrap();
+    assert_eq!(p.match_method.as_deref(), Some("pdb"));
+    let got: Vec<(i64, i32, i32, i32, i32)> =
+        ops::list_polymer_uniprots(&mut c, polymer)
+            .unwrap()
+            .iter()
+            .map(|u| {
+                (
+                    u.uniprot_id,
+                    u.query_start,
+                    u.query_end,
+                    u.reference_start,
+                    u.reference_end,
+                )
+            })
+            .collect();
+    assert_eq!(
+        got,
+        [
+            (cxcr4, 1, 98, 27, 124),
+            (t4l, 100, 260, 2, 162),
+            (cxcr4, 263, 300, 230, 267)
+        ]
+    );
+
+    let (clash, ids) = seed_parts(&mut c, "a2", &["P61073", "P00720"]);
+    let same_start = [
+        part(ids[0], (1, 98), (27, 124)),
+        part(ids[1], (1, 160), (2, 161)),
+    ];
+    assert!(ops::set_polymer_reference(&mut c, clash, &same_start).is_err());
+    assert_eq!(ops::get_polymer(&mut c, clash).unwrap().match_method, None);
+    assert!(
+        ops::list_polymer_uniprots(&mut c, clash)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// The backfill's override of write-once: a polymer with one row (or
+/// `none`) gets its parts in place of what it had, method included; an
+/// empty list makes it `none`; a part the trigger refuses (past the
+/// polymer's end) rolls all of it back, old rows and method kept
+#[test]
+fn replace_polymer_uniprots_rewrites_a_polymer() {
+    let mut c = conn_or_skip!();
+    let (polymer, ids) = seed_parts(&mut c, "b1", &["P61073", "P00720"]);
+    let (cxcr4, t4l) = (ids[0], ids[1]);
+    assert!(
+        ops::set_polymer_reference(&mut c, polymer, &[part(cxcr4, (1, 98), (27, 124))])
+            .unwrap()
+    );
+
+    let parts = [
+        part(cxcr4, (1, 98), (27, 124)),
+        part(t4l, (100, 260), (2, 162)),
+    ];
+    assert_eq!(
+        ops::replace_polymer_uniprots(&mut c, polymer, "pdb", &parts).unwrap(),
+        2
+    );
+    let rows = ops::list_polymer_uniprots(&mut c, polymer).unwrap();
+    assert_eq!(
+        rows.iter()
+            .map(|u| (u.uniprot_id, u.query_start))
+            .collect::<Vec<_>>(),
+        [(cxcr4, 1), (t4l, 100)]
+    );
+
+    // Past the end: nothing changes
+    let bad = [part(t4l, (100, 301), (2, 203))];
+    let err =
+        ops::replace_polymer_uniprots(&mut c, polymer, "aligned", &bad).unwrap_err();
+    assert!(err.to_string().contains("past the end of polymer"), "{err}");
+    let p = ops::get_polymer(&mut c, polymer).unwrap();
+    assert_eq!(p.match_method.as_deref(), Some("pdb"));
+    assert_eq!(
+        ops::list_polymer_uniprots(&mut c, polymer).unwrap().len(),
+        2
+    );
+
+    // A polymer that was `none` gets rows; no rows makes it `none` again
+    let (none, ids) = seed_parts(&mut c, "b2", &["P0ABE7"]);
+    assert!(ops::set_polymer_reference(&mut c, none, &[]).unwrap());
+    ops::replace_polymer_uniprots(
+        &mut c,
+        none,
+        "pdb",
+        &[part(ids[0], (1, 106), (23, 128))],
+    )
+    .unwrap();
+    assert_eq!(
+        ops::get_polymer(&mut c, none)
+            .unwrap()
+            .match_method
+            .as_deref(),
+        Some("pdb")
+    );
+    assert_eq!(
+        ops::replace_polymer_uniprots(&mut c, none, "none", &[]).unwrap(),
+        0
+    );
+    assert_eq!(
+        ops::get_polymer(&mut c, none)
+            .unwrap()
+            .match_method
+            .as_deref(),
+        Some("none")
+    );
+    assert!(ops::list_polymer_uniprots(&mut c, none).unwrap().is_empty());
+
+    // No such polymer
+    assert!(ops::replace_polymer_uniprots(&mut c, -1, "none", &[]).is_err());
 }
 
 #[test]

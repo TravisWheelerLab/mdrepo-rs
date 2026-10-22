@@ -756,47 +756,100 @@ pub fn find_polymer(
         .optional()
 }
 
-/// Record a polymer's UniProt lookup: the hit (its `match_method`, `pdb`,
-/// `declared` or `aligned`) or `None` for looked-for-and-not-found ("none").
-/// Only a polymer not yet looked up (`match_method` null) is written, so a
-/// polymer's reference is set once and the first import decides: a later
-/// one, with other declared IDs or a newer UniProt release, must not quietly
-/// change it for every simulation sharing the row. The hit becomes the
-/// polymer's one `md_polymer_uniprot` row (md-repo-app 0293), inserted in the
-/// same transaction as the claim on `match_method`, so a hit the table's
-/// CHECKs or trigger refuse (`query_end` past the polymer's end) leaves the
-/// polymer untried rather than claimed with no row. Returns whether this call
-/// wrote it.
+/// Record a polymer's UniProt lookup: its hits, one per part (each with its
+/// `match_method`, `pdb`, `declared` or `aligned`), or none for
+/// looked-for-and-not-found ("none"). Only a polymer not yet looked up
+/// (`match_method` null) is written, so a polymer's reference is set once and
+/// the first import decides: a later one, with other declared IDs or a newer
+/// UniProt release, must not quietly change it for every simulation sharing
+/// the row. Each hit becomes an `md_polymer_uniprot` row (md-repo-app 0293),
+/// inserted in the same transaction as the claim on `match_method`, which
+/// takes the method of the first part (lowest `query_start`), so a hit the
+/// table's CHECKs or trigger refuse (`query_end` past the polymer's end, two
+/// parts at one `query_start`) leaves the polymer untried rather than
+/// claimed with some or no rows. Returns whether this call wrote it.
 pub fn set_polymer_reference(
     conn: &mut PgConnection,
     rid: i64,
-    hit: Option<&PolymerReference>,
+    hits: &[PolymerReference],
 ) -> QueryResult<bool> {
     conn.transaction(|conn| {
-        let method = hit.map_or("none", |h| h.match_method.as_str());
         let n = diesel::update(
             md_polymer::table
                 .filter(md_polymer::id.eq(rid))
                 .filter(md_polymer::match_method.is_null()),
         )
-        .set(md_polymer::match_method.eq(method))
+        .set(md_polymer::match_method.eq(polymer_method(hits)))
         .execute(conn)?;
-        if let (1, Some(h)) = (n, hit) {
-            diesel::insert_into(md_polymer_uniprot::table)
-                .values(NewPolymerUniprot {
-                    polymer_id: rid,
-                    uniprot_id: h.uniprot_id,
-                    match_method: &h.match_method,
-                    query_start: h.query_start,
-                    query_end: h.query_end,
-                    reference_start: h.reference_start,
-                    reference_end: h.reference_end,
-                    identity: h.identity,
-                })
-                .execute(conn)?;
+        if n == 1 {
+            insert_polymer_uniprots(conn, rid, hits)?;
         }
         Ok(n == 1)
     })
+}
+
+/// Replace a polymer's UniProt references, whatever it had: in one
+/// transaction, delete its `md_polymer_uniprot` rows, insert `hits` and set
+/// `md_polymer.match_method` to `match_method` (`none` with no hits). The
+/// explicit override of `set_polymer_reference`'s write-once rule, for a
+/// backfill that rewrites references the lookup now finds differently
+/// (`mdr-process backfill-polymer-uniprot`, 0.17.0: a fused chain's parts).
+/// The import never calls it. A row the table refuses rolls all of it back.
+/// Returns the rows inserted.
+pub fn replace_polymer_uniprots(
+    conn: &mut PgConnection,
+    polymer_id: i64,
+    match_method: &str,
+    hits: &[PolymerReference],
+) -> QueryResult<usize> {
+    conn.transaction(|conn| {
+        diesel::delete(
+            md_polymer_uniprot::table
+                .filter(md_polymer_uniprot::polymer_id.eq(polymer_id)),
+        )
+        .execute(conn)?;
+        let n = diesel::update(md_polymer::table.filter(md_polymer::id.eq(polymer_id)))
+            .set(md_polymer::match_method.eq(match_method))
+            .execute(conn)?;
+        if n != 1 {
+            return Err(diesel::result::Error::NotFound);
+        }
+        insert_polymer_uniprots(conn, polymer_id, hits)
+    })
+}
+
+/// md_polymer.match_method for these hits: the method of the first part
+/// (lowest `query_start`), or `none`
+fn polymer_method(hits: &[PolymerReference]) -> &str {
+    hits.iter()
+        .min_by_key(|h| h.query_start)
+        .map_or("none", |h| h.match_method.as_str())
+}
+
+fn insert_polymer_uniprots(
+    conn: &mut PgConnection,
+    polymer_id: i64,
+    hits: &[PolymerReference],
+) -> QueryResult<usize> {
+    let rows: Vec<NewPolymerUniprot> = hits
+        .iter()
+        .map(|h| NewPolymerUniprot {
+            polymer_id,
+            uniprot_id: h.uniprot_id,
+            match_method: &h.match_method,
+            query_start: h.query_start,
+            query_end: h.query_end,
+            reference_start: h.reference_start,
+            reference_end: h.reference_end,
+            identity: h.identity,
+        })
+        .collect();
+    if rows.is_empty() {
+        return Ok(0);
+    }
+    diesel::insert_into(md_polymer_uniprot::table)
+        .values(&rows)
+        .execute(conn)
 }
 
 /// A polymer's UniProt references, one per part, in sequence order

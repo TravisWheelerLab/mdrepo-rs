@@ -3,7 +3,7 @@ use clap::Parser;
 use libmdrepo::metadata::{Meta, MetaCheckOptions};
 use log::info;
 use mdr_process::{
-    backfill, process, reprocess, sequence, ticket,
+    backfill, backfill_uniprot, process, reprocess, sequence, ticket,
     types::{Cli, Command, LogLevel},
     validate,
 };
@@ -66,6 +66,11 @@ fn run(args: Cli) -> Result<()> {
         }
         Command::BackfillChains(args) => {
             backfill::backfill_chains(args)?;
+            info!("Finished");
+            Ok(())
+        }
+        Command::BackfillPolymerUniprot(args) => {
+            backfill_uniprot::backfill_polymer_uniprot(args)?;
             info!("Finished");
             Ok(())
         }
