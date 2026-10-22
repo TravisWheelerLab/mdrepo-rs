@@ -105,6 +105,7 @@ fn base_sim(key: &str, orcid: &str) -> ExportSimulation {
         simulation_id: None,
         lead_contributor_orcid: orcid.to_string(),
         unique_file_hash_string: format!("hash-{key}"),
+        legacy_unique_file_hash_string: None,
         alias: Some(format!("alias-{key}")),
         short_description: format!("test simulation {key}"),
         description: None,

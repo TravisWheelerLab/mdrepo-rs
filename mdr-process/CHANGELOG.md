@@ -11,6 +11,23 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.17.0 (unreleased)
+
+**Needs no migration.** `md_simulation.unique_file_hash_string` becomes a
+different string for the same files; a simulation imported before is still
+recognised by its old one.
+
+- **The file hash string is a digest** (Nick, 2026-10-21).
+  `unique_file_hash_string` was the sorted per-file MD5s joined with commas,
+  33 bytes a file, and the column's unique index refuses a row over 2704
+  bytes, so a simulation of more than about 80 trajectory files could not
+  be imported: zenodo:14013285's Folding@home RUNs hold 85-100 each, and
+  every push rolled back. It is now the SHA-256 hex digest of that joined
+  string, 64 characters whatever the count. import.json carries the joined
+  form as `legacy_unique_file_hash_string`; the import matches by the
+  digest first and the joined form second, so a simulation imported before
+  still deduplicates, and a reprocess rewrites its hash to the digest.
+
 ## 0.16.0 (unreleased)
 
 **Needs md-repo-app migrations 0293-0295, and the other way round:**

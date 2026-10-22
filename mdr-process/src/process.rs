@@ -23,6 +23,7 @@ use log::debug;
 use rayon::prelude::*;
 use regex::Regex;
 use sha1::{Digest, Sha1};
+use sha2::{Digest as Sha2Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
     env,
@@ -1667,7 +1668,9 @@ pub fn make_import_json(
         )?
     };
 
-    let unique_file_hash_string = get_unique_file_hash(&args.meta, args.input_dir);
+    let file_md5s = get_file_md5s(&args.meta, args.input_dir);
+    let unique_file_hash_string = unique_file_hash(&file_md5s);
+    let legacy_unique_file_hash_string = legacy_unique_file_hash(&file_md5s);
 
     let blast_start = Instant::now();
     let (uniprots, uniprot_warnings) = get_uniprot_entries(
@@ -1750,6 +1753,7 @@ pub fn make_import_json(
         simulation_id: args.reprocess_simulation_id,
         lead_contributor_orcid: args.meta.lead_contributor_orcid,
         unique_file_hash_string,
+        legacy_unique_file_hash_string: Some(legacy_unique_file_hash_string),
         alias: args.meta.alias,
         description: args.meta.description,
         short_description: args.meta.short_description,
@@ -3016,7 +3020,10 @@ fn get_pdbe(path: &str) -> Option<serde_json::Value> {
 }
 
 // --------------------------------------------------
-pub fn get_unique_file_hash(meta: &Meta, input_dir: &Path) -> String {
+/// The MD5 of every file a simulation is deposited from -- structure,
+/// topology, trajectories, additional files -- sorted, so the same set of
+/// files gives the same list whatever order the metadata names them in.
+pub fn get_file_md5s(meta: &Meta, input_dir: &Path) -> Vec<String> {
     let mut input_files = vec![
         meta.structure_file_name.to_string(),
         meta.topology_file_name.to_string(),
@@ -3038,8 +3045,36 @@ pub fn get_unique_file_hash(meta: &Meta, input_dir: &Path) -> String {
         .collect();
 
     md5s.sort();
+    md5s
+}
 
+/// `unique_file_hash_string`: what identifies a simulation by the files it was
+/// built from, for `import` to recognise a re-upload. The SHA-256 of the
+/// sorted MD5s joined with commas, as hex: 64 characters however many files
+/// there are.
+///
+/// It was the joined MD5s themselves, 33 bytes a file. The column carries a
+/// unique constraint, whose btree index Postgres caps at 2704 bytes an entry,
+/// so a simulation of more than about 80 files could not be imported at all:
+/// zenodo:14013285's Folding@home runs, 85 to 100 clone trajectories each,
+/// failed on "index row size 3384 exceeds btree version 4 maximum 2704"
+/// (2026-10-21). Simulations imported before carry the joined form, which
+/// [`legacy_unique_file_hash`] still produces for `import` to match them by.
+pub fn unique_file_hash(md5s: &[String]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(legacy_unique_file_hash(md5s).as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// The form `unique_file_hash_string` took before it was digested: the sorted
+/// MD5s joined with commas. Only for matching simulations imported then.
+pub fn legacy_unique_file_hash(md5s: &[String]) -> String {
     md5s.join(",")
+}
+
+/// A simulation's `unique_file_hash_string` from its metadata and files.
+pub fn get_unique_file_hash(meta: &Meta, input_dir: &Path) -> String {
+    unique_file_hash(&get_file_md5s(meta, input_dir))
 }
 
 // --------------------------------------------------
@@ -4794,5 +4829,29 @@ mol_id: No ligand-like residue found in minimal.pdb
         assert_eq!(c.n_terminal_cap.as_deref(), Some("ACE"));
         assert_eq!(c.c_terminal_cap.as_deref(), Some("NH2"));
         assert!(declared_chain("SXA", metadata::SequenceType::Protein).is_err());
+    }
+
+    /// The file set's identifier is a fixed-size digest of the sorted MD5s,
+    /// the same whatever order the files come in and the same length for
+    /// 3 files or 300; the joined form it replaces is still produced, for
+    /// simulations imported before the digest.
+    #[test]
+    fn unique_file_hash_is_a_digest_of_the_sorted_md5s() {
+        let a = "0cc175b9c0f1b6a831c399e269772661".to_string();
+        let b = "92eb5ffee6ae2fec3ad71c777531578f".to_string();
+        let few = vec![a.clone(), b.clone()];
+        let digest = unique_file_hash(&few);
+        assert_eq!(digest.len(), 64);
+        assert!(digest.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(legacy_unique_file_hash(&few), format!("{a},{b}"));
+
+        let mut hasher = Sha256::new();
+        hasher.update(format!("{a},{b}").as_bytes());
+        assert_eq!(digest, format!("{:x}", hasher.finalize()));
+
+        let many: Vec<String> = (0..100).map(|i| format!("{i:032x}")).collect();
+        assert_eq!(unique_file_hash(&many).len(), 64);
+        assert!(legacy_unique_file_hash(&many).len() > 2704);
+        assert_ne!(unique_file_hash(&many), digest);
     }
 }

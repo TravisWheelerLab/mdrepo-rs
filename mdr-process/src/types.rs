@@ -642,6 +642,12 @@ pub struct ExportSimulation {
 
     pub unique_file_hash_string: String,
 
+    /// The file set in the form `unique_file_hash_string` took before it was
+    /// digested, the sorted MD5s joined with commas, so `import` can match a
+    /// simulation imported then. Absent from payloads written before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy_unique_file_hash_string: Option<String>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
 

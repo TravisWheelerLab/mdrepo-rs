@@ -457,6 +457,16 @@ fn upsert_simulation(
         matched_by = "unique_file_hash_string";
     }
 
+    // A simulation imported before the hash string was digested carries the
+    // joined MD5s; a reprocess of it writes the digest in their place.
+    if sim_id.is_none()
+        && let Some(legacy) = &sim.legacy_unique_file_hash_string
+    {
+        debug!("Searching unique_file_hash_string in its earlier, joined form");
+        sim_id = ops::find_simulation_id_by_hash(conn, legacy)?;
+        matched_by = "unique_file_hash_string (joined MD5s, as imported before)";
+    }
+
     // Only a reprocess clears the old file, replicate and uniprot rows (see
     // import_simulation), so updating a finished simulation any other way
     // leaves the rows the new payload no longer names beside the new ones
