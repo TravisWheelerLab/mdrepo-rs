@@ -19,12 +19,17 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   accession `pdb_chain_uniprot.tsv` lists for any chain of the declared
   entry, compared with the chain by BLAST as before. A row is a part at 70%
   identity over 20 or more residues; rows are taken by bit score, one that
-  overlaps a part already kept by more than `JUNCTION_OVERLAP` (5) of our
-  residues is dropped (an ortholog, an isoform), one that overlaps by 5 or
-  fewer is trimmed, the shared residues going to the higher score. Two rows
-  of one entry with no part between them, in order in our chain and the
-  entry and fewer than 20 of ours between, are one row (BLAST broke an
-  alignment at a gap); a tethered dimer's two copies stay two. The 50%
+  overlaps a part of another entry already kept by more than half the
+  shorter of the two (`JUNCTION_SHARE`, Ken 2026-10-22: real junctions
+  overlap by up to ~30 residues, so no fixed count works) is dropped (an
+  ortholog, an isoform), one that overlaps by that or less is trimmed, the
+  shared residues going to the higher score; for two rows of the same entry
+  the limit stays 5 residues (`JUNCTION_OVERLAP`). Two rows of one entry
+  with no part between them, in order in our chain and the entry and fewer
+  than 20 residues between in each, are one row (BLAST broke an alignment
+  at a gap); 20 or more of the entry's between (a deleted domain, iGluR
+  S1S2; Ken 2026-10-22) keep them two, as do a tethered dimer's two copies.
+  The 50%
   coverage floor applies to the parts together, so a fusion that no single
   protein covered half of, `none` before, is found. When the parts cover
   too little, the single best candidate is taken as in 0.16.0. Declared
@@ -46,8 +51,8 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   `none_to_found`, `t4l_only_gains_parts`, `first_accession_changes`,
   `coverage_shrinks`, `unchanged`, `skipped_not_pdb_or_none`,
   `several_pdb_ids`), `--overlaps-out` (every pair of overlapping SIFTS
-  rows, its overlap and whether it was trimmed or dropped, to tune
-  `JUNCTION_OVERLAP`), `-w` (the UniProt cache the real run reuses). Both
+  rows, its overlap, the share of the shorter row that is, and whether it
+  was trimmed or dropped), `-w` (the UniProt cache the real run reuses). Both
   runs read the database; the real run writes only polymers that are `pdb`
   or `none`, unchanged since read and with different rows, through the new
   `ops::replace_polymer_uniprots` (delete, insert and set `match_method` in

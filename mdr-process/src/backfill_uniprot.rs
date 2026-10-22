@@ -38,7 +38,8 @@
 //!
 //! Reports: `--out`, one row per polymer, with its flags; `--overlaps-out`,
 //! one row per pair of a polymer's SIFTS rows that overlap in our chain,
-//! with what came of it, to choose `reference::JUNCTION_OVERLAP` from.
+//! with the share of the shorter it is and what came of it, to check
+//! `reference::JUNCTION_SHARE` against.
 
 use crate::{
     import,
@@ -461,7 +462,8 @@ fn write_overlaps(
     let mut out = File::create(path).map_err(|e| anyhow!("{}: {e}", path.display()))?;
     writeln!(
         out,
-        "polymer_id\tfirst\tsecond\tsame_accession\toverlap\toutcome\tjunction_overlap"
+        "polymer_id\tfirst\tsecond\tsame_accession\toverlap\tshare\toutcome\t\
+         junction_overlap\tjunction_share"
     )?;
     for (n, row) in rows.iter().enumerate() {
         let Some(pairs) = query_of.get(&n).and_then(|i| overlaps.get(i)) else {
@@ -470,14 +472,16 @@ fn write_overlaps(
         for pair in pairs {
             writeln!(
                 out,
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{:.3}\t{}\t{}\t{}",
                 row.polymer_id,
                 pair.first,
                 pair.second,
                 pair.same_accession,
                 pair.length,
+                pair.share,
                 pair.outcome,
-                reference::JUNCTION_OVERLAP
+                reference::JUNCTION_OVERLAP,
+                reference::JUNCTION_SHARE
             )?;
         }
     }
