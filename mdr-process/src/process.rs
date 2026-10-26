@@ -22,6 +22,7 @@ use libmdrepo::{
 use log::debug;
 use rayon::prelude::*;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use sha2::{Digest as Sha2Digest, Sha256};
 use std::{
@@ -571,16 +572,19 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
     ]
     .map(|filename| trajectory_dir.join(filename));
 
-    // None unless this run actually converted the trajectory: the arm below
-    // that finds the outputs already present never reads the source, so it
-    // cannot know, and must not claim to.
-    let mut source_has_time_axis: Option<bool> = None;
+    // Known only from the run that converted the trajectory: the arm below
+    // that finds the outputs already present never reads the source. That
+    // run leaves its verdict in `source_timing.json`, and without it (a
+    // directory converted before 0.19.0) nothing may claim to know.
+    let source_has_time_axis: Option<bool>;
 
     if full_min_files.iter().all(|f| file_exists(f)) {
         debug!(
             r#"Full/minimal files all exist for "{}""#,
             args.trajectory_file_name
         );
+        source_has_time_axis = read_source_timing(&trajectory_dir);
+        debug!("Source time axis (from the converting run): {source_has_time_axis:?}");
     } else {
         let mut trajectory_path = args.input_dir.join(args.trajectory_file_name);
         let trajectory_ext = trajectory_path.extension().ok_or_else(|| {
@@ -752,10 +756,15 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
         }
 
         // The wrapper reports what the SOURCE trajectory held, before this
-        // conversion rewrote its timing. Read it here or not at all.
+        // conversion rewrote its timing. Read it here or not at all, and keep
+        // it: a run that converts and then fails before duration.json is
+        // written (BLAST, the RMSD ceiling, the import) is re-run with the
+        // outputs present, and a time-less source that passed here was then
+        // refused on the re-run, its fabricated 1 ps measured as real.
         source_has_time_axis =
             parse_time_axis_marker(&String::from_utf8_lossy(&output.stdout));
         debug!("Source time axis: {source_has_time_axis:?}");
+        write_source_timing(&trajectory_dir, source_has_time_axis)?;
     }
 
     let full_gro = trajectory_dir.join("full.gro");
@@ -1101,14 +1110,16 @@ pub fn blast_uniprot(
     let processed_dir = fasta_sequence.parent().ok_or_else(|| {
         anyhow!("No parent directory for '{}'", fasta_sequence.display())
     })?;
-    let blast_results = processed_dir.join(format!(
-        "blast.{}.tsv",
-        uniprot_db.to_string().to_lowercase()
-    ));
+    let db_name = uniprot_db.to_string().to_lowercase();
+    let blast_results = processed_dir.join(format!("blast.{db_name}.tsv"));
+    // The query the results were made from, kept beside them: the results
+    // are reused only for the same sequences (`same_query`)
+    let blast_query = processed_dir.join(format!("blast.{db_name}.fa"));
+    let query_text = read_file(fasta_sequence)?;
 
-    if file_exists(&blast_results) {
+    if same_query(&blast_results, &blast_query, &query_text) {
         debug!(
-            "{uniprot_db} BLAST results exists ({})",
+            "{uniprot_db} BLAST results exist for these sequences ({})",
             blast_results.display()
         );
     } else {
@@ -1125,6 +1136,8 @@ pub fn blast_uniprot(
             &blast_results,
             num_threads,
         )?;
+        fs::write(&blast_query, &query_text)
+            .map_err(|e| anyhow!("{}: {e}", blast_query.display()))?;
     }
 
     let mut results = vec![];
@@ -1297,13 +1310,11 @@ pub fn get_sequence(
 ) -> Result<PathBuf> {
     let sequence_file = processed_dir.join("sequence.fa");
 
-    if file_exists(&sequence_file) {
-        debug!("Sequence file exists");
-    } else {
-        debug!("Creating sequence file");
-        fs::write(&sequence_file, sequence::fasta_from_chains(chains))
-            .map_err(|e| anyhow!("{}: {e}", sequence_file.display()))?;
-    }
+    // Always written: it is what the chains read this run say, and a file
+    // left by an earlier run (an older splitter) would be searched instead
+    debug!("Writing sequence file");
+    fs::write(&sequence_file, sequence::fasta_from_chains(chains))
+        .map_err(|e| anyhow!("{}: {e}", sequence_file.display()))?;
 
     Ok(sequence_file)
 }
@@ -2318,10 +2329,56 @@ fn unverifiable_ligands(given: &[metadata::Ligand]) -> Vec<String> {
 }
 
 // --------------------------------------------------
+/// What `inferred_ligands.json` was computed from, kept beside it in
+/// `inferred_ligands.inputs.json`. The file was reused on its existence
+/// alone, so a reprocess without `--force` kept an inference from before
+/// any fix to `mol_id.py` (review F12).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InferredLigandInputs {
+    /// SHA-256 of the `mol_id.py` that ran
+    pub mol_id_sha256: String,
+    /// SHA-256 of the structure it read. None when the file was seeded on
+    /// purpose from another structure (`bulk_process_local.py`'s
+    /// element-corrected copy): a change to `mol_id.py` still invalidates
+    /// it, a change to the structure does not
+    pub structure_sha256: Option<String>,
+}
+
+pub const INFERRED_LIGAND_INPUTS_FILE: &str = "inferred_ligands.inputs.json";
+
+impl InferredLigandInputs {
+    pub fn current(mol_id: &Path, structure: &Path) -> Result<Self> {
+        Ok(InferredLigandInputs {
+            mol_id_sha256: sha256_of_file(mol_id)?,
+            structure_sha256: Some(sha256_of_file(structure)?),
+        })
+    }
+
+    /// Whether a result computed from these inputs stands for `current`
+    pub fn covers(&self, current: &InferredLigandInputs) -> bool {
+        self.mol_id_sha256 == current.mol_id_sha256
+            && self
+                .structure_sha256
+                .as_ref()
+                .is_none_or(|hash| Some(hash) == current.structure_sha256.as_ref())
+    }
+
+    fn read(path: &Path) -> Option<Self> {
+        serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
+    }
+
+    fn write(&self, path: &Path) -> Result<()> {
+        fs::write(path, serde_json::to_string_pretty(self)?)
+            .map_err(|e| anyhow!("{}: {e}", path.display()))
+    }
+}
+
+// --------------------------------------------------
 /// The ligands `mol_id.py` infers from `min_pdb`, and what it said about them
 /// for the submitter: a residue passed over as part of a polymer chain, a
 /// ligand recorded as released from one. Both are kept in `processed_dir`, so
-/// a rerun that finds them reports the same notes.
+/// a rerun that finds them reports the same notes; they are reused only for
+/// the same `mol_id.py` and the same structure (`InferredLigandInputs`).
 pub fn get_inferred_ligands(
     min_pdb: &Path,
     processed_dir: &Path,
@@ -2330,11 +2387,19 @@ pub fn get_inferred_ligands(
 ) -> Result<(Vec<InferredLigand>, Vec<String>)> {
     let out_file = processed_dir.join("inferred_ligands.json");
     let notes_file = processed_dir.join("ligand_notes.json");
-    if file_exists(&out_file) {
-        debug!("Inferred ligands file exists");
+    let inputs_file = processed_dir.join(INFERRED_LIGAND_INPUTS_FILE);
+    let mol_tools = script_dir.join("mol_id.py");
+    let inputs = InferredLigandInputs::current(&mol_tools, min_pdb)?;
+    let reusable = file_exists(&out_file)
+        && InferredLigandInputs::read(&inputs_file).is_some_and(|i| i.covers(&inputs));
+    if reusable {
+        debug!("Inferred ligands file exists for this mol_id.py and structure");
     } else {
         debug!("Creating inferred ligands file");
-        let mol_tools = script_dir.join("mol_id.py");
+        if file_exists(&out_file) {
+            fs::remove_file(&out_file)?;
+        }
+        inputs.write(&inputs_file)?;
         let mut cmd = Command::new(uv);
         cmd.current_dir(script_dir).args([
             "run",
@@ -2391,6 +2456,64 @@ fn parse_mol_id_notes(stderr: &str) -> Vec<String> {
         .map(|note| note.trim().to_string())
         .filter(|note| !note.is_empty())
         .collect()
+}
+
+// --------------------------------------------------
+/// What the converting run learned about the source trajectory, kept in
+/// `rep_N/source_timing.json` for the runs that find the outputs present
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct SourceTiming {
+    /// The wrapper's `source_has_time_axis` marker: `null` for unknown
+    source_has_time_axis: Option<bool>,
+}
+
+const SOURCE_TIMING_FILE: &str = "source_timing.json";
+
+fn write_source_timing(
+    trajectory_dir: &Path,
+    has_time_axis: Option<bool>,
+) -> Result<()> {
+    let path = trajectory_dir.join(SOURCE_TIMING_FILE);
+    let timing = SourceTiming {
+        source_has_time_axis: has_time_axis,
+    };
+    fs::write(&path, serde_json::to_string_pretty(&timing)?)
+        .map_err(|e| anyhow!("{}: {e}", path.display()))
+}
+
+/// The converting run's verdict, or None when there is none to read
+fn read_source_timing(trajectory_dir: &Path) -> Option<bool> {
+    let path = trajectory_dir.join(SOURCE_TIMING_FILE);
+    let text = fs::read_to_string(&path).ok()?;
+    match serde_json::from_str::<SourceTiming>(&text) {
+        Ok(timing) => timing.source_has_time_axis,
+        Err(e) => {
+            debug!("{}: {e}; the source time axis is unknown", path.display());
+            None
+        }
+    }
+}
+
+// --------------------------------------------------
+/// Whether `results`, left by an earlier run, were made from `query_text`:
+/// the query file written beside them then is byte-identical. Results were
+/// reused on their existence alone, and read by FASTA ID (`p0`, chain `A`),
+/// so after any change to the chains (a new splitter, a backfill's dry run
+/// against a different input) another chain's hits were attached to this
+/// one at 100% with no warning (review H3).
+pub fn same_query(results: &Path, query: &Path, query_text: &str) -> bool {
+    file_exists(results)
+        && fs::read_to_string(query)
+            .map(|text| text == query_text)
+            .unwrap_or(false)
+}
+
+/// The SHA-256 of a file, as hex
+pub fn sha256_of_file(path: &Path) -> Result<String> {
+    let bytes = fs::read(path).map_err(|e| anyhow!("{}: {e}", path.display()))?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 // --------------------------------------------------
@@ -4465,7 +4588,12 @@ mol_id: No ligand-like residue found in minimal.pdb
         assert!(!hash.is_empty());
     }
 
+    /// Results for `db` in `dir`, made from `dir/sequence.fa` (the query copy
+    /// `same_query` checks is written too)
     fn write_blast_tsv(dir: &Path, db: &str, rows: &[(&str, &str, f64)]) {
+        if let Ok(query) = fs::read(dir.join("sequence.fa")) {
+            fs::write(dir.join(format!("blast.{db}.fa")), query).unwrap();
+        }
         let content = rows
             .iter()
             .map(|(qaccver, saccver, pident)| {
@@ -4545,6 +4673,92 @@ mol_id: No ligand-like residue found in minimal.pdb
         let ids =
             blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Swissprot, 2).unwrap();
         assert_eq!(ids, vec!["P05430".to_string(), "P57042".to_string()]);
+    }
+
+    #[test]
+    fn blast_results_are_reused_only_for_the_same_query() {
+        // H3: a results file left by a run with other chains must not be
+        // read for these. Without the query copy, or with a different one,
+        // the search runs again (and here fails: no BLAST database).
+        let tmp = tempdir().unwrap();
+        let blast_dir = tempdir().unwrap();
+        let fasta = tmp.path().join("sequence.fa");
+        fs::write(&fasta, b">A\nACGT").unwrap();
+        write_blast_tsv(
+            tmp.path(),
+            "swissprot",
+            &[("A", "sp|P12345|PROT_HUMAN", 100.0)],
+        );
+        let results = tmp.path().join("blast.swissprot.tsv");
+        let query = tmp.path().join("blast.swissprot.fa");
+        assert!(same_query(&results, &query, ">A\nACGT"));
+        assert!(!same_query(&results, &query, ">A\nACGTW"));
+        assert!(!same_query(
+            &tmp.path().join("none.tsv"),
+            &query,
+            ">A\nACGT"
+        ));
+
+        fs::write(&fasta, b">A\nACGTW").unwrap();
+        assert!(
+            blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Swissprot, 2).is_err()
+        );
+        fs::remove_file(&query).unwrap();
+        fs::write(&fasta, b">A\nACGT").unwrap();
+        assert!(
+            blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Swissprot, 2).is_err()
+        );
+    }
+
+    #[test]
+    fn inferred_ligand_inputs_cover_the_same_script_and_structure() {
+        let tmp = tempdir().unwrap();
+        let mol_id = tmp.path().join("mol_id.py");
+        let pdb = tmp.path().join("minimal.pdb");
+        fs::write(&mol_id, "print(1)").unwrap();
+        fs::write(&pdb, "ATOM").unwrap();
+        let inputs = InferredLigandInputs::current(&mol_id, &pdb).unwrap();
+        assert!(inputs.covers(&inputs));
+
+        // A new mol_id.py, or a new structure, is a new inference (F12)
+        fs::write(&mol_id, "print(2)").unwrap();
+        let new_script = InferredLigandInputs::current(&mol_id, &pdb).unwrap();
+        assert!(!inputs.covers(&new_script));
+        fs::write(&mol_id, "print(1)").unwrap();
+        fs::write(&pdb, "HETATM").unwrap();
+        let new_structure = InferredLigandInputs::current(&mol_id, &pdb).unwrap();
+        assert!(!inputs.covers(&new_structure));
+
+        // A seeded file (no structure hash) stands for any structure under
+        // the same script, and for none under another
+        let seeded = InferredLigandInputs {
+            mol_id_sha256: inputs.mol_id_sha256.clone(),
+            structure_sha256: None,
+        };
+        assert!(seeded.covers(&inputs));
+        assert!(seeded.covers(&new_structure));
+        assert!(!seeded.covers(&new_script));
+
+        // Round trip, and an unreadable file is no inputs
+        let path = tmp.path().join(INFERRED_LIGAND_INPUTS_FILE);
+        inputs.write(&path).unwrap();
+        assert_eq!(InferredLigandInputs::read(&path), Some(inputs));
+        fs::write(&path, "{").unwrap();
+        assert_eq!(InferredLigandInputs::read(&path), None);
+    }
+
+    #[test]
+    fn the_source_timing_verdict_survives_a_rerun() {
+        // TQ-07: the run that converts writes it; one that finds the outputs
+        // present reads it back, and a directory from before has none
+        let tmp = tempdir().unwrap();
+        assert_eq!(read_source_timing(tmp.path()), None);
+        for verdict in [Some(false), Some(true), None] {
+            write_source_timing(tmp.path(), verdict).unwrap();
+            assert_eq!(read_source_timing(tmp.path()), verdict);
+        }
+        fs::write(tmp.path().join(SOURCE_TIMING_FILE), "not json").unwrap();
+        assert_eq!(read_source_timing(tmp.path()), None);
     }
 
     #[test]

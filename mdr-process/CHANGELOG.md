@@ -39,6 +39,23 @@ Fixes from the 2026-10 scientific-correctness review (`mdrepo_review_summary.md`
   cpptraj's autoimage left spanning the box is no longer cut where the bond
   crosses it (review SEQ-4). A CRYST1 with an edge under 10 A (GROMACS's
   `1 1 1` placeholder for no box) is not a cell.
+- **A cached result is reused only for the inputs it was made from**
+  (review H3, F12, TQ-07). BLAST results in a processed or work directory
+  were reused on their existence alone and read by FASTA ID, so after any
+  change to the chains (a reprocess without `--force` after a splitter fix,
+  `backfill-chains`' dry run against a different input) another chain's
+  hits were taken as this one's at 100% identity with no warning. The query
+  FASTA is now kept beside each results file (`polymers.<db>.fa`,
+  `blast.<db>.fa`) and the results are reused only when it is byte-identical
+  to this run's; a row for another query, length or residues is dropped with
+  a warning. `sequence.fa` is always rewritten. `inferred_ligands.json` is
+  reused only for the same `mol_id.py` and `minimal.pdb`, recorded in
+  `inferred_ligands.inputs.json` (a file `bulk_process_local.py` seeds
+  records no structure, and is still invalidated by a change to
+  `mol_id.py`). The converting run's time-axis verdict is kept in
+  `rep_N/source_timing.json`, so a re-run that finds the outputs present
+  gives the same duration verdict instead of refusing a time-less source it
+  accepted the first time.
 
 ## 0.18.0 (unreleased)
 
