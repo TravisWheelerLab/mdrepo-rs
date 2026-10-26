@@ -11,6 +11,21 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.19.0 (unreleased)
+
+Fixes from the 2026-10 scientific-correctness review (`mdrepo_review_summary.md`).
+
+- **GROMOS, OPLS and Amber phospho residue names fold to their parent.**
+  `HISA`/`HISB` (GROMOS histidine tautomers), `ARGN`, `LYSN`, `CYS1`,
+  `ASN1`, `PGLU` and the phosaa names `S1P`/`S2P`, `T1P`/`T2P`, `Y1P`/`Y2P`
+  were `X` in `md_polymer.sequence` with the raw name in `residues`, so a
+  GROMOS protein had a different polymer key from the same protein under
+  another force field and, with more than three histidines, lost its declared
+  and search UniProt references (review SEQ-8, H4). Two parent letters were
+  wrong: `HRG` (homoarginine) is `R`, not `H`, and `OMT` (methionine sulfone)
+  is `M`, not `T`; `HYP`, `NLE`, `ALY`, `CSD` and `SAR` now take their CCD
+  parent's letter (SEQ-9).
+
 ## 0.18.0 (unreleased)
 
 - **A fused chain gets a UniProt reference per part** (Ken, 2026-10-21).

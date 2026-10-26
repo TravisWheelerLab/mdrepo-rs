@@ -760,15 +760,25 @@ fn header(chain_id: &str, seen: &mut HashMap<String, usize>) -> String {
 /// protonation and terminal names folded to the parent, anything else as is
 pub fn canonical(name: &str) -> String {
     let name = name.to_uppercase();
+    // Amber, CHARMM, GROMOS and OPLS names, from each force field's residue
+    // database (the GROMACS `aminoacids.rtp` files and Amber's `leaprc`s)
     let parent = match name.as_str() {
         "HID" | "HIE" | "HIP" | "HSD" | "HSE" | "HSP" | "HISD" | "HISE" | "HISH"
-        | "HIS1" | "HIS2" => "HIS",
-        "CYX" | "CYM" | "CYN" | "CYS2" | "CYSH" => "CYS",
+        | "HIS1" | "HIS2" | "HISA" | "HISB" => "HIS",
+        "CYX" | "CYM" | "CYN" | "CYS1" | "CYS2" | "CYSH" => "CYS",
         "ASH" | "ASPH" | "ASPP" => "ASP",
+        "ASN1" => "ASN",
         "GLH" | "GLUH" | "GLUP" => "GLU",
-        "LYN" | "LYSH" | "LSN" => "LYS",
-        "ARN" => "ARG",
+        "LYN" | "LYSH" | "LYSN" | "LSN" => "LYS",
+        "ARN" | "ARGN" => "ARG",
         "TYM" => "TYR",
+        // Amber phosaa: a phosphorylated residue at either charge is the
+        // chemical component
+        "S1P" | "S2P" => "SEP",
+        "T1P" | "T2P" => "TPO",
+        "Y1P" | "Y2P" => "PTR",
+        // GROMOS pyroglutamate
+        "PGLU" => "PCA",
         _ => {
             // AMBER's terminal residues: NALA, CALA, NHIE, ...
             if name.len() == 4
@@ -885,14 +895,23 @@ pub fn one_letter(name: &str) -> Option<char> {
         "PTR" => 'Y',
         // Methionine and analogs
         "MSE" | "FME" | "MHO" | "SME" => 'M',
-        // Lysine carboxylation, methylation, retinal
-        "KCX" | "MLZ" | "MLY" | "M3L" | "KPI" | "LYR" => 'K',
+        // Cysteine oxidation
+        "CSD" => 'C',
+        // Lysine carboxylation, methylation, acetylation, retinal
+        "KCX" | "MLZ" | "MLY" | "M3L" | "KPI" | "LYR" | "ALY" => 'K',
         // Glutamate variants
         "CGU" | "PCA" => 'E',
         // Histidine variants
-        "HIC" | "HRG" => 'H',
-        // Threonine and tyrosine variants
-        "OMT" => 'T',
+        "HIC" => 'H',
+        // Homoarginine is an arginine (its CCD parent), not a histidine
+        "HRG" => 'R',
+        // Methionine sulfone (its CCD parent is MET), not a threonine
+        "OMT" => 'M',
+        // Hydroxyproline, norleucine, sarcosine: each its CCD parent
+        "HYP" => 'P',
+        "NLE" => 'L',
+        "SAR" => 'G',
+        // Tyrosine variants
         "TYI" | "TYS" => 'Y',
         // Generic covalent adduct
         "COV" => 'X',
@@ -939,6 +958,20 @@ mod tests {
              {:>8.3}{:>8.3}{:>8.3}  1.00  0.00           C  ",
             xyz[0], xyz[1], xyz[2]
         )
+    }
+
+    /// Residues with 4-letter names, bonded, numbered from 1
+    fn chain4(names: &str) -> Vec<String> {
+        let mut s = 0;
+        let mut lines = vec![];
+        for (i, res) in names.split(' ').enumerate() {
+            for (name, dx) in [("N", 0.0), ("CA", 1.2), ("C", 2.47)] {
+                s += 1;
+                let x = 3.8 * i as f64 + dx;
+                lines.push(atom4(s, name, res, "A", i as i32 + 1, [x, 0.0, 0.0]));
+            }
+        }
+        lines
     }
 
     fn hetatm(line: String) -> String {
@@ -1148,6 +1181,60 @@ mod tests {
         let got = chains(&chain(&mut s, "HIE CYX ASH HSD", "A", 1, 0.0));
         assert_eq!(residues_of(&got[0]), ["HIS", "CYS", "ASP", "HIS"]);
         assert_eq!(got[0].sequence, "HCDH");
+    }
+
+    #[test]
+    fn gromos_and_opls_names_fold_to_the_parent() {
+        // GROMOS 54a7 and OPLS-AA as pdb2gmx writes them (aminoacids.rtp):
+        // every histidine tautomer, the neutral arginine and lysine, the
+        // bridged cysteines, pyroglutamate. These came out `X` with their own
+        // md_polymer key, so a GROMOS protein with more than three histidines
+        // lost its declared UniProt reference (3 mismatches allowed).
+        let names = "HISA HISB HISH HIS1 HIS2 ARGN LYSH LYSN CYS1 CYS2 CYSH ASN1 PGLU";
+        let got = chains(&chain4(names));
+        assert_eq!(
+            residues_of(&got[0]),
+            [
+                "HIS", "HIS", "HIS", "HIS", "HIS", "ARG", "LYS", "LYS", "CYS", "CYS",
+                "CYS", "ASN", "PCA"
+            ]
+        );
+        assert_eq!(got[0].sequence, "HHHHHRKKCCCNE");
+    }
+
+    #[test]
+    fn amber_phospho_names_are_the_chemical_component() {
+        // phosaa10/14/19 name a phosphoserine S1P or S2P by its charge; the
+        // chemical component is SEP either way (TPO, PTR likewise).
+        let mut s = 0;
+        let got = chains(&chain(&mut s, "S1P S2P T1P T2P Y1P Y2P", "A", 1, 0.0));
+        assert_eq!(
+            residues_of(&got[0]),
+            ["SEP", "SEP", "TPO", "TPO", "PTR", "PTR"]
+        );
+        assert_eq!(got[0].sequence, "SSTTYY");
+    }
+
+    #[test]
+    fn parent_letters_follow_the_chemical_component_dictionary() {
+        // Each modified residue's `mon_nstd_parent_comp_id` in the CCD: HRG
+        // (homoarginine) is ARG and OMT (methionine sulfone) is MET, which the
+        // old table had as H and T, copied from get_sequence_from_pdb.py's
+        // mislabelled VARIANT table.
+        for (code, letter) in [
+            ("HRG", 'R'),
+            ("OMT", 'M'),
+            ("HYP", 'P'),
+            ("NLE", 'L'),
+            ("ALY", 'K'),
+            ("CSD", 'C'),
+            ("SAR", 'G'),
+            ("HIC", 'H'),
+            ("MSE", 'M'),
+            ("SEP", 'S'),
+        ] {
+            assert_eq!(one_letter(code), Some(letter), "{code}");
+        }
     }
 
     #[test]
