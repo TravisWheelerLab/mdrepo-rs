@@ -56,6 +56,11 @@ Fixes from the 2026-10 scientific-correctness review (`mdrepo_review_summary.md`
   `rep_N/source_timing.json`, so a re-run that finds the outputs present
   gives the same duration verdict instead of refusing a time-less source it
   accepted the first time.
+- **Massless sites are not heavy atoms.** simulation-processing now writes
+  every cpptraj PDB with `include_ep` (review CONV-2), so an Amber extra
+  point (element `XP`) or a CHARMM lone pair (blank element after
+  `psf_elements`, or no element column) reaches the chain reader; neither
+  counts in a residue's heavy-atom formula, which the ligand checks compare.
 
 ## 0.18.0 (unreleased)
 

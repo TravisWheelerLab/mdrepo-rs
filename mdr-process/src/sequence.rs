@@ -213,7 +213,10 @@ impl Residue {
 
     fn add(&mut self, atom: &PdbAtom) {
         self.num_atoms += 1;
-        if !matches!(atom.element.as_str(), "H" | "D") {
+        // Not hydrogen, and not a massless site: cpptraj writes an Amber
+        // extra point (TIP4P-Ew's EPW, `include_ep`) as element XP, and
+        // psf_elements leaves a CHARMM lone pair's element blank
+        if !matches!(atom.element.as_str(), "H" | "D" | "XP" | "EP" | "LP" | "") {
             *self.heavy.entry(atom.element.clone()).or_insert(0) += 1;
         }
         let name = atom.name.replace('*', "'");
@@ -441,6 +444,8 @@ fn read_atoms(text: &str) -> Result<Vec<PdbAtom>> {
             .map_err(|e| anyhow!("line {}: residue number: {e}: {line:?}", i + 1))?;
         let name = col(12, 16).trim().to_uppercase();
         let element = match col(76, 78).trim() {
+            // A massless site (Amber EP1/EPW, CHARMM LP1/LPA) has no element
+            "" if name.starts_with("EP") || name.starts_with("LP") => String::new(),
             "" => name
                 .trim_start_matches(|c: char| c.is_ascii_digit())
                 .chars()
@@ -1729,6 +1734,39 @@ mod tests {
             .unwrap();
         assert_eq!(got, formula(&[("C", 26), ("N", 8), ("O", 7)]));
         assert_eq!(formula_text(&got), "C26 N8 O7");
+    }
+
+    #[test]
+    fn massless_sites_are_not_heavy_atoms() {
+        // A chlorobenzene with CGenFF's halogen lone pair, written by cpptraj
+        // with include_ep (element XP), by psf_elements (blank) and by a
+        // writer with no element column at all
+        let mut s = 0;
+        let mut lines = chain(&mut s, "MET ALA", "A", 1, 0.0);
+        let heavy = |l: &str, e: &str| {
+            let l = format!("{:<76}{e:>2}", &l[..76.min(l.len())]);
+            l
+        };
+        for (name, element) in [
+            ("C1", "C"),
+            ("CL1", "CL"),
+            ("LP1", "XP"),
+            ("LP2", ""),
+            ("EP1", ""),
+        ] {
+            s += 1;
+            let line = hetatm(atom(s, name, "LIG", "A", 9, [50.0, 0.0, 0.0]));
+            let line = if element.is_empty() && name == "EP1" {
+                line[..76].to_string()
+            } else {
+                heavy(&line, element)
+            };
+            lines.push(line);
+        }
+        let structure = Structure::read(&(lines.join("\n") + "\nEND\n")).unwrap();
+        let ligand = structure.residues.iter().find(|r| r.name == "LIG").unwrap();
+        assert_eq!(ligand.heavy, formula(&[("C", 1), ("CL", 1)]));
+        assert_eq!(ligand.num_atoms, 5);
     }
 
     #[test]
