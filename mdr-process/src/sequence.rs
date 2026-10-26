@@ -34,6 +34,14 @@
 //! that goes backwards or repeats unless rule 1 holds. pdbrust and this
 //! reader both drop TER records, so TER is not used.
 //!
+//! A strand's 5' nucleotide has no P, so there is no O3'-P bond to measure
+//! to it. It starts a new chain whatever the numbering says, as does a
+//! residue the names or atoms call a terminus: Amber's `DC5`/`DG3`, the
+//! 5'/3'-hydroxyl hydrogens `H5T`/`HO5'` and `H3T`/`HO3'`. tleap numbers the
+//! two strands of a duplex straight through and cpptraj writes no chain
+//! IDs, so without this every Amber duplex read as one chain (1BNA as a
+//! 24-nt strand).
+//!
 //! Water and single-atom residues (ions) are never in a chain. A run of one
 //! residue is a chain only if it is a named amino acid (in `one_letter`), or
 //! has a cap on either side (an alanine dipeptide). The named amino acid is
@@ -161,6 +169,10 @@ struct Residue {
     o3: Option<[f64; 3]>,
     has_o2: bool,
     has_sugar: bool,
+    /// The 5'-terminal hydroxyl hydrogen (H5T, HO5') and the 3' one (H3T,
+    /// HO3'): a strand's ends, by atom
+    has_h5t: bool,
+    has_h3t: bool,
 }
 
 impl Residue {
@@ -180,6 +192,8 @@ impl Residue {
             o3: None,
             has_o2: false,
             has_sugar: false,
+            has_h5t: false,
+            has_h3t: false,
         }
     }
 
@@ -210,12 +224,40 @@ impl Residue {
                 self.has_sugar = true;
                 return;
             }
+            "H5T" | "HO5'" => {
+                self.has_h5t = true;
+                return;
+            }
+            "H3T" | "HO3'" => {
+                self.has_h3t = true;
+                return;
+            }
             _ => return,
         };
         // First one wins
         if slot.is_none() {
             *slot = Some(atom.xyz);
         }
+    }
+
+    /// A nucleotide by name or by its sugar
+    fn is_nucleotide(&self) -> bool {
+        nucleic_by_name(&self.name).is_some() || self.has_sugar
+    }
+
+    /// A nucleotide the name or atoms call a strand's 5' end: Amber's
+    /// `DA5`/`RG5`, or the 5'-terminal hydroxyl hydrogen
+    fn starts_strand(&self) -> bool {
+        self.is_nucleotide()
+            && (self.has_h5t
+                || (nucleic_by_name(&self.name).is_some() && self.name.ends_with('5')))
+    }
+
+    /// A nucleotide the name or atoms call a strand's 3' end
+    fn ends_strand(&self) -> bool {
+        self.is_nucleotide()
+            && (self.has_h3t
+                || (nucleic_by_name(&self.name).is_some() && self.name.ends_with('3')))
     }
 
     /// The polymer family from the residue name alone (amino acid or
@@ -337,6 +379,17 @@ fn joins(prev: &Residue, cur: &Residue) -> bool {
 
     if backbone_bonded(prev, cur) {
         return true;
+    }
+
+    // A strand ends where the names or atoms say so, and where a nucleotide
+    // without a P (a 5' end) follows one with an O3': there is no bond to
+    // measure, and the numbering must not decide, because tleap numbers a
+    // duplex's strands straight through.
+    if prev.ends_strand() || cur.starts_strand() {
+        return false;
+    }
+    if prev.o3.is_some() && cur.p.is_none() && cur.is_nucleotide() {
+        return false;
     }
 
     // Rules 2 and 3 need both residues named as polymer residues
@@ -1023,6 +1076,23 @@ mod tests {
             .collect()
     }
 
+    /// A strand as tleap writes it: `names` 3.8 A apart from `x0`, numbered
+    /// from `first`, the first residue without a P. Blank chain ID.
+    fn strand(s: &mut i32, names: &str, first: i32, x0: f64) -> Vec<String> {
+        let mut lines = vec![];
+        for (i, res) in names.split(' ').enumerate() {
+            let x = x0 + 3.8 * i as f64;
+            for (name, dx) in [("P", 0.0), ("C4'", 1.0), ("C1'", 1.5), ("O3'", 2.2)] {
+                if i == 0 && name == "P" {
+                    continue;
+                }
+                *s += 1;
+                lines.push(atom(*s, name, res, " ", first + i as i32, [x + dx, 1.0, 0.0]));
+            }
+        }
+        lines
+    }
+
     fn chains(lines: &[String]) -> Vec<Chain> {
         chains_from_text(&(lines.join("\n") + "\nEND\n")).unwrap()
     }
@@ -1464,6 +1534,71 @@ mod tests {
         assert_eq!(chains_from_text(&text).unwrap().len(), 1);
         let none = expected_peptide_formula(&codes("GLY ALA"), None, None).unwrap();
         assert!(find_blobs(&text, &none).unwrap().is_empty());
+    }
+
+    #[test]
+    fn duplex_strands_numbered_straight_through_are_two_chains() {
+        // 1BNA through tleap and cpptraj: blank IDs, residues 1-24, the 5'
+        // residue of each strand without a P. MDAnalysis finds two bonded
+        // fragments; this found one 24-nt chain. The second strand starts
+        // 20 A away, as in a real duplex, so no O3'-P bond spans the gap.
+        let mut s = 0;
+        let mut lines = strand(&mut s, "DC5 DG DC DG3", 1, 0.0);
+        lines.extend(strand(&mut s, "DC5 DG DC DG3", 5, 20.0));
+        let got = chains(&lines);
+        assert_eq!(got.len(), 2);
+        for chain in &got {
+            assert_eq!(chain.polymer_type, PolymerType::Dna);
+            assert_eq!(chain.sequence, "CGCG");
+        }
+        assert_eq!((got[1].first_residue, got[1].last_residue), (5, 8));
+    }
+
+    #[test]
+    fn a_strand_without_terminal_names_still_ends_at_the_missing_p() {
+        // CHARMM and the PDB name every nucleotide alike (ADE/CYT, DA/DC);
+        // only the missing P and the H5T/HO5' hydrogen mark the 5' end.
+        let mut s = 0;
+        let mut lines = strand(&mut s, "DC DG DC DG", 1, 0.0);
+        lines.extend(strand(&mut s, "DC DG DC DG", 5, 20.0));
+        assert_eq!(chains(&lines).len(), 2);
+
+        // With a P on the 5' residue (a 5'-phosphate), the hydrogen alone
+        // says where the strand starts
+        let mut s = 0;
+        let mut lines = vec![];
+        for (i, res) in ["DC", "DG", "DC", "DG"].iter().enumerate() {
+            let x = 3.8 * i as f64 + if i >= 2 { 20.0 } else { 0.0 };
+            lines.extend(nucleotide(&mut s, res, i as i32 + 1, x, false));
+            if i == 2 {
+                s += 1;
+                lines.push(atom(s, "H5T", res, "B", 3, [x - 0.5, 1.0, 0.0]));
+            }
+        }
+        let got = chains(&lines);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].sequence, "CG");
+        assert_eq!(got[1].sequence, "CG");
+    }
+
+    #[test]
+    fn a_strand_with_a_missing_nucleotide_stays_one_chain() {
+        // Rule 2 still applies inside a strand: the residue after the gap
+        // has its P, so it is not a 5' end.
+        let mut s = 0;
+        let mut lines = strand(&mut s, "DC5 DG", 1, 0.0);
+        for (i, res) in ["DC", "DG3"].iter().enumerate() {
+            lines.extend(nucleotide(&mut s, res, i as i32 + 5, 30.0 + 3.8 * i as f64, false));
+        }
+        // nucleotide() writes chain B; strand() writes blank
+        let lines: Vec<String> = lines
+            .iter()
+            .map(|l| format!("{} {}", &l[..21], &l[22..]))
+            .collect();
+        let got = chains(&lines);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].sequence, "CGCG");
+        assert_eq!(got[0].breaks, vec![2]);
     }
 
     #[test]

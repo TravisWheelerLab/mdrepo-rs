@@ -25,6 +25,14 @@ Fixes from the 2026-10 scientific-correctness review (`mdrepo_review_summary.md`
   wrong: `HRG` (homoarginine) is `R`, not `H`, and `OMT` (methionine sulfone)
   is `M`, not `T`; `HYP`, `NLE`, `ALY`, `CSD` and `SAR` now take their CCD
   parent's letter (SEQ-9).
+- **The strands of a DNA/RNA duplex are separate chains.** A strand's 5'
+  nucleotide has no P, so there was no O3'-P bond to measure and the
+  numbering decided; tleap numbers both strands straight through and
+  cpptraj writes no chain IDs, so every Amber duplex was one chain (1BNA a
+  24-nt strand; review SEQ-2). A nucleotide without a P after one with an
+  O3' now starts a chain, as does one the names or atoms call a terminus
+  (`DC5`/`DG3`, `H5T`/`HO5'`, `H3T`/`HO3'`). `md_chain`/`md_polymer` rows
+  of duplexes imported before this hold the merged strand.
 
 ## 0.18.0 (unreleased)
 
