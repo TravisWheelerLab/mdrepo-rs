@@ -33,6 +33,12 @@ Fixes from the 2026-10 scientific-correctness review (`mdrepo_review_summary.md`
   O3' now starts a chain, as does one the names or atoms call a terminus
   (`DC5`/`DG3`, `H5T`/`HO5'`, `H3T`/`HO3'`). `md_chain`/`md_polymer` rows
   of duplexes imported before this hold the merged strand.
+- **A chain broken across the periodic box is one chain.** The C-N and
+  O3'-P distances are measured under the minimum image of the CRYST1 cell
+  (triclinic cells included), so a chain that mdrun's per-atom wrapping or
+  cpptraj's autoimage left spanning the box is no longer cut where the bond
+  crosses it (review SEQ-4). A CRYST1 with an edge under 10 A (GROMACS's
+  `1 1 1` placeholder for no box) is not a cell.
 
 ## 0.18.0 (unreleased)
 

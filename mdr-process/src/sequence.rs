@@ -85,6 +85,13 @@ const MAX_BACKBONE_BOND: f64 = 1.9;
 /// Consecutive CA atoms sit ~3.8 A apart (trans) and ~2.9 A (cis).
 const MAX_CA_CA: f64 = 4.2;
 
+/// A CRYST1 cell with any edge shorter than this is not a periodic box to
+/// measure distances in: GROMACS writes `CRYST1 1.000 1.000 1.000` for no
+/// box, and under the minimum image in a cell this small every atom is
+/// within a bond of every other. Twice the longest cutoff (`MAX_CA_CA`),
+/// rounded up, so that the minimum image is unambiguous for any real cell.
+const MIN_CELL_EDGE: f64 = 10.0;
+
 const WATER: &[&str] = &[
     "HOH", "WAT", "SOL", "H2O", "DOD", "TIP", "TIP3", "TIP4", "TIP5", "T3P", "T4P",
     "T5P", "SPC", "SPCE", "TP3",
@@ -298,6 +305,107 @@ impl Residue {
 }
 
 // --------------------------------------------------
+/// The periodic cell from CRYST1, as three box vectors: `a` along x, `b` in
+/// the xy plane (the GROMACS convention, which cpptraj's PDB writer and
+/// MDAnalysis share)
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Cell {
+    a: [f64; 3],
+    b: [f64; 3],
+    c: [f64; 3],
+}
+
+impl Cell {
+    /// From the cell lengths (A) and angles (degrees); None for a cell that
+    /// is not a box to measure in (`MIN_CELL_EDGE`)
+    fn new(lengths: [f64; 3], angles: [f64; 3]) -> Option<Cell> {
+        let [la, lb, lc] = lengths;
+        if lengths.iter().any(|&l| !l.is_finite() || l < MIN_CELL_EDGE)
+            || angles
+                .iter()
+                .any(|&t| !t.is_finite() || t <= 0.0 || t >= 180.0)
+        {
+            return None;
+        }
+        let [alpha, beta, gamma] = angles.map(f64::to_radians);
+        let (cos_a, cos_b, cos_g, sin_g) =
+            (alpha.cos(), beta.cos(), gamma.cos(), gamma.sin());
+        let cx = lc * cos_b;
+        let cy = lc * (cos_a - cos_b * cos_g) / sin_g;
+        let cz2 = lc * lc - cx * cx - cy * cy;
+        if cz2 <= 0.0 {
+            return None;
+        }
+        Some(Cell {
+            a: [la, 0.0, 0.0],
+            b: [lb * cos_g, lb * sin_g, 0.0],
+            c: [cx, cy, cz2.sqrt()],
+        })
+    }
+
+    /// The first CRYST1 record in `text`, if it describes a box
+    fn read(text: &str) -> Option<Cell> {
+        let line = text.lines().find(|l| l.starts_with("CRYST1"))?;
+        let field = |a: usize, b: usize| -> Option<f64> {
+            line.get(a..b.min(line.len()))?.trim().parse::<f64>().ok()
+        };
+        Cell::new(
+            [field(6, 15)?, field(15, 24)?, field(24, 33)?],
+            [field(33, 40)?, field(40, 47)?, field(47, 54)?],
+        )
+    }
+
+    /// `v` in cell coordinates
+    fn fractional(&self, v: [f64; 3]) -> [f64; 3] {
+        // The vectors are lower triangular, so back-substitute
+        let sc = v[2] / self.c[2];
+        let sb = (v[1] - sc * self.c[1]) / self.b[1];
+        let sa = (v[0] - sb * self.b[0] - sc * self.c[0]) / self.a[0];
+        [sa, sb, sc]
+    }
+
+    fn cartesian(&self, s: [f64; 3]) -> [f64; 3] {
+        let mut v = [0.0; 3];
+        for (k, vec) in [self.a, self.b, self.c].iter().enumerate() {
+            for i in 0..3 {
+                v[i] += s[k] * vec[i];
+            }
+        }
+        v
+    }
+
+    /// The length of the shortest periodic image of the vector from `a` to
+    /// `b`. The image nearest in cell coordinates and its 26 neighbours are
+    /// tried, which finds the true minimum in any cell GROMACS or Amber
+    /// writes (both keep the cell reduced).
+    fn min_image_distance(&self, a: [f64; 3], b: [f64; 3]) -> f64 {
+        let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let s = self.fractional(d).map(|x| x - x.round());
+        let mut best = f64::INFINITY;
+        for na in [-1.0, 0.0, 1.0] {
+            for nb in [-1.0, 0.0, 1.0] {
+                for nc in [-1.0, 0.0, 1.0] {
+                    let v = self.cartesian([s[0] + na, s[1] + nb, s[2] + nc]);
+                    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                    best = best.min(len);
+                }
+            }
+        }
+        best
+    }
+}
+
+/// The distance from `a` to `b`, under the minimum image when there is a
+/// cell: cpptraj's autoimage and GROMACS's `-pbc atom` both leave molecules
+/// broken across the box, and a chain's C-N bond then spans the cell.
+fn distance_in(cell: Option<&Cell>, a: [f64; 3], b: [f64; 3]) -> f64 {
+    match cell {
+        Some(cell) => cell.min_image_distance(a, b),
+        None => distance(a, b),
+    }
+}
+
+// --------------------------------------------------
 /// The fields of one ATOM/HETATM record this module uses
 #[derive(Debug)]
 struct PdbAtom {
@@ -372,12 +480,12 @@ fn residues(atoms: &[PdbAtom]) -> Vec<Residue> {
 
 /// Does `cur` continue the chain that `prev` is in? The rules in the module
 /// docs.
-fn joins(prev: &Residue, cur: &Residue) -> bool {
+fn joins(cell: Option<&Cell>, prev: &Residue, cur: &Residue) -> bool {
     if prev.chain_id != cur.chain_id {
         return false;
     }
 
-    if backbone_bonded(prev, cur) {
+    if backbone_bonded(cell, prev, cur) {
         return true;
     }
 
@@ -418,15 +526,15 @@ fn joins(prev: &Residue, cur: &Residue) -> bool {
         return false;
     }
     match (prev.ca, cur.ca) {
-        (Some(a), Some(b)) => distance(a, b) <= MAX_CA_CA,
+        (Some(a), Some(b)) => distance_in(cell, a, b) <= MAX_CA_CA,
         _ => true,
     }
 }
 
 /// C(i) to N(i+1), or O3'(i) to P(i+1), within `MAX_BACKBONE_BOND`
-fn backbone_bonded(prev: &Residue, cur: &Residue) -> bool {
+fn backbone_bonded(cell: Option<&Cell>, prev: &Residue, cur: &Residue) -> bool {
     let bonded = |a: Option<[f64; 3]>, b: Option<[f64; 3]>| match (a, b) {
-        (Some(a), Some(b)) => distance(a, b) <= MAX_BACKBONE_BOND,
+        (Some(a), Some(b)) => distance_in(cell, a, b) <= MAX_BACKBONE_BOND,
         _ => false,
     };
     bonded(prev.c, cur.n) || bonded(prev.o3, cur.p)
@@ -465,6 +573,7 @@ struct Structure {
 
 impl Structure {
     fn read(text: &str) -> Result<Structure> {
+        let cell = Cell::read(text);
         let residues = residues(&read_atoms(text)?);
         let polymer: Vec<usize> = (0..residues.len())
             .filter(|&i| !matches!(residues[i].kind(), Kind::Water | Kind::Ion))
@@ -473,7 +582,11 @@ impl Structure {
         let mut runs: Vec<&[usize]> = vec![];
         let mut start = 0;
         for i in 1..polymer.len() {
-            if !joins(&residues[polymer[i - 1]], &residues[polymer[i]]) {
+            if !joins(
+                cell.as_ref(),
+                &residues[polymer[i - 1]],
+                &residues[polymer[i]],
+            ) {
                 runs.push(&polymer[start..i]);
                 start = i;
             }
@@ -487,7 +600,7 @@ impl Structure {
         for run in runs {
             let run_residues: Vec<&Residue> =
                 run.iter().map(|&i| &residues[i]).collect();
-            if let Some(chain) = make_chain(&run_residues) {
+            if let Some(chain) = make_chain(cell.as_ref(), &run_residues) {
                 for &i in run {
                     in_chain[i] = true;
                 }
@@ -504,7 +617,7 @@ impl Structure {
 }
 
 /// A chain from one run of joined residues, or `None` if it is not a polymer
-fn make_chain(run: &[&Residue]) -> Option<Chain> {
+fn make_chain(cell: Option<&Cell>, run: &[&Residue]) -> Option<Chain> {
     let mut body = run;
     let mut n_cap = None;
     let mut c_cap = None;
@@ -570,7 +683,7 @@ fn make_chain(run: &[&Residue]) -> Option<Chain> {
     let breaks = (1..body.len())
         .filter(|&i| {
             backbone_present(body[i - 1], body[i])
-                && !backbone_bonded(body[i - 1], body[i])
+                && !backbone_bonded(cell, body[i - 1], body[i])
         })
         .collect();
 
@@ -1087,7 +1200,14 @@ mod tests {
                     continue;
                 }
                 *s += 1;
-                lines.push(atom(*s, name, res, " ", first + i as i32, [x + dx, 1.0, 0.0]));
+                lines.push(atom(
+                    *s,
+                    name,
+                    res,
+                    " ",
+                    first + i as i32,
+                    [x + dx, 1.0, 0.0],
+                ));
             }
         }
         lines
@@ -1187,6 +1307,142 @@ mod tests {
             lines.push(atom(s, "CA", res, " ", i as i32 + 4, [x, 0.0, 0.0]));
         }
         assert_eq!(fasta(&lines), ">_\nMAK\n>_2\nGS\n");
+    }
+
+    /// `lines` with residues numbered `from` and up shifted by `by`
+    fn shifted(lines: &[String], from: i32, by: [f64; 3]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| {
+                let num: i32 = l[22..26].trim().parse().unwrap();
+                if num < from {
+                    return l.clone();
+                }
+                let xyz: Vec<f64> = [30, 38, 46]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &c)| l[c..c + 8].trim().parse::<f64>().unwrap() + by[i])
+                    .collect();
+                format!(
+                    "{}{:>8.3}{:>8.3}{:>8.3}{}",
+                    &l[..30],
+                    xyz[0],
+                    xyz[1],
+                    xyz[2],
+                    &l[54..]
+                )
+            })
+            .collect()
+    }
+
+    fn cryst1(lengths: [f64; 3], angles: [f64; 3]) -> String {
+        format!(
+            "CRYST1{:>9.3}{:>9.3}{:>9.3}{:>7.2}{:>7.2}{:>7.2} P 1           1",
+            lengths[0], lengths[1], lengths[2], angles[0], angles[1], angles[2]
+        )
+    }
+
+    #[test]
+    fn a_chain_wrapped_across_the_box_is_one_chain() {
+        // Atoms wrapped into the cell, as mdrun and cpptraj autoimage leave
+        // them: residues 3 and 4 sit one box vector away from 1 and 2, so
+        // the C-N bond between 2 and 3 spans the box. Without CRYST1 the
+        // chain is cut there; with it, MDAnalysis finds one fragment and so
+        // does this.
+        let mut s = 0;
+        let body = chain(&mut s, "MET ALA GLY SER", "A", 1, 0.0);
+        let wrapped = shifted(&body, 3, [-40.0, 0.0, 0.0]);
+        assert_eq!(chains(&wrapped).len(), 2);
+
+        let mut lines = vec![cryst1([40.0, 40.0, 40.0], [90.0, 90.0, 90.0])];
+        lines.extend(wrapped.clone());
+        let got = chains(&lines);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].sequence, "MAGS");
+        assert_eq!(got[0].breaks, Vec::<usize>::new());
+
+        // A truncated octahedron (the Amber default), with the tail moved by
+        // its third box vector, worked out by hand from the cell: c = 40 A at
+        // alpha = beta = gamma = 109.47 deg gives (-13.333, -18.856, 32.660).
+        let mut lines = vec![cryst1([40.0; 3], [109.4712206; 3])];
+        lines.extend(shifted(&body, 3, [-13.333, -18.856, 32.660]));
+        let got = chains(&lines);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].sequence, "MAGS");
+
+        // The same shift and no cell: two chains
+        assert_eq!(
+            chains(&shifted(&body, 3, [-13.333, -18.856, 32.660])).len(),
+            2
+        );
+    }
+
+    #[test]
+    fn a_placeholder_cell_is_not_a_box() {
+        // GROMACS writes CRYST1 1 1 1 for a system with no box. Under the
+        // minimum image in that cell every atom is within a bond of every
+        // other, so two chains 100 A apart would be one.
+        let mut s = 0;
+        let mut lines = vec![cryst1([1.0, 1.0, 1.0], [90.0, 90.0, 90.0])];
+        lines.extend(chain(&mut s, "MET ALA", " ", 1, 0.0));
+        lines.extend(chain(&mut s, "GLY SER", " ", 1, 100.0));
+        assert_eq!(chains(&lines).len(), 2);
+        assert_eq!(Cell::read(&lines.join("\n")), None);
+    }
+
+    #[test]
+    fn minimum_image_matches_a_wider_search() {
+        // The nearest image and its 26 neighbours, against every image
+        // within four cells (a skewed cell puts the nearest image several
+        // cells from the origin), for the cell shapes the engines write and
+        // some they do not
+        let cells = [
+            ([40.0, 40.0, 40.0], [90.0, 90.0, 90.0]),
+            ([40.0, 40.0, 40.0], [109.4712206; 3]),
+            ([40.0, 40.0, 28.28], [60.0, 60.0, 90.0]),
+            ([35.0, 48.0, 61.0], [80.0, 95.0, 110.0]),
+        ];
+        let mut seed = 12345u64;
+        let mut rand = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for (lengths, angles) in cells {
+            let cell = Cell::new(lengths, angles).unwrap();
+            for _ in 0..200 {
+                let a = [
+                    rand() * 60.0 - 30.0,
+                    rand() * 60.0 - 30.0,
+                    rand() * 60.0 - 30.0,
+                ];
+                let b = [
+                    rand() * 60.0 - 30.0,
+                    rand() * 60.0 - 30.0,
+                    rand() * 60.0 - 30.0,
+                ];
+                let mut best = f64::INFINITY;
+                for na in -4..=4 {
+                    for nb in -4..=4 {
+                        for nc in -4..=4 {
+                            let shift =
+                                cell.cartesian([na as f64, nb as f64, nc as f64]);
+                            let d = distance(
+                                a,
+                                [b[0] + shift[0], b[1] + shift[1], b[2] + shift[2]],
+                            );
+                            best = best.min(d);
+                        }
+                    }
+                }
+                let got = cell.min_image_distance(a, b);
+                assert!(
+                    (got - best).abs() < 1e-9,
+                    "{lengths:?} {angles:?}: {got} vs {best}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1588,7 +1844,13 @@ mod tests {
         let mut s = 0;
         let mut lines = strand(&mut s, "DC5 DG", 1, 0.0);
         for (i, res) in ["DC", "DG3"].iter().enumerate() {
-            lines.extend(nucleotide(&mut s, res, i as i32 + 5, 30.0 + 3.8 * i as f64, false));
+            lines.extend(nucleotide(
+                &mut s,
+                res,
+                i as i32 + 5,
+                30.0 + 3.8 * i as f64,
+                false,
+            ));
         }
         // nucleotide() writes chain B; strand() writes blank
         let lines: Vec<String> = lines
