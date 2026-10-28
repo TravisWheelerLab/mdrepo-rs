@@ -58,12 +58,11 @@ const CONVERT_TIMEOUT_SECS: u64 = 2 * 60 * 60;
 const CONVERT_TIMEOUT_ENV: &str = "MDR_CONVERT_TIMEOUT_SECS";
 
 // ── Helper-script time limit ──────────────────────────────────────────────────
-/// For the per-trajectory Python helpers (thumbnail, RMSD/RMSF). A thumbnail
-/// takes seconds; RMSD reads minimal.xtc, so allow for a large one. Without a
-/// limit, PLAS-20K 5nd5's rep_3 thumbnail hung on a busy host (2026-10-27) and
-/// held its worker until the caller's 4 h timeout; the same command on the
-/// same files then finished in 8 s.
-const HELPER_TIMEOUT_SECS: u64 = 60 * 60;
+/// For the per-trajectory Python helpers (thumbnail, RMSD/RMSF), which take
+/// seconds. Without a limit, PLAS-20K 5nd5's rep_3 thumbnail hung on a busy
+/// host (2026-10-27) and held its worker until the caller's 4 h timeout; the
+/// same command on the same files then finished in 8 s.
+const HELPER_TIMEOUT_SECS: u64 = 5 * 60;
 const HELPER_TIMEOUT_ENV: &str = "MDR_HELPER_TIMEOUT_SECS";
 
 // --------------------------------------------------
