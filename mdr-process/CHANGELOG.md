@@ -11,6 +11,20 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.20.0 (unreleased)
+
+- **A declared UniProt ID that UniProt will never serve no longer leaves
+  the chains untried.** If a candidate's entry could not be fetched, the
+  chain's UniProt lookup was skipped and left for a later run, which never
+  helped when the ID was not an accession (`<uniprotid>`, `BIOTIN`, a
+  truncated `A0A0R4`) or the entry had been deleted or demerged: 36
+  simulations (53 polymers) in prod, 2026-10-28. `get_uniprot_entry` now
+  reports such an ID as `UniprotGone` (UniProt answers 400 or 404, or the
+  entry is inactive); it is not retried, it is left out of the lookup with
+  a warning ("UniProt ID ... was left out of the chain's UniProt lookup"),
+  and the chain goes on with its other candidates, or to the search. A
+  fetch that fails for any other reason still leaves the chain untried.
+
 ## 0.19.0 (unreleased)
 
 Fixes from the 2026-10 scientific-correctness review (`mdrepo_review_summary.md`).

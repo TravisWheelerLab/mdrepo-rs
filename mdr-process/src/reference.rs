@@ -63,8 +63,8 @@
 
 use crate::{
     process::{
-        blast_db, get_uniprot_entry, run_blastp, run_blastp_subject, same_query,
-        uniprot_entry_from_json,
+        UniprotGone, blast_db, get_uniprot_entry, run_blastp, run_blastp_subject,
+        same_query, uniprot_entry_from_json,
     },
     types::{ImportChain, PolymerHit, PolymerLookup, UniprotDb, UniprotEntry},
 };
@@ -272,7 +272,22 @@ pub enum Declared {
 }
 
 /// UniProt entries by accession, or why one could not be had
-pub type Entries = HashMap<String, std::result::Result<UniprotEntry, String>>;
+pub type Entries = HashMap<String, std::result::Result<UniprotEntry, FetchFailure>>;
+
+/// Why a UniProt entry could not be had. `gone`: UniProt will never serve
+/// it (`UniprotGone`), so a declared candidate is dropped rather than
+/// leaving its chain untried.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FetchFailure {
+    pub message: String,
+    pub gone: bool,
+}
+
+impl std::fmt::Display for FetchFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
 
 // --------------------------------------------------
 /// Look up every distinct polymer among one simulation's `chains` and set
@@ -431,6 +446,31 @@ pub fn lookup_polymers(
     Ok((lookups, warnings, related))
 }
 
+/// Drop each candidate UniProt will never serve (a declared `<uniprotid>`,
+/// an entry since deleted), with a warning, and any polymer left with none:
+/// it goes on with the rest of its candidates, or to the search. Such a
+/// candidate used to leave its polymer untried for good (2026-10-28: 36
+/// simulations); now only a fetch that may work next time does.
+fn drop_gone(
+    candidates: &mut BTreeMap<usize, BTreeMap<String, &'static str>>,
+    entries: &Entries,
+    warnings: &mut Vec<String>,
+) {
+    for found in candidates.values_mut() {
+        found.retain(|acc, method| match &entries[acc] {
+            Err(e) if e.gone => {
+                warnings.push(format!(
+                    "UniProt ID {acc} ({method}) was left out of the chain's \
+                     UniProt lookup: {e}"
+                ));
+                false
+            }
+            _ => true,
+        });
+    }
+    candidates.retain(|_, found| !found.is_empty());
+}
+
 /// A lookup once the UniProt entries of its candidates (one, or a fused
 /// chain's parts) are in hand; `none` when a BLAST range is past its entry's
 /// sequence (a search database older than the release UniProt serves now):
@@ -458,7 +498,7 @@ pub fn finish(
                 }
             },
             Err(e) => {
-                warnings.push(not_recorded(candidate, e));
+                warnings.push(not_recorded(candidate, &e.message));
                 return None;
             }
         }
@@ -523,6 +563,8 @@ pub fn declared_matches(
     let mut warnings = vec![];
     let mut outcome = HashMap::new();
     let mut groups: BTreeMap<Vec<String>, Vec<usize>> = BTreeMap::new();
+    drop_gone(&mut candidates, &entries, &mut warnings);
+
     for (&i, found) in &candidates {
         let failed: Vec<String> = found
             .keys()
@@ -1068,12 +1110,22 @@ fn fetch_entries<'a>(
                     }
                     return Ok(entry);
                 }
+                // Asking again will not help
+                Err(e) if e.is::<UniprotGone>() => {
+                    return Err(FetchFailure {
+                        message: e.to_string(),
+                        gone: true,
+                    });
+                }
                 Err(e) => last = e.to_string(),
             }
         }
-        Err(last)
+        Err(FetchFailure {
+            message: last,
+            gone: false,
+        })
     };
-    let results: Vec<(String, std::result::Result<UniprotEntry, String>)> =
+    let results: Vec<(String, std::result::Result<UniprotEntry, FetchFailure>)> =
         in_pool(UNIPROT_FETCHES, || {
             accessions
                 .par_iter()
@@ -2746,6 +2798,59 @@ mod tests {
 
     /// An entry in the cache is read, not fetched (Q99999 does not exist,
     /// so a fetch would fail), and comes back as it was saved
+    #[test]
+    fn gone_candidates_are_dropped_and_failed_ones_kept() {
+        let entry = uniprot_entry_from_json(
+            "P12345",
+            serde_json::json!({
+                "proteinDescription": {"recommendedName": {"fullName": {"value": "P"}}},
+                "sequence": {"value": "MACDE"}
+            }),
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        let gone = |m: &str| FetchFailure {
+            message: m.to_string(),
+            gone: true,
+        };
+        let entries: Entries = HashMap::from([
+            ("P12345".to_string(), Ok(entry)),
+            ("<UNIPROTID>".to_string(), Err(gone("400 Bad Request"))),
+            ("A7Y7W1".to_string(), Err(gone("inactive (DEMERGED)"))),
+            (
+                "Q11111".to_string(),
+                Err(FetchFailure {
+                    message: "timed out".to_string(),
+                    gone: false,
+                }),
+            ),
+        ]);
+        let mut candidates = BTreeMap::from([
+            // A good candidate and a dead declared one: the good one stays
+            (
+                0,
+                BTreeMap::from([
+                    ("P12345".to_string(), PDB),
+                    ("<UNIPROTID>".to_string(), DECLARED),
+                ]),
+            ),
+            // Only a dead one: the polymer has no candidates, so is searched
+            (1, BTreeMap::from([("A7Y7W1".to_string(), DECLARED)])),
+            // A fetch that may work next time: kept, so still left untried
+            (2, BTreeMap::from([("Q11111".to_string(), DECLARED)])),
+        ]);
+        let mut warnings = vec![];
+        drop_gone(&mut candidates, &entries, &mut warnings);
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[&0].keys().collect::<Vec<_>>(), ["P12345"]);
+        assert!(!candidates.contains_key(&1));
+        assert_eq!(candidates[&2].keys().collect::<Vec<_>>(), ["Q11111"]);
+        assert_eq!(warnings.len(), 2);
+        assert!(
+            warnings[0].starts_with("UniProt ID <UNIPROTID> (declared) was left out")
+        );
+    }
+
     #[test]
     fn uniprot_cache_is_read_back() {
         let dir = tempdir().unwrap();
