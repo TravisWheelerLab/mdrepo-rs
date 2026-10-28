@@ -11,6 +11,57 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.19.0 (unreleased)
+
+Fixes from the 2026-10 scientific-correctness review (`mdrepo_review_summary.md`).
+
+- **GROMOS, OPLS and Amber phospho residue names fold to their parent.**
+  `HISA`/`HISB` (GROMOS histidine tautomers), `ARGN`, `LYSN`, `CYS1`,
+  `ASN1`, `PGLU` and the phosaa names `S1P`/`S2P`, `T1P`/`T2P`, `Y1P`/`Y2P`
+  were `X` in `md_polymer.sequence` with the raw name in `residues`, so a
+  GROMOS protein had a different polymer key from the same protein under
+  another force field and, with more than three histidines, lost its declared
+  and search UniProt references (review SEQ-8, H4). Two parent letters were
+  wrong: `HRG` (homoarginine) is `R`, not `H`, and `OMT` (methionine sulfone)
+  is `M`, not `T`; `HYP`, `NLE`, `ALY`, `CSD` and `SAR` now take their CCD
+  parent's letter (SEQ-9).
+- **The strands of a DNA/RNA duplex are separate chains.** A strand's 5'
+  nucleotide has no P, so there was no O3'-P bond to measure and the
+  numbering decided; tleap numbers both strands straight through and
+  cpptraj writes no chain IDs, so every Amber duplex was one chain (1BNA a
+  24-nt strand; review SEQ-2). A nucleotide without a P after one with an
+  O3' now starts a chain, as does one the names or atoms call a terminus
+  (`DC5`/`DG3`, `H5T`/`HO5'`, `H3T`/`HO3'`). `md_chain`/`md_polymer` rows
+  of duplexes imported before this hold the merged strand.
+- **A chain broken across the periodic box is one chain.** The C-N and
+  O3'-P distances are measured under the minimum image of the CRYST1 cell
+  (triclinic cells included), so a chain that mdrun's per-atom wrapping or
+  cpptraj's autoimage left spanning the box is no longer cut where the bond
+  crosses it (review SEQ-4). A CRYST1 with an edge under 10 A (GROMACS's
+  `1 1 1` placeholder for no box) is not a cell.
+- **A cached result is reused only for the inputs it was made from**
+  (review H3, F12, TQ-07). BLAST results in a processed or work directory
+  were reused on their existence alone and read by FASTA ID, so after any
+  change to the chains (a reprocess without `--force` after a splitter fix,
+  `backfill-chains`' dry run against a different input) another chain's
+  hits were taken as this one's at 100% identity with no warning. The query
+  FASTA is now kept beside each results file (`polymers.<db>.fa`,
+  `blast.<db>.fa`) and the results are reused only when it is byte-identical
+  to this run's; a row for another query, length or residues is dropped with
+  a warning. `sequence.fa` is always rewritten. `inferred_ligands.json` is
+  reused only for the same `mol_id.py` and `minimal.pdb`, recorded in
+  `inferred_ligands.inputs.json` (a file `bulk_process_local.py` seeds
+  records no structure, and is still invalidated by a change to
+  `mol_id.py`). The converting run's time-axis verdict is kept in
+  `rep_N/source_timing.json`, so a re-run that finds the outputs present
+  gives the same duration verdict instead of refusing a time-less source it
+  accepted the first time.
+- **Massless sites are not heavy atoms.** simulation-processing now writes
+  every cpptraj PDB with `include_ep` (review CONV-2), so an Amber extra
+  point (element `XP`) or a CHARMM lone pair (blank element after
+  `psf_elements`, or no element column) reaches the chain reader; neither
+  counts in a residue's heavy-atom formula, which the ligand checks compare.
+
 ## 0.18.0 (unreleased)
 
 - **A fused chain gets a UniProt reference per part** (Ken, 2026-10-21).

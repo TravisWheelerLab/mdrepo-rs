@@ -63,7 +63,7 @@
 
 use crate::{
     process::{
-        blast_db, get_uniprot_entry, run_blastp, run_blastp_subject,
+        blast_db, get_uniprot_entry, run_blastp, run_blastp_subject, same_query,
         uniprot_entry_from_json,
     },
     types::{ImportChain, PolymerHit, PolymerLookup, UniprotDb, UniprotEntry},
@@ -1335,14 +1335,23 @@ pub fn blast_candidates(
         let name = db.to_string().to_lowercase();
         let fasta = processed_dir.join(format!("polymers.{name}.fa"));
         let results = processed_dir.join(format!("blast.polymers.{name}.tsv"));
-        if file_exists(&results) {
-            debug!("{db} polymer BLAST results exist ({})", results.display());
+        let text: String = remaining
+            .iter()
+            .map(|(id, seq)| format!(">{id}\n{seq}\n"))
+            .collect();
+        // Results left by an earlier run are reused only for the same
+        // queries, which the FASTA written beside them records: the rows are
+        // read by `p<i>`, and a run with other polymers (a reprocess after a
+        // change to the splitter, a backfill's dry run against another
+        // input) numbers them differently (review H3)
+        if same_query(&results, &fasta, &text) {
+            debug!(
+                "{db} polymer BLAST results exist for these queries ({})",
+                results.display()
+            );
         } else {
-            let text: String = remaining
-                .iter()
-                .map(|(id, seq)| format!(">{id}\n{seq}\n"))
-                .collect();
-            fs::write(&fasta, text).map_err(|e| anyhow!("{}: {e}", fasta.display()))?;
+            fs::write(&fasta, &text)
+                .map_err(|e| anyhow!("{}: {e}", fasta.display()))?;
             let (blast_db, _) = blast_db(blast_dir, &db);
             run_blastp(
                 &fasta,
@@ -1353,7 +1362,7 @@ pub fn blast_candidates(
                 num_threads,
             )?;
         }
-        let rows = read_hits(&results)?;
+        let rows = rows_of_queries(read_hits(&results)?, &remaining, &results);
         let representatives = representatives(&top_ties(&rows), uniprot_cache);
         for (id, candidate) in best_hits(&rows, &representatives) {
             if remaining.iter().any(|(r, _)| *r == id) {
@@ -1362,6 +1371,54 @@ pub fn blast_candidates(
         }
     }
     Ok(found)
+}
+
+/// The rows of `queries` (FASTA ID, sequence): a row for another ID, or
+/// whose query length or aligned query residues are not this sequence's, is
+/// not ours and is dropped with a warning. The query FASTA check makes this
+/// a second guard, against a results file edited or copied by hand.
+fn rows_of_queries(
+    rows: Vec<PolymerBlastHit>,
+    queries: &[&(String, &str)],
+    results: &Path,
+) -> Vec<PolymerBlastHit> {
+    let sequences: HashMap<&str, &str> = queries
+        .iter()
+        .map(|(id, seq)| (id.as_str(), *seq))
+        .collect();
+    rows.into_iter()
+        .filter(|row| {
+            let Some(seq) = sequences.get(row.qaccver.as_str()) else {
+                warn!(
+                    "{}: a row for {} is not for any query of this search; dropped",
+                    results.display(),
+                    row.qaccver
+                );
+                return false;
+            };
+            let ours = (row.qstart >= 1 && row.qend >= row.qstart)
+                .then(|| seq.get(row.qstart as usize - 1..row.qend as usize))
+                .flatten();
+            let aligned = row.qseq.as_ref().map(|q| q.replace('-', ""));
+            let fits = row.qlen as usize == seq.len()
+                && ours.is_some()
+                && aligned.is_none_or(|a| Some(a.as_str()) == ours);
+            if !fits {
+                warn!(
+                    "{}: a row for {} ({}, residues {}-{} of {}) is not for this \
+                     sequence of {} residues; dropped",
+                    results.display(),
+                    row.qaccver,
+                    row.saccver,
+                    row.qstart,
+                    row.qend,
+                    row.qlen,
+                    seq.len()
+                );
+            }
+            fits
+        })
+        .collect()
 }
 
 /// The rows of a `BLAST_OUTFMT` file. A file from before 0.17.0 (a reused
@@ -1666,6 +1723,42 @@ mod tests {
             qseq: None,
             sseq: None,
         }
+    }
+
+    #[test]
+    fn rows_of_another_search_are_dropped() {
+        // H3's second guard: a row is ours only for a query of this search,
+        // of this length, whose aligned residues are this sequence's
+        let p0 = "p0".to_string();
+        let queries = vec![(p0, CALM40)];
+        let queries: Vec<&(String, &str)> = queries.iter().collect();
+        let ok = blast_row("p0", "sp|P0DP23|CALM1_HUMAN", 100.0, 0, (1, 40), 40, 80.0);
+        let aligned = PolymerBlastHit {
+            qseq: Some("MADQLTEEQIAE".into()),
+            sseq: Some("MADQLTEEQIAE".into()),
+            ..blast_row("p0", "sp|P0DP23|CALM1_HUMAN", 100.0, 0, (1, 12), 40, 24.0)
+        };
+        let other_query =
+            blast_row("p1", "sp|P04585|POL_HV1H2", 100.0, 0, (1, 40), 40, 80.0);
+        let other_length =
+            blast_row("p0", "sp|P04585|POL_HV1H2", 100.0, 0, (1, 99), 99, 198.0);
+        let other_residues = PolymerBlastHit {
+            qseq: Some("PQITLWQRPL".into()),
+            sseq: Some("PQITLWQRPL".into()),
+            ..blast_row("p0", "sp|P04585|POL_HV1H2", 100.0, 0, (1, 10), 40, 20.0)
+        };
+        let past_the_end =
+            blast_row("p0", "sp|P04585|POL_HV1H2", 100.0, 0, (30, 41), 40, 20.0);
+        let rows = vec![
+            ok.clone(),
+            other_query,
+            aligned.clone(),
+            other_length,
+            other_residues,
+            past_the_end,
+        ];
+        let kept = rows_of_queries(rows, &queries, Path::new("x.tsv"));
+        assert_eq!(kept, vec![ok, aligned]);
     }
 
     fn chain(order: u32, polymer_type: &str, sequence: &str) -> ImportChain {

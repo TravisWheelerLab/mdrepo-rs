@@ -34,6 +34,14 @@
 //! that goes backwards or repeats unless rule 1 holds. pdbrust and this
 //! reader both drop TER records, so TER is not used.
 //!
+//! A strand's 5' nucleotide has no P, so there is no O3'-P bond to measure
+//! to it. It starts a new chain whatever the numbering says, as does a
+//! residue the names or atoms call a terminus: Amber's `DC5`/`DG3`, the
+//! 5'/3'-hydroxyl hydrogens `H5T`/`HO5'` and `H3T`/`HO3'`. tleap numbers the
+//! two strands of a duplex straight through and cpptraj writes no chain
+//! IDs, so without this every Amber duplex read as one chain (1BNA as a
+//! 24-nt strand).
+//!
 //! Water and single-atom residues (ions) are never in a chain. A run of one
 //! residue is a chain only if it is a named amino acid (in `one_letter`), or
 //! has a cap on either side (an alanine dipeptide). The named amino acid is
@@ -76,6 +84,13 @@ const MAX_BACKBONE_BOND: f64 = 1.9;
 
 /// Consecutive CA atoms sit ~3.8 A apart (trans) and ~2.9 A (cis).
 const MAX_CA_CA: f64 = 4.2;
+
+/// A CRYST1 cell with any edge shorter than this is not a periodic box to
+/// measure distances in: GROMACS writes `CRYST1 1.000 1.000 1.000` for no
+/// box, and under the minimum image in a cell this small every atom is
+/// within a bond of every other. Twice the longest cutoff (`MAX_CA_CA`),
+/// rounded up, so that the minimum image is unambiguous for any real cell.
+const MIN_CELL_EDGE: f64 = 10.0;
 
 const WATER: &[&str] = &[
     "HOH", "WAT", "SOL", "H2O", "DOD", "TIP", "TIP3", "TIP4", "TIP5", "T3P", "T4P",
@@ -161,6 +176,10 @@ struct Residue {
     o3: Option<[f64; 3]>,
     has_o2: bool,
     has_sugar: bool,
+    /// The 5'-terminal hydroxyl hydrogen (H5T, HO5') and the 3' one (H3T,
+    /// HO3'): a strand's ends, by atom
+    has_h5t: bool,
+    has_h3t: bool,
 }
 
 impl Residue {
@@ -180,6 +199,8 @@ impl Residue {
             o3: None,
             has_o2: false,
             has_sugar: false,
+            has_h5t: false,
+            has_h3t: false,
         }
     }
 
@@ -192,7 +213,10 @@ impl Residue {
 
     fn add(&mut self, atom: &PdbAtom) {
         self.num_atoms += 1;
-        if !matches!(atom.element.as_str(), "H" | "D") {
+        // Not hydrogen, and not a massless site: cpptraj writes an Amber
+        // extra point (TIP4P-Ew's EPW, `include_ep`) as element XP, and
+        // psf_elements leaves a CHARMM lone pair's element blank
+        if !matches!(atom.element.as_str(), "H" | "D" | "XP" | "EP" | "LP" | "") {
             *self.heavy.entry(atom.element.clone()).or_insert(0) += 1;
         }
         let name = atom.name.replace('*', "'");
@@ -210,12 +234,40 @@ impl Residue {
                 self.has_sugar = true;
                 return;
             }
+            "H5T" | "HO5'" => {
+                self.has_h5t = true;
+                return;
+            }
+            "H3T" | "HO3'" => {
+                self.has_h3t = true;
+                return;
+            }
             _ => return,
         };
         // First one wins
         if slot.is_none() {
             *slot = Some(atom.xyz);
         }
+    }
+
+    /// A nucleotide by name or by its sugar
+    fn is_nucleotide(&self) -> bool {
+        nucleic_by_name(&self.name).is_some() || self.has_sugar
+    }
+
+    /// A nucleotide the name or atoms call a strand's 5' end: Amber's
+    /// `DA5`/`RG5`, or the 5'-terminal hydroxyl hydrogen
+    fn starts_strand(&self) -> bool {
+        self.is_nucleotide()
+            && (self.has_h5t
+                || (nucleic_by_name(&self.name).is_some() && self.name.ends_with('5')))
+    }
+
+    /// A nucleotide the name or atoms call a strand's 3' end
+    fn ends_strand(&self) -> bool {
+        self.is_nucleotide()
+            && (self.has_h3t
+                || (nucleic_by_name(&self.name).is_some() && self.name.ends_with('3')))
     }
 
     /// The polymer family from the residue name alone (amino acid or
@@ -256,6 +308,107 @@ impl Residue {
 }
 
 // --------------------------------------------------
+/// The periodic cell from CRYST1, as three box vectors: `a` along x, `b` in
+/// the xy plane (the GROMACS convention, which cpptraj's PDB writer and
+/// MDAnalysis share)
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Cell {
+    a: [f64; 3],
+    b: [f64; 3],
+    c: [f64; 3],
+}
+
+impl Cell {
+    /// From the cell lengths (A) and angles (degrees); None for a cell that
+    /// is not a box to measure in (`MIN_CELL_EDGE`)
+    fn new(lengths: [f64; 3], angles: [f64; 3]) -> Option<Cell> {
+        let [la, lb, lc] = lengths;
+        if lengths.iter().any(|&l| !l.is_finite() || l < MIN_CELL_EDGE)
+            || angles
+                .iter()
+                .any(|&t| !t.is_finite() || t <= 0.0 || t >= 180.0)
+        {
+            return None;
+        }
+        let [alpha, beta, gamma] = angles.map(f64::to_radians);
+        let (cos_a, cos_b, cos_g, sin_g) =
+            (alpha.cos(), beta.cos(), gamma.cos(), gamma.sin());
+        let cx = lc * cos_b;
+        let cy = lc * (cos_a - cos_b * cos_g) / sin_g;
+        let cz2 = lc * lc - cx * cx - cy * cy;
+        if cz2 <= 0.0 {
+            return None;
+        }
+        Some(Cell {
+            a: [la, 0.0, 0.0],
+            b: [lb * cos_g, lb * sin_g, 0.0],
+            c: [cx, cy, cz2.sqrt()],
+        })
+    }
+
+    /// The first CRYST1 record in `text`, if it describes a box
+    fn read(text: &str) -> Option<Cell> {
+        let line = text.lines().find(|l| l.starts_with("CRYST1"))?;
+        let field = |a: usize, b: usize| -> Option<f64> {
+            line.get(a..b.min(line.len()))?.trim().parse::<f64>().ok()
+        };
+        Cell::new(
+            [field(6, 15)?, field(15, 24)?, field(24, 33)?],
+            [field(33, 40)?, field(40, 47)?, field(47, 54)?],
+        )
+    }
+
+    /// `v` in cell coordinates
+    fn fractional(&self, v: [f64; 3]) -> [f64; 3] {
+        // The vectors are lower triangular, so back-substitute
+        let sc = v[2] / self.c[2];
+        let sb = (v[1] - sc * self.c[1]) / self.b[1];
+        let sa = (v[0] - sb * self.b[0] - sc * self.c[0]) / self.a[0];
+        [sa, sb, sc]
+    }
+
+    fn cartesian(&self, s: [f64; 3]) -> [f64; 3] {
+        let mut v = [0.0; 3];
+        for (k, vec) in [self.a, self.b, self.c].iter().enumerate() {
+            for i in 0..3 {
+                v[i] += s[k] * vec[i];
+            }
+        }
+        v
+    }
+
+    /// The length of the shortest periodic image of the vector from `a` to
+    /// `b`. The image nearest in cell coordinates and its 26 neighbours are
+    /// tried, which finds the true minimum in any cell GROMACS or Amber
+    /// writes (both keep the cell reduced).
+    fn min_image_distance(&self, a: [f64; 3], b: [f64; 3]) -> f64 {
+        let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let s = self.fractional(d).map(|x| x - x.round());
+        let mut best = f64::INFINITY;
+        for na in [-1.0, 0.0, 1.0] {
+            for nb in [-1.0, 0.0, 1.0] {
+                for nc in [-1.0, 0.0, 1.0] {
+                    let v = self.cartesian([s[0] + na, s[1] + nb, s[2] + nc]);
+                    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                    best = best.min(len);
+                }
+            }
+        }
+        best
+    }
+}
+
+/// The distance from `a` to `b`, under the minimum image when there is a
+/// cell: cpptraj's autoimage and GROMACS's `-pbc atom` both leave molecules
+/// broken across the box, and a chain's C-N bond then spans the cell.
+fn distance_in(cell: Option<&Cell>, a: [f64; 3], b: [f64; 3]) -> f64 {
+    match cell {
+        Some(cell) => cell.min_image_distance(a, b),
+        None => distance(a, b),
+    }
+}
+
+// --------------------------------------------------
 /// The fields of one ATOM/HETATM record this module uses
 #[derive(Debug)]
 struct PdbAtom {
@@ -291,6 +444,8 @@ fn read_atoms(text: &str) -> Result<Vec<PdbAtom>> {
             .map_err(|e| anyhow!("line {}: residue number: {e}: {line:?}", i + 1))?;
         let name = col(12, 16).trim().to_uppercase();
         let element = match col(76, 78).trim() {
+            // A massless site (Amber EP1/EPW, CHARMM LP1/LPA) has no element
+            "" if name.starts_with("EP") || name.starts_with("LP") => String::new(),
             "" => name
                 .trim_start_matches(|c: char| c.is_ascii_digit())
                 .chars()
@@ -330,13 +485,24 @@ fn residues(atoms: &[PdbAtom]) -> Vec<Residue> {
 
 /// Does `cur` continue the chain that `prev` is in? The rules in the module
 /// docs.
-fn joins(prev: &Residue, cur: &Residue) -> bool {
+fn joins(cell: Option<&Cell>, prev: &Residue, cur: &Residue) -> bool {
     if prev.chain_id != cur.chain_id {
         return false;
     }
 
-    if backbone_bonded(prev, cur) {
+    if backbone_bonded(cell, prev, cur) {
         return true;
+    }
+
+    // A strand ends where the names or atoms say so, and where a nucleotide
+    // without a P (a 5' end) follows one with an O3': there is no bond to
+    // measure, and the numbering must not decide, because tleap numbers a
+    // duplex's strands straight through.
+    if prev.ends_strand() || cur.starts_strand() {
+        return false;
+    }
+    if prev.o3.is_some() && cur.p.is_none() && cur.is_nucleotide() {
+        return false;
     }
 
     // Rules 2 and 3 need both residues named as polymer residues
@@ -365,15 +531,15 @@ fn joins(prev: &Residue, cur: &Residue) -> bool {
         return false;
     }
     match (prev.ca, cur.ca) {
-        (Some(a), Some(b)) => distance(a, b) <= MAX_CA_CA,
+        (Some(a), Some(b)) => distance_in(cell, a, b) <= MAX_CA_CA,
         _ => true,
     }
 }
 
 /// C(i) to N(i+1), or O3'(i) to P(i+1), within `MAX_BACKBONE_BOND`
-fn backbone_bonded(prev: &Residue, cur: &Residue) -> bool {
+fn backbone_bonded(cell: Option<&Cell>, prev: &Residue, cur: &Residue) -> bool {
     let bonded = |a: Option<[f64; 3]>, b: Option<[f64; 3]>| match (a, b) {
-        (Some(a), Some(b)) => distance(a, b) <= MAX_BACKBONE_BOND,
+        (Some(a), Some(b)) => distance_in(cell, a, b) <= MAX_BACKBONE_BOND,
         _ => false,
     };
     bonded(prev.c, cur.n) || bonded(prev.o3, cur.p)
@@ -412,6 +578,7 @@ struct Structure {
 
 impl Structure {
     fn read(text: &str) -> Result<Structure> {
+        let cell = Cell::read(text);
         let residues = residues(&read_atoms(text)?);
         let polymer: Vec<usize> = (0..residues.len())
             .filter(|&i| !matches!(residues[i].kind(), Kind::Water | Kind::Ion))
@@ -420,7 +587,11 @@ impl Structure {
         let mut runs: Vec<&[usize]> = vec![];
         let mut start = 0;
         for i in 1..polymer.len() {
-            if !joins(&residues[polymer[i - 1]], &residues[polymer[i]]) {
+            if !joins(
+                cell.as_ref(),
+                &residues[polymer[i - 1]],
+                &residues[polymer[i]],
+            ) {
                 runs.push(&polymer[start..i]);
                 start = i;
             }
@@ -434,7 +605,7 @@ impl Structure {
         for run in runs {
             let run_residues: Vec<&Residue> =
                 run.iter().map(|&i| &residues[i]).collect();
-            if let Some(chain) = make_chain(&run_residues) {
+            if let Some(chain) = make_chain(cell.as_ref(), &run_residues) {
                 for &i in run {
                     in_chain[i] = true;
                 }
@@ -451,7 +622,7 @@ impl Structure {
 }
 
 /// A chain from one run of joined residues, or `None` if it is not a polymer
-fn make_chain(run: &[&Residue]) -> Option<Chain> {
+fn make_chain(cell: Option<&Cell>, run: &[&Residue]) -> Option<Chain> {
     let mut body = run;
     let mut n_cap = None;
     let mut c_cap = None;
@@ -517,7 +688,7 @@ fn make_chain(run: &[&Residue]) -> Option<Chain> {
     let breaks = (1..body.len())
         .filter(|&i| {
             backbone_present(body[i - 1], body[i])
-                && !backbone_bonded(body[i - 1], body[i])
+                && !backbone_bonded(cell, body[i - 1], body[i])
         })
         .collect();
 
@@ -760,15 +931,25 @@ fn header(chain_id: &str, seen: &mut HashMap<String, usize>) -> String {
 /// protonation and terminal names folded to the parent, anything else as is
 pub fn canonical(name: &str) -> String {
     let name = name.to_uppercase();
+    // Amber, CHARMM, GROMOS and OPLS names, from each force field's residue
+    // database (the GROMACS `aminoacids.rtp` files and Amber's `leaprc`s)
     let parent = match name.as_str() {
         "HID" | "HIE" | "HIP" | "HSD" | "HSE" | "HSP" | "HISD" | "HISE" | "HISH"
-        | "HIS1" | "HIS2" => "HIS",
-        "CYX" | "CYM" | "CYN" | "CYS2" | "CYSH" => "CYS",
+        | "HIS1" | "HIS2" | "HISA" | "HISB" => "HIS",
+        "CYX" | "CYM" | "CYN" | "CYS1" | "CYS2" | "CYSH" => "CYS",
         "ASH" | "ASPH" | "ASPP" => "ASP",
+        "ASN1" => "ASN",
         "GLH" | "GLUH" | "GLUP" => "GLU",
-        "LYN" | "LYSH" | "LSN" => "LYS",
-        "ARN" => "ARG",
+        "LYN" | "LYSH" | "LYSN" | "LSN" => "LYS",
+        "ARN" | "ARGN" => "ARG",
         "TYM" => "TYR",
+        // Amber phosaa: a phosphorylated residue at either charge is the
+        // chemical component
+        "S1P" | "S2P" => "SEP",
+        "T1P" | "T2P" => "TPO",
+        "Y1P" | "Y2P" => "PTR",
+        // GROMOS pyroglutamate
+        "PGLU" => "PCA",
         _ => {
             // AMBER's terminal residues: NALA, CALA, NHIE, ...
             if name.len() == 4
@@ -885,14 +1066,23 @@ pub fn one_letter(name: &str) -> Option<char> {
         "PTR" => 'Y',
         // Methionine and analogs
         "MSE" | "FME" | "MHO" | "SME" => 'M',
-        // Lysine carboxylation, methylation, retinal
-        "KCX" | "MLZ" | "MLY" | "M3L" | "KPI" | "LYR" => 'K',
+        // Cysteine oxidation
+        "CSD" => 'C',
+        // Lysine carboxylation, methylation, acetylation, retinal
+        "KCX" | "MLZ" | "MLY" | "M3L" | "KPI" | "LYR" | "ALY" => 'K',
         // Glutamate variants
         "CGU" | "PCA" => 'E',
         // Histidine variants
-        "HIC" | "HRG" => 'H',
-        // Threonine and tyrosine variants
-        "OMT" => 'T',
+        "HIC" => 'H',
+        // Homoarginine is an arginine (its CCD parent), not a histidine
+        "HRG" => 'R',
+        // Methionine sulfone (its CCD parent is MET), not a threonine
+        "OMT" => 'M',
+        // Hydroxyproline, norleucine, sarcosine: each its CCD parent
+        "HYP" => 'P',
+        "NLE" => 'L',
+        "SAR" => 'G',
+        // Tyrosine variants
         "TYI" | "TYS" => 'Y',
         // Generic covalent adduct
         "COV" => 'X',
@@ -939,6 +1129,20 @@ mod tests {
              {:>8.3}{:>8.3}{:>8.3}  1.00  0.00           C  ",
             xyz[0], xyz[1], xyz[2]
         )
+    }
+
+    /// Residues with 4-letter names, bonded, numbered from 1
+    fn chain4(names: &str) -> Vec<String> {
+        let mut s = 0;
+        let mut lines = vec![];
+        for (i, res) in names.split(' ').enumerate() {
+            for (name, dx) in [("N", 0.0), ("CA", 1.2), ("C", 2.47)] {
+                s += 1;
+                let x = 3.8 * i as f64 + dx;
+                lines.push(atom4(s, name, res, "A", i as i32 + 1, [x, 0.0, 0.0]));
+            }
+        }
+        lines
     }
 
     fn hetatm(line: String) -> String {
@@ -988,6 +1192,30 @@ mod tests {
                 atom(*s, name, res, "B", num, [x0 + dx, 1.0, 0.0])
             })
             .collect()
+    }
+
+    /// A strand as tleap writes it: `names` 3.8 A apart from `x0`, numbered
+    /// from `first`, the first residue without a P. Blank chain ID.
+    fn strand(s: &mut i32, names: &str, first: i32, x0: f64) -> Vec<String> {
+        let mut lines = vec![];
+        for (i, res) in names.split(' ').enumerate() {
+            let x = x0 + 3.8 * i as f64;
+            for (name, dx) in [("P", 0.0), ("C4'", 1.0), ("C1'", 1.5), ("O3'", 2.2)] {
+                if i == 0 && name == "P" {
+                    continue;
+                }
+                *s += 1;
+                lines.push(atom(
+                    *s,
+                    name,
+                    res,
+                    " ",
+                    first + i as i32,
+                    [x + dx, 1.0, 0.0],
+                ));
+            }
+        }
+        lines
     }
 
     fn chains(lines: &[String]) -> Vec<Chain> {
@@ -1086,6 +1314,142 @@ mod tests {
         assert_eq!(fasta(&lines), ">_\nMAK\n>_2\nGS\n");
     }
 
+    /// `lines` with residues numbered `from` and up shifted by `by`
+    fn shifted(lines: &[String], from: i32, by: [f64; 3]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| {
+                let num: i32 = l[22..26].trim().parse().unwrap();
+                if num < from {
+                    return l.clone();
+                }
+                let xyz: Vec<f64> = [30, 38, 46]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &c)| l[c..c + 8].trim().parse::<f64>().unwrap() + by[i])
+                    .collect();
+                format!(
+                    "{}{:>8.3}{:>8.3}{:>8.3}{}",
+                    &l[..30],
+                    xyz[0],
+                    xyz[1],
+                    xyz[2],
+                    &l[54..]
+                )
+            })
+            .collect()
+    }
+
+    fn cryst1(lengths: [f64; 3], angles: [f64; 3]) -> String {
+        format!(
+            "CRYST1{:>9.3}{:>9.3}{:>9.3}{:>7.2}{:>7.2}{:>7.2} P 1           1",
+            lengths[0], lengths[1], lengths[2], angles[0], angles[1], angles[2]
+        )
+    }
+
+    #[test]
+    fn a_chain_wrapped_across_the_box_is_one_chain() {
+        // Atoms wrapped into the cell, as mdrun and cpptraj autoimage leave
+        // them: residues 3 and 4 sit one box vector away from 1 and 2, so
+        // the C-N bond between 2 and 3 spans the box. Without CRYST1 the
+        // chain is cut there; with it, MDAnalysis finds one fragment and so
+        // does this.
+        let mut s = 0;
+        let body = chain(&mut s, "MET ALA GLY SER", "A", 1, 0.0);
+        let wrapped = shifted(&body, 3, [-40.0, 0.0, 0.0]);
+        assert_eq!(chains(&wrapped).len(), 2);
+
+        let mut lines = vec![cryst1([40.0, 40.0, 40.0], [90.0, 90.0, 90.0])];
+        lines.extend(wrapped.clone());
+        let got = chains(&lines);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].sequence, "MAGS");
+        assert_eq!(got[0].breaks, Vec::<usize>::new());
+
+        // A truncated octahedron (the Amber default), with the tail moved by
+        // its third box vector, worked out by hand from the cell: c = 40 A at
+        // alpha = beta = gamma = 109.47 deg gives (-13.333, -18.856, 32.660).
+        let mut lines = vec![cryst1([40.0; 3], [109.4712206; 3])];
+        lines.extend(shifted(&body, 3, [-13.333, -18.856, 32.660]));
+        let got = chains(&lines);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].sequence, "MAGS");
+
+        // The same shift and no cell: two chains
+        assert_eq!(
+            chains(&shifted(&body, 3, [-13.333, -18.856, 32.660])).len(),
+            2
+        );
+    }
+
+    #[test]
+    fn a_placeholder_cell_is_not_a_box() {
+        // GROMACS writes CRYST1 1 1 1 for a system with no box. Under the
+        // minimum image in that cell every atom is within a bond of every
+        // other, so two chains 100 A apart would be one.
+        let mut s = 0;
+        let mut lines = vec![cryst1([1.0, 1.0, 1.0], [90.0, 90.0, 90.0])];
+        lines.extend(chain(&mut s, "MET ALA", " ", 1, 0.0));
+        lines.extend(chain(&mut s, "GLY SER", " ", 1, 100.0));
+        assert_eq!(chains(&lines).len(), 2);
+        assert_eq!(Cell::read(&lines.join("\n")), None);
+    }
+
+    #[test]
+    fn minimum_image_matches_a_wider_search() {
+        // The nearest image and its 26 neighbours, against every image
+        // within four cells (a skewed cell puts the nearest image several
+        // cells from the origin), for the cell shapes the engines write and
+        // some they do not
+        let cells = [
+            ([40.0, 40.0, 40.0], [90.0, 90.0, 90.0]),
+            ([40.0, 40.0, 40.0], [109.4712206; 3]),
+            ([40.0, 40.0, 28.28], [60.0, 60.0, 90.0]),
+            ([35.0, 48.0, 61.0], [80.0, 95.0, 110.0]),
+        ];
+        let mut seed = 12345u64;
+        let mut rand = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for (lengths, angles) in cells {
+            let cell = Cell::new(lengths, angles).unwrap();
+            for _ in 0..200 {
+                let a = [
+                    rand() * 60.0 - 30.0,
+                    rand() * 60.0 - 30.0,
+                    rand() * 60.0 - 30.0,
+                ];
+                let b = [
+                    rand() * 60.0 - 30.0,
+                    rand() * 60.0 - 30.0,
+                    rand() * 60.0 - 30.0,
+                ];
+                let mut best = f64::INFINITY;
+                for na in -4..=4 {
+                    for nb in -4..=4 {
+                        for nc in -4..=4 {
+                            let shift =
+                                cell.cartesian([na as f64, nb as f64, nc as f64]);
+                            let d = distance(
+                                a,
+                                [b[0] + shift[0], b[1] + shift[1], b[2] + shift[2]],
+                            );
+                            best = best.min(d);
+                        }
+                    }
+                }
+                let got = cell.min_image_distance(a, b);
+                assert!(
+                    (got - best).abs() < 1e-9,
+                    "{lengths:?} {angles:?}: {got} vs {best}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn only_the_first_model_is_read() {
         let mut s = 0;
@@ -1148,6 +1512,60 @@ mod tests {
         let got = chains(&chain(&mut s, "HIE CYX ASH HSD", "A", 1, 0.0));
         assert_eq!(residues_of(&got[0]), ["HIS", "CYS", "ASP", "HIS"]);
         assert_eq!(got[0].sequence, "HCDH");
+    }
+
+    #[test]
+    fn gromos_and_opls_names_fold_to_the_parent() {
+        // GROMOS 54a7 and OPLS-AA as pdb2gmx writes them (aminoacids.rtp):
+        // every histidine tautomer, the neutral arginine and lysine, the
+        // bridged cysteines, pyroglutamate. These came out `X` with their own
+        // md_polymer key, so a GROMOS protein with more than three histidines
+        // lost its declared UniProt reference (3 mismatches allowed).
+        let names = "HISA HISB HISH HIS1 HIS2 ARGN LYSH LYSN CYS1 CYS2 CYSH ASN1 PGLU";
+        let got = chains(&chain4(names));
+        assert_eq!(
+            residues_of(&got[0]),
+            [
+                "HIS", "HIS", "HIS", "HIS", "HIS", "ARG", "LYS", "LYS", "CYS", "CYS",
+                "CYS", "ASN", "PCA"
+            ]
+        );
+        assert_eq!(got[0].sequence, "HHHHHRKKCCCNE");
+    }
+
+    #[test]
+    fn amber_phospho_names_are_the_chemical_component() {
+        // phosaa10/14/19 name a phosphoserine S1P or S2P by its charge; the
+        // chemical component is SEP either way (TPO, PTR likewise).
+        let mut s = 0;
+        let got = chains(&chain(&mut s, "S1P S2P T1P T2P Y1P Y2P", "A", 1, 0.0));
+        assert_eq!(
+            residues_of(&got[0]),
+            ["SEP", "SEP", "TPO", "TPO", "PTR", "PTR"]
+        );
+        assert_eq!(got[0].sequence, "SSTTYY");
+    }
+
+    #[test]
+    fn parent_letters_follow_the_chemical_component_dictionary() {
+        // Each modified residue's `mon_nstd_parent_comp_id` in the CCD: HRG
+        // (homoarginine) is ARG and OMT (methionine sulfone) is MET, which the
+        // old table had as H and T, copied from get_sequence_from_pdb.py's
+        // mislabelled VARIANT table.
+        for (code, letter) in [
+            ("HRG", 'R'),
+            ("OMT", 'M'),
+            ("HYP", 'P'),
+            ("NLE", 'L'),
+            ("ALY", 'K'),
+            ("CSD", 'C'),
+            ("SAR", 'G'),
+            ("HIC", 'H'),
+            ("MSE", 'M'),
+            ("SEP", 'S'),
+        ] {
+            assert_eq!(one_letter(code), Some(letter), "{code}");
+        }
     }
 
     #[test]
@@ -1319,6 +1737,39 @@ mod tests {
     }
 
     #[test]
+    fn massless_sites_are_not_heavy_atoms() {
+        // A chlorobenzene with CGenFF's halogen lone pair, written by cpptraj
+        // with include_ep (element XP), by psf_elements (blank) and by a
+        // writer with no element column at all
+        let mut s = 0;
+        let mut lines = chain(&mut s, "MET ALA", "A", 1, 0.0);
+        let heavy = |l: &str, e: &str| {
+            let l = format!("{:<76}{e:>2}", &l[..76.min(l.len())]);
+            l
+        };
+        for (name, element) in [
+            ("C1", "C"),
+            ("CL1", "CL"),
+            ("LP1", "XP"),
+            ("LP2", ""),
+            ("EP1", ""),
+        ] {
+            s += 1;
+            let line = hetatm(atom(s, name, "LIG", "A", 9, [50.0, 0.0, 0.0]));
+            let line = if element.is_empty() && name == "EP1" {
+                line[..76].to_string()
+            } else {
+                heavy(&line, element)
+            };
+            lines.push(line);
+        }
+        let structure = Structure::read(&(lines.join("\n") + "\nEND\n")).unwrap();
+        let ligand = structure.residues.iter().find(|r| r.name == "LIG").unwrap();
+        assert_eq!(ligand.heavy, formula(&[("C", 1), ("CL", 1)]));
+        assert_eq!(ligand.num_atoms, 5);
+    }
+
+    #[test]
     fn caps_change_the_formula() {
         let ala2 = codes("ALA ALA");
         let plain = expected_peptide_formula(&ala2, None, None).unwrap();
@@ -1377,6 +1828,77 @@ mod tests {
         assert_eq!(chains_from_text(&text).unwrap().len(), 1);
         let none = expected_peptide_formula(&codes("GLY ALA"), None, None).unwrap();
         assert!(find_blobs(&text, &none).unwrap().is_empty());
+    }
+
+    #[test]
+    fn duplex_strands_numbered_straight_through_are_two_chains() {
+        // 1BNA through tleap and cpptraj: blank IDs, residues 1-24, the 5'
+        // residue of each strand without a P. MDAnalysis finds two bonded
+        // fragments; this found one 24-nt chain. The second strand starts
+        // 20 A away, as in a real duplex, so no O3'-P bond spans the gap.
+        let mut s = 0;
+        let mut lines = strand(&mut s, "DC5 DG DC DG3", 1, 0.0);
+        lines.extend(strand(&mut s, "DC5 DG DC DG3", 5, 20.0));
+        let got = chains(&lines);
+        assert_eq!(got.len(), 2);
+        for chain in &got {
+            assert_eq!(chain.polymer_type, PolymerType::Dna);
+            assert_eq!(chain.sequence, "CGCG");
+        }
+        assert_eq!((got[1].first_residue, got[1].last_residue), (5, 8));
+    }
+
+    #[test]
+    fn a_strand_without_terminal_names_still_ends_at_the_missing_p() {
+        // CHARMM and the PDB name every nucleotide alike (ADE/CYT, DA/DC);
+        // only the missing P and the H5T/HO5' hydrogen mark the 5' end.
+        let mut s = 0;
+        let mut lines = strand(&mut s, "DC DG DC DG", 1, 0.0);
+        lines.extend(strand(&mut s, "DC DG DC DG", 5, 20.0));
+        assert_eq!(chains(&lines).len(), 2);
+
+        // With a P on the 5' residue (a 5'-phosphate), the hydrogen alone
+        // says where the strand starts
+        let mut s = 0;
+        let mut lines = vec![];
+        for (i, res) in ["DC", "DG", "DC", "DG"].iter().enumerate() {
+            let x = 3.8 * i as f64 + if i >= 2 { 20.0 } else { 0.0 };
+            lines.extend(nucleotide(&mut s, res, i as i32 + 1, x, false));
+            if i == 2 {
+                s += 1;
+                lines.push(atom(s, "H5T", res, "B", 3, [x - 0.5, 1.0, 0.0]));
+            }
+        }
+        let got = chains(&lines);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].sequence, "CG");
+        assert_eq!(got[1].sequence, "CG");
+    }
+
+    #[test]
+    fn a_strand_with_a_missing_nucleotide_stays_one_chain() {
+        // Rule 2 still applies inside a strand: the residue after the gap
+        // has its P, so it is not a 5' end.
+        let mut s = 0;
+        let mut lines = strand(&mut s, "DC5 DG", 1, 0.0);
+        for (i, res) in ["DC", "DG3"].iter().enumerate() {
+            lines.extend(nucleotide(
+                &mut s,
+                res,
+                i as i32 + 5,
+                30.0 + 3.8 * i as f64,
+                false,
+            ));
+        }
+        // nucleotide() writes chain B; strand() writes blank
+        let lines: Vec<String> = lines
+            .iter()
+            .map(|l| format!("{} {}", &l[..21], &l[22..]))
+            .collect();
+        let got = chains(&lines);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].sequence, "CGCG");
+        assert_eq!(got[0].breaks, vec![2]);
     }
 
     #[test]
