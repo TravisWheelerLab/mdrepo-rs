@@ -387,8 +387,7 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
             as u32,
         integration_timestep_fs: sim
             .integration_timestep_fs
-            .ok_or_else(|| anyhow!("simulation has no integration timestep"))?
-            as u32,
+            .ok_or_else(|| anyhow!("simulation has no integration timestep"))?,
         // The DECLARED value, and it must never be sim.sampling_frequency.
         // That column is the *measured* one, derived from the converted XTC
         // and stored in nanoseconds; mapping it here would make every exported

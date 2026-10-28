@@ -20,8 +20,9 @@ pub const WATER_DENSITY_MAX: f64 = 1100.;
 pub const METADATA_TOML_VERSION: u32 = 2;
 pub const TEMP_K_MIN: u32 = 275;
 pub const TEMP_K_MAX: u32 = 700;
-pub const TIMESTEP_FS_MIN: u32 = 1;
-pub const TIMESTEP_FS_MAX: u32 = 20;
+// Fractional timesteps are allowed (2.5 fs, Zenodo 3975394; mdrepo-rs#50).
+pub const TIMESTEP_FS_MIN: f64 = 1.;
+pub const TIMESTEP_FS_MAX: f64 = 20.;
 // Frame spacing, not integration timestep: the simulated time between saved
 // frames. The ceiling is 100 ns per frame, well past any real sampling rate.
 // These bounds only catch nonsense; they cannot catch a unit error, since a

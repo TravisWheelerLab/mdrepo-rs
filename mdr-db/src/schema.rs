@@ -230,7 +230,7 @@ diesel::table! {
         temperature -> Nullable<Int4>,
         is_deprecated -> Bool,
         protonation_method -> Nullable<Text>,
-        integration_timestep_fs -> Nullable<Int4>,
+        integration_timestep_fs -> Nullable<Float8>,
         short_description -> Text,
         pdb_id -> Nullable<Int8>,
         is_public -> Bool,

@@ -742,7 +742,7 @@ pub struct ExportSimulation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sampling_frequency_ps: Option<f64>,
 
-    pub integration_timestep_fs: u32,
+    pub integration_timestep_fs: f64,
 
     pub temperature_kelvin: u32,
 
