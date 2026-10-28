@@ -57,6 +57,15 @@ const XTC_INFLATION_FACTOR: f64 = 1000.0;
 const CONVERT_TIMEOUT_SECS: u64 = 2 * 60 * 60;
 const CONVERT_TIMEOUT_ENV: &str = "MDR_CONVERT_TIMEOUT_SECS";
 
+// ── Helper-script time limit ──────────────────────────────────────────────────
+/// For the per-trajectory Python helpers (thumbnail, RMSD/RMSF). A thumbnail
+/// takes seconds; RMSD reads minimal.xtc, so allow for a large one. Without a
+/// limit, PLAS-20K 5nd5's rep_3 thumbnail hung on a busy host (2026-10-27) and
+/// held its worker until the caller's 4 h timeout; the same command on the
+/// same files then finished in 8 s.
+const HELPER_TIMEOUT_SECS: u64 = 60 * 60;
+const HELPER_TIMEOUT_ENV: &str = "MDR_HELPER_TIMEOUT_SECS";
+
 // --------------------------------------------------
 pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
     debug!("{args:?}");
@@ -406,18 +415,7 @@ pub fn make_thumbnail(
             "--out-file",
             thumbnail.to_string_lossy().as_ref(),
         ]);
-        debug!("Running {cmd:?}");
-        let output = cmd.output()?;
-
-        debug!("{}", str::from_utf8(&output.stdout)?);
-
-        if !output.status.success() {
-            bail!(
-                "Command failed ({}): {cmd:?}\n{}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
+        run_helper(&mut cmd, "Creating the thumbnail")?;
 
         if !file_exists(thumbnail) {
             bail!(r#"Failed to create "{}""#, thumbnail.display());
@@ -986,18 +984,7 @@ pub fn get_rmsd_rmsf(
             "--trajectory",
             min_xtc.to_string_lossy().as_ref(),
         ]);
-        debug!("Running {cmd:?}");
-        let output = cmd.output()?;
-
-        debug!("{}", str::from_utf8(&output.stdout)?);
-
-        if !output.status.success() {
-            bail!(
-                "Command failed ({}): {cmd:?}\n{}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
+        run_helper(&mut cmd, "Computing RMSD/RMSF")?;
 
         if !file_exists(&out_file) {
             bail!(r#"Failed to create "{}""#, out_file.display());
@@ -3080,13 +3067,47 @@ pub fn get_unique_file_hash(meta: &Meta, input_dir: &Path) -> String {
 // --------------------------------------------------
 // --------------------------------------------------
 fn convert_timeout() -> Result<time::Duration> {
-    match env::var(CONVERT_TIMEOUT_ENV) {
+    timeout_from_env(CONVERT_TIMEOUT_ENV, CONVERT_TIMEOUT_SECS)
+}
+
+fn helper_timeout() -> Result<time::Duration> {
+    timeout_from_env(HELPER_TIMEOUT_ENV, HELPER_TIMEOUT_SECS)
+}
+
+fn timeout_from_env(name: &str, default_secs: u64) -> Result<time::Duration> {
+    match env::var(name) {
         Ok(v) => v
             .parse()
             .map(time::Duration::from_secs)
-            .map_err(|e| anyhow!("{CONVERT_TIMEOUT_ENV}={v:?}: {e}")),
-        Err(_) => Ok(time::Duration::from_secs(CONVERT_TIMEOUT_SECS)),
+            .map_err(|e| anyhow!("{name}={v:?}: {e}")),
+        Err(_) => Ok(time::Duration::from_secs(default_secs)),
     }
+}
+
+// --------------------------------------------------
+/// Run a helper script under `helper_timeout`, failing if it overruns or exits
+/// non-zero. Logs its stdout like the plain `cmd.output()` calls it replaces.
+fn run_helper(cmd: &mut Command, what: &str) -> Result<()> {
+    debug!("Running {cmd:?}");
+    let limit = helper_timeout()?;
+    let Some(output) = output_with_timeout(cmd, limit)? else {
+        bail!(
+            "{what} did not finish within {}s and was killed \
+            (set {HELPER_TIMEOUT_ENV} to change the limit): {cmd:?}",
+            limit.as_secs()
+        );
+    };
+
+    debug!("{}", String::from_utf8_lossy(&output.stdout));
+
+    if !output.status.success() {
+        bail!(
+            "Command failed ({}): {cmd:?}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
 }
 
 // --------------------------------------------------
@@ -4709,6 +4730,28 @@ mol_id: No ligand-like residue found in minimal.pdb
             .unwrap()
             .success();
         assert!(!alive, "the grandchild (pid {}) survived", pid.trim());
+    }
+
+    // ── helper-script time limit ──────────────────────────────────────────
+    #[test]
+    fn timeout_from_env_uses_the_default_when_unset() {
+        let limit = timeout_from_env("MDR_TEST_TIMEOUT_UNSET", 42).unwrap();
+        assert_eq!(limit, time::Duration::from_secs(42));
+    }
+
+    #[test]
+    fn run_helper_reports_a_failing_script() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "echo boom >&2; exit 3"]);
+        let err = run_helper(&mut cmd, "Test helper").unwrap_err().to_string();
+        assert!(err.contains("Command failed"), "{err}");
+        assert!(err.contains("boom"), "{err}");
+    }
+
+    #[test]
+    fn run_helper_succeeds_on_a_clean_exit() {
+        let mut cmd = Command::new("true");
+        run_helper(&mut cmd, "Test helper").unwrap();
     }
 
     // ---- place_chains: ligands declared by sequence ----
