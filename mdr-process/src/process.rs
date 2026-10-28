@@ -3022,11 +3022,35 @@ fn mk_paper(doi_paper: DoiPaper, doi: &str) -> metadata::Paper {
 }
 
 // --------------------------------------------------
+/// A UniProt ID that will never give an entry, however often it is asked
+/// for: UniProt answers 400 (not an accession, e.g. `<uniprotid>`) or 404,
+/// or the entry is inactive (deleted, or demerged into others). Unlike a
+/// fetch that failed, it is no reason to leave a chain for a later run.
+#[derive(Debug)]
+pub struct UniprotGone(pub String);
+
+impl std::fmt::Display for UniprotGone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for UniprotGone {}
+
+// --------------------------------------------------
 pub fn get_uniprot_entry(uniprot_id: &str) -> Result<UniprotEntry> {
     let url = format!("https://rest.uniprot.org/uniprotkb/{uniprot_id}.json");
     let resp = reqwest::blocking::get(&url)?;
-    if !resp.status().is_success() {
-        bail!(r#"Failed to fetch "{url}" ({})""#, resp.status());
+    let status = resp.status();
+    if status == reqwest::StatusCode::BAD_REQUEST
+        || status == reqwest::StatusCode::NOT_FOUND
+    {
+        return Err(
+            UniprotGone(format!(r#"Failed to fetch "{url}" ({status})""#)).into(),
+        );
+    }
+    if !status.is_success() {
+        bail!(r#"Failed to fetch "{url}" ({status})""#);
     }
     let fetched_at = chrono::Utc::now();
 
@@ -3035,7 +3059,37 @@ pub fn get_uniprot_entry(uniprot_id: &str) -> Result<UniprotEntry> {
     let raw: serde_json::Value = resp.json().map_err(|e| {
         anyhow!(r#"Failed to parse Uniprot response for "{uniprot_id}": {e}"#)
     })?;
+    if let Some(why) = inactive_reason(&raw) {
+        return Err(UniprotGone(format!(
+            "UniProt entry {uniprot_id} is inactive ({why})"
+        ))
+        .into());
+    }
     uniprot_entry_from_json(uniprot_id, raw, fetched_at)
+}
+
+/// Why UniProt no longer serves an entry, e.g. `DELETED` or `DEMERGED into
+/// A0ACD6B832`; None for an active entry
+fn inactive_reason(raw: &serde_json::Value) -> Option<String> {
+    let entry_type = raw.get("entryType")?.as_str()?;
+    if !entry_type.starts_with("Inactive") {
+        return None;
+    }
+    let reason = raw.get("inactiveReason");
+    let kind = reason
+        .and_then(|r| r.get("inactiveReasonType"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("inactive");
+    let into: Vec<&str> = reason
+        .and_then(|r| r.get("mergeDemergeTo"))
+        .and_then(serde_json::Value::as_array)
+        .map(|ids| ids.iter().filter_map(serde_json::Value::as_str).collect())
+        .unwrap_or_default();
+    Some(if into.is_empty() {
+        kind.to_string()
+    } else {
+        format!("{kind} into {}", into.join(", "))
+    })
 }
 
 /// An entry from UniProt's JSON for it, fetched at `fetched_at`
@@ -3315,6 +3369,28 @@ pub(crate) fn python_env_builds(uv: &Path, script_dir: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inactive_reason_of_deleted_and_demerged_entries() {
+        let deleted = serde_json::json!({
+            "entryType": "Inactive",
+            "inactiveReason": {"inactiveReasonType": "DELETED"}
+        });
+        assert_eq!(inactive_reason(&deleted).as_deref(), Some("DELETED"));
+        let demerged = serde_json::json!({
+            "entryType": "Inactive",
+            "inactiveReason": {
+                "inactiveReasonType": "DEMERGED",
+                "mergeDemergeTo": ["A0ACD6B832"]
+            }
+        });
+        assert_eq!(
+            inactive_reason(&demerged).as_deref(),
+            Some("DEMERGED into A0ACD6B832")
+        );
+        let active = serde_json::json!({"entryType": "UniProtKB unreviewed (TrEMBL)"});
+        assert_eq!(inactive_reason(&active), None);
+    }
     use libmdrepo::metadata::Meta;
     use std::io::Write;
     use tempfile::{NamedTempFile, tempdir};
