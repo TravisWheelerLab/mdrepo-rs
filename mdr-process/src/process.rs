@@ -1708,7 +1708,10 @@ pub fn make_import_json(
     let mut pdb = None;
     if let Some(pdb_id) = &args.meta.pdb_id {
         match get_pdb_entry(pdb_id) {
-            Ok(entry) => pdb = Some(entry),
+            Ok((entry, note)) => {
+                pdb = Some(entry);
+                warnings.extend(note);
+            }
             Err(e) => warnings.push(e.to_string()),
         }
     }
@@ -3134,16 +3137,32 @@ pub fn uniprot_entry_from_json(
 /// The title and classification come from RCSB; PDBe's molecules and SIFTS
 /// mappings are kept whole for md_pdb (Ken, 2026-10-09). A PDBe call that
 /// fails leaves its response out, and the import keeps what is stored.
-pub fn get_pdb_entry(pdb_id: &str) -> Result<PdbEntry> {
+///
+/// An entry RCSB has removed (obsoleted) is 404 at core/entry but still
+/// listed at holdings/removed, which gives its title and replacement. A
+/// submission that names it still gets an md_pdb row, with that title and
+/// no classification, and the returned note says it was removed (Ken,
+/// 2026-10-28: publish with the PDB ID that was used, e.g. 1JT1 -> 5W90).
+pub fn get_pdb_entry(pdb_id: &str) -> Result<(PdbEntry, Option<String>)> {
     let pdb_id = pdb_id.to_uppercase();
     let url = format!("https://data.rcsb.org/rest/v1/core/entry/{pdb_id}");
     let resp = reqwest::blocking::get(&url)?;
-    if !resp.status().is_success() {
+    let (title, classification, note) = if resp.status().is_success() {
+        let pdb_resp: PdbResponse = resp
+            .json()
+            .map_err(|e| anyhow!("Failed to parse PDB response: {e}"))?;
+        (
+            pdb_resp.struct_.title,
+            pdb_resp.struct_keywords.pdbx_keywords,
+            None,
+        )
+    } else if resp.status() == reqwest::StatusCode::NOT_FOUND
+        && let Some((title, note)) = get_removed_pdb(&pdb_id)
+    {
+        (title, String::new(), Some(note))
+    } else {
         bail!("Failed to GET \"{url}\" ({})", resp.status());
-    }
-    let pdb_resp: PdbResponse = resp
-        .json()
-        .map_err(|e| anyhow!("Failed to parse PDB response: {e}"))?;
+    };
 
     let code = pdb_id.to_lowercase();
     let fetched_at = chrono::Utc::now();
@@ -3152,14 +3171,59 @@ pub fn get_pdb_entry(pdb_id: &str) -> Result<PdbEntry> {
     let fetched_at =
         (response.is_some() || entities_response.is_some()).then_some(fetched_at);
 
-    Ok(PdbEntry {
-        pdb_id,
-        title: pdb_resp.struct_.title,
-        classification: pdb_resp.struct_keywords.pdbx_keywords,
-        response,
-        entities_response,
-        fetched_at,
-    })
+    Ok((
+        PdbEntry {
+            pdb_id,
+            title,
+            classification,
+            response,
+            entities_response,
+            fetched_at,
+        },
+        note,
+    ))
+}
+
+/// The title of an entry RCSB has removed, and a note saying when and what
+/// replaced it; None if RCSB does not list it as removed.
+fn get_removed_pdb(pdb_id: &str) -> Option<(String, String)> {
+    let url = format!("https://data.rcsb.org/rest/v1/holdings/removed/{pdb_id}");
+    let resp = reqwest::blocking::get(&url)
+        .map_err(|e| debug!(r#"Failed to GET "{url}": {e}"#))
+        .ok()?;
+    if !resp.status().is_success() {
+        debug!(r#"Failed to GET "{url}" ({})"#, resp.status());
+        return None;
+    }
+    let raw: serde_json::Value = resp
+        .json()
+        .map_err(|e| debug!(r#"Failed to parse "{url}": {e}"#))
+        .ok()?;
+    removed_pdb(pdb_id, &raw)
+}
+
+/// holdings/removed's title, and the note for an entry it lists
+fn removed_pdb(pdb_id: &str, raw: &serde_json::Value) -> Option<(String, String)> {
+    let removed = raw.get("rcsb_repository_holdings_removed")?;
+    let title = removed.get("title")?.as_str()?.to_string();
+    let date = removed
+        .get("remove_date")
+        .and_then(serde_json::Value::as_str)
+        .map(|d| d.get(..10).unwrap_or(d));
+    let replaced_by: Vec<&str> = removed
+        .get("id_codes_replaced_by")
+        .and_then(serde_json::Value::as_array)
+        .map(|ids| ids.iter().filter_map(serde_json::Value::as_str).collect())
+        .unwrap_or_default();
+    let mut note = format!("PDB {pdb_id} was removed by RCSB");
+    if let Some(date) = date {
+        note.push_str(&format!(" on {date}"));
+    }
+    if !replaced_by.is_empty() {
+        note.push_str(&format!(" (replaced by {})", replaced_by.join(", ")));
+    }
+    note.push_str("; linked from its removal record");
+    Some((title, note))
 }
 
 /// One PDBe API response, or None (logged) when it could not be had. PDBe
@@ -3390,6 +3454,47 @@ mod tests {
         );
         let active = serde_json::json!({"entryType": "UniProtKB unreviewed (TrEMBL)"});
         assert_eq!(inactive_reason(&active), None);
+    }
+
+    #[test]
+    fn removed_pdb_gives_title_and_note() {
+        let raw = serde_json::json!({
+            "rcsb_repository_holdings_removed": {
+                "id_codes_replaced_by": ["5W90"],
+                "remove_date": "2025-01-15T00:00:00.000+00:00",
+                "title": "FEZ-1 metallo-beta-lactamase from Legionella gormanii modelled with D-captopril"
+            }
+        });
+        let (title, note) = removed_pdb("1JT1", &raw).unwrap();
+        assert_eq!(
+            title,
+            "FEZ-1 metallo-beta-lactamase from Legionella gormanii modelled with D-captopril"
+        );
+        assert_eq!(
+            note,
+            "PDB 1JT1 was removed by RCSB on 2025-01-15 (replaced by 5W90); \
+             linked from its removal record"
+        );
+    }
+
+    #[test]
+    fn removed_pdb_without_date_or_replacement() {
+        let raw = serde_json::json!({
+            "rcsb_repository_holdings_removed": { "title": "T" }
+        });
+        let (title, note) = removed_pdb("9XYZ", &raw).unwrap();
+        assert_eq!(title, "T");
+        assert_eq!(
+            note,
+            "PDB 9XYZ was removed by RCSB; linked from its removal record"
+        );
+    }
+
+    #[test]
+    fn removed_pdb_needs_a_title() {
+        assert!(removed_pdb("1ABC", &serde_json::json!({})).is_none());
+        let raw = serde_json::json!({ "rcsb_repository_holdings_removed": {} });
+        assert!(removed_pdb("1ABC", &raw).is_none());
     }
     use libmdrepo::metadata::Meta;
     use std::io::Write;
