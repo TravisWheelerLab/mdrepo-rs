@@ -6,7 +6,7 @@
   "structure_file_name": "5aom_cleaned.pdb",
   "topology_file_name": "5aom_gromacs_cleaned.top",
   "temperature_kelvin": 300,
-  "integration_timestep_fs": 2,
+  "integration_timestep_fs": 2.0,
   "short_description": "8 ns simulation of the 5aom PDB entry (P04637), produced via MISATO automated pipeline; sampled to 100 frames",
   "software_name": "AMBER",
   "software_version": "2020",

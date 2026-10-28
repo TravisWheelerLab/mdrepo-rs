@@ -124,7 +124,7 @@ fn base_sim(key: &str, orcid: &str) -> ExportSimulation {
         duration: 100.0,
         sampling_frequency: 0.1,
         sampling_frequency_ps: None,
-        integration_timestep_fs: 2,
+        integration_timestep_fs: 2.,
         temperature_kelvin: 300,
         num_replicates: 1,
         water_type: None,

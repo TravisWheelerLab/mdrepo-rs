@@ -2416,7 +2416,7 @@ fn parse_time_axis_marker(stdout: &str) -> Option<bool> {
 pub fn get_duration(
     trajectories: &[ProcessedTrajectory],
     example_full_xtc: &Path,
-    integration_timestep_fs: u32,
+    integration_timestep_fs: f64,
     declared_sampling_ps: Option<f64>,
     processed_dir: &Path,
 ) -> Result<Duration> {
@@ -2751,7 +2751,7 @@ fn modal_gap_ps(times: &[f64]) -> Option<f64> {
 /// inflated-timestamp correction used historically.
 fn measure_trajectory(
     full_xtc: &Path,
-    integration_timestep_fs: u32,
+    integration_timestep_fs: f64,
 ) -> Result<(f64, f32, f64)> {
     let times = frame_times(full_xtc)?;
     let num_frames = times.len() as f64;
@@ -2777,7 +2777,7 @@ fn measure_trajectory(
 
     // Sanity check: compute nstxout (output steps per frame)
     // using the integration timestep from metadata.
-    let nstxout = sampling_ps / (integration_timestep_fs as f64 / FS_PER_PS);
+    let nstxout = sampling_ps / (integration_timestep_fs / FS_PER_PS);
 
     // Only the UPPER bound is a check, and deliberately so. If nstxout is way
     // too large but dividing by 1000 fixes it, the XTC timestamps are inflated
@@ -4147,7 +4147,7 @@ mol_id: No ligand-like residue found in minimal.pdb
         "#;
         let meta = Meta::from_toml(toml).expect("a DDD-shaped document parses");
 
-        assert_eq!(meta.integration_timestep_fs, 1);
+        assert_eq!(meta.integration_timestep_fs, 1.);
         assert_eq!(meta.sampling_frequency_ps, Some(1.0));
         assert!(
             !meta
@@ -4170,7 +4170,7 @@ mol_id: No ligand-like residue found in minimal.pdb
 
         // The steps-per-frame figure itself, computed the way
         // measure_trajectory computes it.
-        let nstxout = 1.0 / (f64::from(meta.integration_timestep_fs) / FS_PER_PS);
+        let nstxout = 1.0 / (meta.integration_timestep_fs / FS_PER_PS);
         assert_eq!(nstxout, 1000.);
         assert!(
             nstxout <= 1e7,

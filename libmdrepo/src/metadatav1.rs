@@ -299,8 +299,7 @@ impl MetaV1 {
         let integration_timestep_fs = self
             .timestep_information
             .as_ref()
-            .map_or(0., |t| t.integration_time_step.unwrap_or(0.))
-            as u32;
+            .map_or(0., |t| t.integration_time_step.unwrap_or(0.));
 
         Ok(Meta {
             mdrepo_id: None,
@@ -596,7 +595,7 @@ mod metav1_tests {
         let meta_v2 = meta_v1.to_v2()?;
 
         assert_eq!(meta_v2.temperature_kelvin, 300);
-        assert_eq!(meta_v2.integration_timestep_fs, 2);
+        assert_eq!(meta_v2.integration_timestep_fs, 2.);
         assert_eq!(meta_v2.software_name, "AMBER");
         assert_eq!(meta_v2.software_version, "20");
         assert_eq!(meta_v2.structure_file_name, "5aom_cleaned.pdb");

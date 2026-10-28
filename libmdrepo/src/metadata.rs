@@ -29,7 +29,7 @@ pub struct Meta {
     #[validate(
         range(min = constants::TIMESTEP_FS_MIN, max = constants::TIMESTEP_FS_MAX)
     )]
-    pub integration_timestep_fs: u32,
+    pub integration_timestep_fs: f64,
 
     /// Simulated time between consecutive saved frames, in picoseconds --
     /// the output frequency (AMBER's `ntwx`, GROMACS's `nstxout`) times the
@@ -244,7 +244,7 @@ impl Meta {
             && (constants::TIMESTEP_FS_MIN..=constants::TIMESTEP_FS_MAX)
                 .contains(&self.integration_timestep_fs)
         {
-            let timestep_ps = f64::from(self.integration_timestep_fs) / 1000.;
+            let timestep_ps = self.integration_timestep_fs / 1000.;
             if sampling_ps < timestep_ps {
                 messages.push(format!(
                     "sampling_frequency_ps: {sampling_ps} ps is shorter than \
@@ -539,7 +539,7 @@ impl Meta {
             structure_file_name: "struct.pdb".to_string(),
             topology_file_name: "topology.tpr".to_string(),
             temperature_kelvin: 300,
-            integration_timestep_fs: 2,
+            integration_timestep_fs: 2.,
             sampling_frequency_ps: Some(10.),
             short_description: "<short_description> (required)".to_string(),
             description: Some("<longer description>".to_string()),
@@ -609,7 +609,7 @@ impl Meta {
             structure_file_name: "struct.pdb".to_string(),
             topology_file_name: "topology.tpr".to_string(),
             temperature_kelvin: 300,
-            integration_timestep_fs: 2,
+            integration_timestep_fs: 2.,
             sampling_frequency_ps: None,
             short_description: "<short_description> (required)".to_string(),
             description: None,
@@ -1411,7 +1411,7 @@ mod proptest_tests {
         // --- Range: integration_timestep_fs ---
 
         #[test]
-        fn valid_timestep_no_error(timestep in 1u32..=20u32) {
+        fn valid_timestep_no_error(timestep in 1.0f64..=20.0f64) {
             let mut meta = base_meta();
             meta.integration_timestep_fs = timestep;
             let errors = meta.check(None);
@@ -1421,8 +1421,8 @@ mod proptest_tests {
 
         #[test]
         fn out_of_range_timestep_produces_error(timestep in prop_oneof![
-            0u32..1u32,
-            21u32..=u32::MAX,
+            0.0f64..1.0f64,
+            20.001f64..1e9f64,
         ]) {
             let mut meta = base_meta();
             meta.integration_timestep_fs = timestep;
@@ -1467,7 +1467,7 @@ mod proptest_tests {
         // Absent is not an error: the field is optional and only 73 of the
         // 97,809 released simulations declare it at all.
         #[test]
-        fn absent_sampling_frequency_no_error(timestep in 1u32..=20u32) {
+        fn absent_sampling_frequency_no_error(timestep in 1.0f64..=20.0f64) {
             let mut meta = base_meta();
             meta.integration_timestep_fs = timestep;
             meta.sampling_frequency_ps = None;
@@ -1636,7 +1636,9 @@ mod proptest_tests {
         #[test]
         fn meta_toml_round_trip(
             temp in 275u32..=700u32,
-            timestep in 1u32..=20u32,
+            // Tenths of a femtosecond, as timesteps are declared (2.5 fs):
+            // serde_json does not print every f64 back exactly.
+            timestep in (10u32..=200u32).prop_map(|t| f64::from(t) / 10.),
         ) {
             let mut meta = base_meta();
             meta.temperature_kelvin = temp;
@@ -1650,7 +1652,9 @@ mod proptest_tests {
         #[test]
         fn meta_json_round_trip(
             temp in 275u32..=700u32,
-            timestep in 1u32..=20u32,
+            // Tenths of a femtosecond, as timesteps are declared (2.5 fs):
+            // serde_json does not print every f64 back exactly.
+            timestep in (10u32..=200u32).prop_map(|t| f64::from(t) / 10.),
         ) {
             let mut meta = base_meta();
             meta.temperature_kelvin = temp;
@@ -1862,6 +1866,34 @@ mod tests {
         meta_ok(TOML_OK1)
     }
 
+    // The timestep was a whole number until mdrepo-rs#50; every metadata file
+    // written before then says `= 2`, not `= 2.0`, and must still parse.
+    // Zenodo 3975394 ran at 2.5 fs, the case that made it fractional.
+    #[test]
+    fn meta_timestep_integer_and_fractional() -> Result<()> {
+        let toml = Meta::example_minimal().to_toml()?;
+        assert!(toml.contains("integration_timestep_fs = 2.0\n"));
+
+        let meta = Meta::from_toml(&toml.replace(
+            "integration_timestep_fs = 2.0\n",
+            "integration_timestep_fs = 2\n",
+        ))?;
+        assert_eq!(meta.integration_timestep_fs, 2.);
+
+        let meta = Meta::from_toml(&toml.replace(
+            "integration_timestep_fs = 2.0\n",
+            "integration_timestep_fs = 2.5\n",
+        ))?;
+        assert_eq!(meta.integration_timestep_fs, 2.5);
+        assert!(
+            !meta
+                .check(None)
+                .iter()
+                .any(|e| e.starts_with("integration_timestep_fs:"))
+        );
+        Ok(())
+    }
+
     #[test]
     fn meta_json_ok() -> Result<()> {
         meta_ok(JSON_OK1)
@@ -1874,7 +1906,7 @@ mod tests {
         assert_eq!(meta.structure_file_name, "5aom_cleaned.pdb");
         assert_eq!(meta.topology_file_name, "5aom_gromacs_cleaned.top");
         assert_eq!(meta.temperature_kelvin, 300);
-        assert_eq!(meta.integration_timestep_fs, 2);
+        assert_eq!(meta.integration_timestep_fs, 2.);
         assert_eq!(meta.software_name, "AMBER");
         assert_eq!(
             meta.uniprot_ids,
@@ -1995,7 +2027,7 @@ mod tests {
             r#"external_links[1].label: value " " invalid"#,
             r#"external_links[1].url: value "zenodo.org/records/7711953" invalid"#,
             r#"forcefield: value " " invalid"#,
-            r#"integration_timestep_fs: value 2000 must be >= 1 and <= 20"#,
+            r#"integration_timestep_fs: value 2000.0 must be >= 1.0 and <= 20.0"#,
             r#"lead_contributor_orcid: value "0000-0001-9961-144" invalid"#,
             r#"ligands[1].smiles: value "smiles_string" invalid"#,
             r#"pdb_id: value "5am" invalid"#,
