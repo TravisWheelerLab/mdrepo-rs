@@ -62,6 +62,19 @@ Fixes from the 2026-10 scientific-correctness review (`mdrepo_review_summary.md`
   `psf_elements`, or no element column) reaches the chain reader; neither
   counts in a residue's heavy-atom formula, which the ligand checks compare.
 
+Also in 0.19.0:
+
+- **A fractional integration timestep (#51).** `integration_timestep_fs` is
+  a float (`f64`), so 2.5 fs (Zenodo 3975394) is accepted; the range stays
+  1-20 fs and TOMLs that say `= 2` still parse. `md_simulation.integration_timestep_fs`
+  is `Float8`, matching md-repo-app migration 0296. Deploy the two together:
+  this build cannot read the old integer column, and 0.18.0 cannot read the
+  new one (it fails with `Error deserializing field 'integration_timestep_fs'`).
+- **The thumbnail and RMSD/RMSF helpers have a time limit (#52, #53).** A hung
+  `create_preview.py` or `get_rmsd_rmsf.py` used to hang mdr-process with it
+  (PLAS-20K 5nd5, 4 h). Both now stop after 5 minutes and fail with an error
+  naming the step; set `MDR_HELPER_TIMEOUT_SECS` to change the limit.
+
 ## 0.18.0 (unreleased)
 
 - **A fused chain gets a UniProt reference per part** (Ken, 2026-10-21).
