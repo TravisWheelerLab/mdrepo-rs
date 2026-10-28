@@ -29,8 +29,8 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   logged a warning and left `md_simulation.pdb_id` empty even though the
   metadata named the PDB ID. On a 404, `mdr-process` now asks RCSB's
   removed-entry lookup (`holdings/removed`) and, if the entry is listed,
-  creates the `md_pdb` row with its title and an empty classification
-  (PDBe has nothing for a removed entry, so `response` and
+  creates the `md_pdb` row with its title and the classification
+  `OBSOLETE` (PDBe has nothing for a removed entry, so `response` and
   `entities_response` stay empty). The import still warns, e.g. "PDB 1JT1
   was removed by RCSB on 2025-01-15 (replaced by 5W90); linked from its
   removal record". Found on MDR00105470 (DDD bundle 1jt1).

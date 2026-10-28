@@ -3134,6 +3134,10 @@ pub fn uniprot_entry_from_json(
 }
 
 // --------------------------------------------------
+/// md_pdb.classification for an entry RCSB has removed (Ken, 2026-10-28)
+pub const OBSOLETE_CLASSIFICATION: &str = "OBSOLETE";
+
+// --------------------------------------------------
 /// The title and classification come from RCSB; PDBe's molecules and SIFTS
 /// mappings are kept whole for md_pdb (Ken, 2026-10-09). A PDBe call that
 /// fails leaves its response out, and the import keeps what is stored.
@@ -3141,8 +3145,9 @@ pub fn uniprot_entry_from_json(
 /// An entry RCSB has removed (obsoleted) is 404 at core/entry but still
 /// listed at holdings/removed, which gives its title and replacement. A
 /// submission that names it still gets an md_pdb row, with that title and
-/// no classification, and the returned note says it was removed (Ken,
-/// 2026-10-28: publish with the PDB ID that was used, e.g. 1JT1 -> 5W90).
+/// the classification `OBSOLETE`, and the returned note says it was removed
+/// (Ken, 2026-10-28: publish with the PDB ID that was used, e.g. 1JT1 ->
+/// 5W90).
 pub fn get_pdb_entry(pdb_id: &str) -> Result<(PdbEntry, Option<String>)> {
     let pdb_id = pdb_id.to_uppercase();
     let url = format!("https://data.rcsb.org/rest/v1/core/entry/{pdb_id}");
@@ -3159,7 +3164,7 @@ pub fn get_pdb_entry(pdb_id: &str) -> Result<(PdbEntry, Option<String>)> {
     } else if resp.status() == reqwest::StatusCode::NOT_FOUND
         && let Some((title, note)) = get_removed_pdb(&pdb_id)
     {
-        (title, String::new(), Some(note))
+        (title, OBSOLETE_CLASSIFICATION.to_string(), Some(note))
     } else {
         bail!("Failed to GET \"{url}\" ({})", resp.status());
     };
