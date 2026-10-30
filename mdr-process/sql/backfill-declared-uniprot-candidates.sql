@@ -1,7 +1,8 @@
 -- Input for `mdr-process backfill-declared-uniprot` (0.21.0): every
 -- md_simulation_uniprot link whose entry is on none of its simulation's
--- chains (md_chain -> md_polymer_uniprot), once per protein polymer of 20
--- or more residues of the simulation, or once with the polymer columns
+-- chains (md_chain -> md_polymer_uniprot), once per protein polymer of 5
+-- or more residues of the simulation (one under 20 is compared by exact
+-- match, `reference::peptide_lookup`), or once with the polymer columns
 -- blank when it has none. Run with psql against the database the backfill
 -- will write:
 --
@@ -9,7 +10,6 @@
 --       > declared.tsv
 --
 -- Ken's laptop copy of prod as of 2026-10-29: 8,719 links (7,996
--- simulations, 2,350 accessions) on 5,909 polymers; 82,437 links were on a
--- chain already.
+-- simulations, 2,350 accessions); 82,437 links were on a chain already.
 -- \copy must be one line.
-\copy (WITH unv AS (SELECT su.simulation_id, u.uniprot_id AS accession FROM md_simulation_uniprot su JOIN md_uniprot u ON u.id = su.uniprot_id WHERE NOT EXISTS (SELECT 1 FROM md_chain c JOIN md_polymer_uniprot pu ON pu.polymer_id = c.polymer_id WHERE c.simulation_id = su.simulation_id AND pu.uniprot_id = su.uniprot_id)), pol AS (SELECT DISTINCT c.simulation_id, p.id, p.num_residues, p.sequence FROM md_chain c JOIN md_polymer p ON p.id = c.polymer_id WHERE p.polymer_type = 'protein' AND p.num_residues >= 20) SELECT unv.simulation_id, unv.accession, pol.id AS polymer_id, pol.num_residues, pol.sequence FROM unv LEFT JOIN pol ON pol.simulation_id = unv.simulation_id ORDER BY unv.simulation_id, unv.accession, pol.id) TO STDOUT WITH (FORMAT csv, HEADER, DELIMITER E'\t')
+\copy (WITH unv AS (SELECT su.simulation_id, u.uniprot_id AS accession FROM md_simulation_uniprot su JOIN md_uniprot u ON u.id = su.uniprot_id WHERE NOT EXISTS (SELECT 1 FROM md_chain c JOIN md_polymer_uniprot pu ON pu.polymer_id = c.polymer_id WHERE c.simulation_id = su.simulation_id AND pu.uniprot_id = su.uniprot_id)), pol AS (SELECT DISTINCT c.simulation_id, p.id, p.num_residues, p.sequence FROM md_chain c JOIN md_polymer p ON p.id = c.polymer_id WHERE p.polymer_type = 'protein' AND p.num_residues >= 5) SELECT unv.simulation_id, unv.accession, pol.id AS polymer_id, pol.num_residues, pol.sequence FROM unv LEFT JOIN pol ON pol.simulation_id = unv.simulation_id ORDER BY unv.simulation_id, unv.accession, pol.id) TO STDOUT WITH (FORMAT csv, HEADER, DELIMITER E'\t')

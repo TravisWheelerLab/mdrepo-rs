@@ -39,6 +39,14 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   md_polymer_uniprot's unique (polymer_id, query_start) with
   (polymer_id, uniprot_id, query_start); before it, a declared entry at
   the start of an existing row is skipped, not an error.
+- **A peptide too short for BLAST is found in its declared entries**
+  (Ken, 2026-10-30). A protein chain of 5 to 19 residues was always
+  `none`; now each declared UniProt entry that contains its sequence
+  exactly is a `declared` reference at 100% identity
+  (`reference::peptide_lookup`), with no BLAST and no SIFTS. On the
+  laptop copy of prod this keeps 1,705 md_simulation_uniprot links, such
+  as coactivator peptides bound to nuclear receptors, that would have
+  failed.
 - A declared ID that passes against no chain is reported as not recorded
   (`declared_not_referenced`), now also when no chain has a reference.
 

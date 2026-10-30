@@ -12,7 +12,9 @@
 //! polymer of the simulation (`simulation_id`, `accession`, `polymer_id`,
 //! `num_residues`, `sequence`), the polymer columns blank when it has none.
 //!
-//! Each polymer runs step 2 alone (`reference::declared_matches`) with every
+//! A chain too short for BLAST (5 to 19 residues) passes for each linked
+//! entry that contains its sequence exactly (`reference::peptide_lookup`).
+//! Each longer polymer runs step 2 alone (`reference::declared_matches`) with every
 //! accession its simulations' links name as declared candidates, and no PDB
 //! ID: each accession is compared with the polymer by `blastp -subject`,
 //! and passes by the import's pass rule (`reference::passes`). A link
@@ -112,12 +114,15 @@ pub fn backfill_declared_uniprot(args: &BackfillDeclaredUniprotArgs) -> Result<(
         .len();
     info!("{num_links} links, {} polymers", queries.len());
 
-    // No PDB IDs, so SIFTS is never read
-    let wanted: Vec<usize> = (0..queries.len()).collect();
+    // No PDB IDs, so SIFTS is never read. A chain too short for BLAST is
+    // looked for in its declared entries (`reference::peptide_lookup`).
+    let (wanted, short): (Vec<usize>, Vec<usize>) = (0..queries.len())
+        .partition(|&i| queries[i].num_residues >= reference::MIN_RESIDUES);
+    let cache = args.work_dir.join("uniprot");
     let DeclaredMatches {
         outcome,
-        entries,
-        warnings,
+        mut entries,
+        mut warnings,
         other_declared,
         rows: blast_rows,
         ..
@@ -126,8 +131,25 @@ pub fn backfill_declared_uniprot(args: &BackfillDeclaredUniprotArgs) -> Result<(
         &wanted,
         &args.work_dir.join("no-sifts"),
         &args.work_dir,
-        Some(&args.work_dir.join("uniprot")),
+        Some(&cache),
     )?;
+    let short_accessions: Vec<String> = short
+        .iter()
+        .flat_map(|&i| reference::declared_accessions(&queries[i]))
+        .filter(|acc| !entries.contains_key(acc))
+        .collect();
+    entries.extend(reference::fetch_entries(
+        short_accessions.iter().map(String::as_str),
+        Some(&cache),
+    ));
+    let mut peptides: HashMap<usize, PolymerLookup> = HashMap::new();
+    for &i in &short {
+        if let Some(lookup) =
+            reference::peptide_lookup(&queries[i], &entries, &mut warnings)
+        {
+            peptides.insert(i, lookup);
+        }
+    }
     for warning in &warnings {
         warn!("{warning}");
     }
@@ -140,13 +162,16 @@ pub fn backfill_declared_uniprot(args: &BackfillDeclaredUniprotArgs) -> Result<(
             candidates.extend(parts);
         }
         candidates.extend(other_declared.get(&i).into_iter().flatten());
-        let hits = candidates
+        let mut hits: Vec<PolymerHit> = candidates
             .into_iter()
             .filter_map(|c| match &entries.get(&c.accession) {
                 Some(Ok(entry)) => reference::make_hit(c, &queries[i].sequence, entry),
                 _ => None,
             })
             .collect();
+        if let Some(lookup) = peptides.get(&i) {
+            hits.extend(lookup.hits.iter().chain(&lookup.other_declared).cloned());
+        }
         passing.insert(polymer_id, hits);
     }
 

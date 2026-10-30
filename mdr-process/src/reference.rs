@@ -93,8 +93,13 @@ use std::{
 /// UniProt entries fetched at once by a batch
 const UNIPROT_FETCHES: usize = 8;
 
-/// Shorter chains get `none` (question a, Ken, 2026-10-09)
+/// Shorter chains get `none` (question a, Ken, 2026-10-09), unless a
+/// declared entry contains them (`peptide_lookup`)
 pub const MIN_RESIDUES: usize = 20;
+
+/// A shorter chain is not looked for even in a declared entry: a few
+/// residues are found in many proteins by chance
+pub const MIN_PEPTIDE_RESIDUES: usize = 5;
 
 const MIN_IDENTITY: f64 = 95.0;
 const MAX_MISMATCHES: u32 = 3;
@@ -379,13 +384,31 @@ pub fn lookup_polymers(
     let mut warnings = vec![];
     let mut lookups: Vec<Option<PolymerLookup>> = vec![None; queries.len()];
 
-    // 1. Not protein, or short
+    // 1. Not protein, or short; a short peptide may still be found in a
+    // declared entry
     let mut wanted = vec![];
+    let mut short = vec![];
     for (i, q) in queries.iter().enumerate() {
-        if q.polymer_type == "protein" && q.num_residues >= MIN_RESIDUES {
+        if q.polymer_type != "protein" {
+            lookups[i] = Some(none());
+        } else if q.num_residues >= MIN_RESIDUES {
             wanted.push(i);
         } else {
-            lookups[i] = Some(none());
+            short.push(i);
+        }
+    }
+    if !short.is_empty() {
+        let entries = fetch_entries(
+            short
+                .iter()
+                .flat_map(|&i| declared_accessions(&queries[i]))
+                .collect::<Vec<_>>()
+                .iter()
+                .map(String::as_str),
+            uniprot_cache,
+        );
+        for &i in &short {
+            lookups[i] = peptide_lookup(&queries[i], &entries, &mut warnings);
         }
     }
     if wanted.is_empty() {
@@ -1175,7 +1198,7 @@ fn compare(
 /// read instead of fetched, and a fetched one is saved, so a later run
 /// sees the same entries: a backfill's real run writes what its dry run
 /// reported.
-fn fetch_entries<'a>(
+pub fn fetch_entries<'a>(
     accessions: impl Iterator<Item = &'a str>,
     cache: Option<&Path>,
 ) -> Entries {
@@ -1384,6 +1407,79 @@ fn lookup(candidates: &[Candidate], mut hits: Vec<PolymerHit>) -> PolymerLookup 
         hits,
         other_declared: vec![],
     }
+}
+
+// --------------------------------------------------
+/// A query's declared UniProt IDs, upper case, each once
+pub fn declared_accessions(query: &PolymerQuery) -> Vec<String> {
+    let mut accs: Vec<String> = query
+        .uniprot_ids
+        .iter()
+        .map(|acc| acc.trim().to_uppercase())
+        .filter(|acc| !acc.is_empty())
+        .collect();
+    accs.sort();
+    accs.dedup();
+    accs
+}
+
+/// A protein chain too short for BLAST (under `MIN_RESIDUES`), such as a
+/// coactivator peptide bound to a nuclear receptor, and its declared
+/// UniProt IDs (Ken, 2026-10-30): every declared entry whose sequence
+/// contains the chain's exactly, at its first place, is a `declared`
+/// reference at 100% identity, the first by accession the reference and
+/// the rest `other_declared`. No BLAST, and no SIFTS: a PDB entry's
+/// accessions are not the submitter's word for a peptide. `none` when no
+/// entry contains it, the chain is under `MIN_PEPTIDE_RESIDUES`, or nothing
+/// was declared; None (untried), with a warning, when an entry that might
+/// have contained it could not be fetched.
+pub fn peptide_lookup(
+    query: &PolymerQuery,
+    entries: &Entries,
+    warnings: &mut Vec<String>,
+) -> Option<PolymerLookup> {
+    let n = query.sequence.len();
+    if n < MIN_PEPTIDE_RESIDUES || n != query.num_residues {
+        return Some(none());
+    }
+    let mut hits = vec![];
+    let mut failed = vec![];
+    for acc in declared_accessions(query) {
+        match entries.get(&acc) {
+            Some(Ok(entry)) => {
+                if let Some(at) = entry.sequence.find(&query.sequence) {
+                    hits.push(PolymerHit {
+                        uniprot: entry.clone(),
+                        query_start: 1,
+                        query_end: n as i32,
+                        reference_start: at as i32 + 1,
+                        reference_end: (at + n) as i32,
+                        identity: 100.0,
+                    });
+                }
+            }
+            Some(Err(e)) if e.gone => {}
+            Some(Err(e)) => failed.push(format!("{acc} ({e})")),
+            None => failed.push(acc),
+        }
+    }
+    if hits.is_empty() {
+        if !failed.is_empty() {
+            warnings.push(format!(
+                "A peptide chain's UniProt reference was not looked up: a declared \
+                 candidate could not be fetched: {}",
+                failed.join(", ")
+            ));
+            return None;
+        }
+        return Some(none());
+    }
+    let other_declared = hits.split_off(1);
+    Some(PolymerLookup {
+        match_method: DECLARED.to_string(),
+        hits,
+        other_declared,
+    })
 }
 
 fn not_recorded(candidate: &Candidate, e: &str) -> String {
@@ -3261,6 +3357,74 @@ mod tests {
 
         let got = declared_passes(&rows, "p0", &declared, &found, &Declared::NoMatch);
         assert_eq!(got.len(), 3, "nothing taken");
+    }
+
+    /// A short chain is found in each declared entry that contains it
+    /// exactly, the first by accession its reference; one not contained,
+    /// one gone, and too short a chain give none; a failed fetch, untried
+    #[test]
+    fn peptide_found_in_declared_entries() {
+        let entry = |acc: &str, seq: &str| {
+            Ok(UniprotEntry {
+                uniprot_id: acc.into(),
+                sequence: seq.into(),
+                ..Default::default()
+            })
+        };
+        let mut entries: Entries = HashMap::new();
+        entries.insert("Q15788".into(), entry("Q15788", "MSGLGENLDPLASSLHKDLLHNEE"));
+        entries.insert("Q15596".into(), entry("Q15596", "AAHKILHRLLQEGSPS"));
+        entries.insert("P00001".into(), entry("P00001", "MKKLLPTAAAGLLLLAAQPAMA"));
+        entries.insert(
+            "P00002".into(),
+            Err(FetchFailure {
+                message: "deleted".into(),
+                gone: true,
+            }),
+        );
+        let query = |seq: &str, accs: &[&str]| PolymerQuery {
+            polymer_type: "protein".into(),
+            num_residues: seq.len(),
+            sequence: seq.into(),
+            pdb_ids: vec!["1abc".into()],
+            uniprot_ids: accs.iter().map(|a| a.to_string()).collect(),
+        };
+        let mut warnings = vec![];
+
+        let got = peptide_lookup(
+            &query("HKILHRLLQ", &["q15788", "Q15596", "P00001", "P00002"]),
+            &entries,
+            &mut warnings,
+        )
+        .unwrap();
+        assert_eq!(got.match_method, DECLARED);
+        assert_eq!(got.hits.len(), 1);
+        let hit = &got.hits[0];
+        assert_eq!(hit.uniprot.uniprot_id, "Q15596");
+        assert_eq!((hit.query_start, hit.query_end), (1, 9));
+        assert_eq!((hit.reference_start, hit.reference_end), (3, 11));
+        assert_eq!(hit.identity, 100.0);
+        assert!(got.other_declared.is_empty());
+
+        let got =
+            peptide_lookup(&query("LHKDLLHNEE", &["Q15788"]), &entries, &mut warnings)
+                .unwrap();
+        assert_eq!(got.hits[0].uniprot.uniprot_id, "Q15788");
+
+        for q in [
+            query("HKILHRLLQ", &["P00001", "P00002"]),
+            query("HKILHRLLQ", &[]),
+            query("HKIL", &["Q15596"]),
+        ] {
+            assert_eq!(peptide_lookup(&q, &entries, &mut warnings), Some(none()));
+        }
+        assert!(warnings.is_empty());
+
+        assert_eq!(
+            peptide_lookup(&query("HKILHRLLQ", &["P99999"]), &entries, &mut warnings),
+            None
+        );
+        assert_eq!(warnings.len(), 1);
     }
 
     #[test]
