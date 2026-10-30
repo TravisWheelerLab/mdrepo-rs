@@ -47,6 +47,16 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   laptop copy of prod this keeps 1,705 md_simulation_uniprot links, such
   as coactivator peptides bound to nuclear receptors, that would have
   failed.
+- **A declared ID is confirmed more loosely than a reference is chosen**
+  (`reference::confirms_declared`, Ken, 2026-10-30): besides the pass
+  rule, over half the chain at 95% identity (an antibody's constant
+  domain), or 90% of it at 90% identity whatever the mismatches (a
+  drug-resistant HIV protease). A peptide of 8 or more residues may
+  differ from its declared entry by one substitution (6qhl's p65 E49R).
+  The reference is still chosen by the pass rule.
+- `backfill-declared-uniprot` reports `rejected` for an entry that aligns
+  to nothing when every protein chain has a reference of its own: a
+  protein that was not simulated (BRIL, T4 lysozyme).
 - A declared ID that passes against no chain is reported as not recorded
   (`declared_not_referenced`), now also when no chain has a reference.
 

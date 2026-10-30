@@ -859,12 +859,13 @@ fn insert_polymer_uniprots(
 /// already (at any range) and a row a unique constraint refuses: the
 /// declared UniProt IDs of a simulation, added to a polymer whoever looked
 /// it up first (`import::add_declared_references`). A polymer that was
-/// `none` becomes `declared` when one is added. Returns the rows added.
+/// `none` becomes `declared` when one is added. Returns the ids of the rows
+/// added, so a backfill can list them and be undone exactly.
 pub fn add_polymer_uniprots(
     conn: &mut PgConnection,
     polymer_id: i64,
     hits: &[PolymerReference],
-) -> QueryResult<usize> {
+) -> QueryResult<Vec<i64>> {
     conn.transaction(|conn| {
         let have: Vec<i64> = md_polymer_uniprot::table
             .filter(md_polymer_uniprot::polymer_id.eq(polymer_id))
@@ -886,13 +887,14 @@ pub fn add_polymer_uniprots(
             })
             .collect();
         if rows.is_empty() {
-            return Ok(0);
+            return Ok(vec![]);
         }
-        let n = diesel::insert_into(md_polymer_uniprot::table)
+        let ids: Vec<i64> = diesel::insert_into(md_polymer_uniprot::table)
             .values(&rows)
             .on_conflict_do_nothing()
-            .execute(conn)?;
-        if n > 0 {
+            .returning(md_polymer_uniprot::id)
+            .get_results(conn)?;
+        if !ids.is_empty() {
             diesel::update(
                 md_polymer::table
                     .filter(md_polymer::id.eq(polymer_id))
@@ -901,7 +903,7 @@ pub fn add_polymer_uniprots(
             .set(md_polymer::match_method.eq(polymer_method(hits)))
             .execute(conn)?;
         }
-        Ok(n)
+        Ok(ids)
     })
 }
 

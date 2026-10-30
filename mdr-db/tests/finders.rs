@@ -1255,13 +1255,12 @@ fn add_polymer_uniprots_adds_declared_entries() {
         declared(ids[2], (1, 149)),
         declared(ids[2], (1, 149)),
     ];
-    assert_eq!(
-        ops::add_polymer_uniprots(&mut c, polymer, &added).unwrap(),
-        2
-    );
-    assert_eq!(
-        ops::add_polymer_uniprots(&mut c, polymer, &added).unwrap(),
-        0
+    let new = ops::add_polymer_uniprots(&mut c, polymer, &added).unwrap();
+    assert_eq!(new.len(), 2);
+    assert!(
+        ops::add_polymer_uniprots(&mut c, polymer, &added)
+            .unwrap()
+            .is_empty()
     );
     let mut got: Vec<(i64, String)> = ops::list_polymer_uniprots(&mut c, polymer)
         .unwrap()
@@ -1277,6 +1276,14 @@ fn add_polymer_uniprots_adds_declared_entries() {
             (ids[2], "declared".to_string()),
         ]
     );
+    let mut rows: Vec<i64> = ops::list_polymer_uniprots(&mut c, polymer)
+        .unwrap()
+        .into_iter()
+        .filter(|u| u.match_method == "declared")
+        .map(|u| u.id)
+        .collect();
+    rows.sort();
+    assert_eq!(rows, new, "the ids returned are the rows added");
     assert_eq!(
         ops::get_polymer(&mut c, polymer)
             .unwrap()
@@ -1289,7 +1296,9 @@ fn add_polymer_uniprots_adds_declared_entries() {
     let (none, ids) = seed_parts(&mut c, "a4", &["P0DP23"]);
     assert!(ops::set_polymer_reference(&mut c, none, &[]).unwrap());
     assert_eq!(
-        ops::add_polymer_uniprots(&mut c, none, &[declared(ids[0], (1, 149))]).unwrap(),
+        ops::add_polymer_uniprots(&mut c, none, &[declared(ids[0], (1, 149))])
+            .unwrap()
+            .len(),
         1
     );
     assert_eq!(

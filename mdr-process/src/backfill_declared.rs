@@ -26,7 +26,9 @@
 //! Travis has had the report (MDR-104).
 //!
 //! The report, `--out`, has a row per link: `passes` (with the polymers),
-//! `fails` (with the closest BLAST row, or none), `no_protein_chain`, `gone`
+//! `rejected` (no alignment, and every protein chain has a reference of its
+//! own: a protein that was not simulated), `fails` (with the closest BLAST
+//! row, or none), `no_protein_chain`, `gone`
 //! (UniProt will not serve the entry: deleted, demerged, not an accession)
 //! or `unfinished` (a fetch that failed, for a later run).
 //!
@@ -66,10 +68,16 @@ struct Polymer {
     id: i64,
     num_residues: usize,
     sequence: String,
+    /// It has a UniProt reference (`match_method` pdb, declared or aligned)
+    referenced: bool,
 }
 
 /// What came of a link
 const PASSES: &str = "passes";
+/// No alignment, and every protein chain of the simulation has a reference
+/// of its own: the entry names a protein that was not simulated, such as a
+/// fusion partner (BRIL, T4 lysozyme) or a peptide in the PDB entry
+const REJECTED: &str = "rejected";
 const FAILS: &str = "fails";
 const NO_PROTEIN_CHAIN: &str = "no_protein_chain";
 const GONE: &str = "gone";
@@ -194,8 +202,8 @@ pub fn backfill_declared_uniprot(args: &BackfillDeclaredUniprotArgs) -> Result<(
             match conn.transaction(|conn| {
                 import::add_declared_references(conn, polymer_id, &lookup)
             }) {
-                Ok(n) => {
-                    written.insert(polymer_id, n);
+                Ok(ids) => {
+                    written.insert(polymer_id, ids.len());
                 }
                 Err(e) => warn!("Polymer {polymer_id}: {e}"),
             }
@@ -254,6 +262,9 @@ pub fn backfill_declared_uniprot(args: &BackfillDeclaredUniprotArgs) -> Result<(
             match entries.get(&acc) {
                 Some(Err(e)) if e.gone => (GONE, e.message.clone()),
                 Some(Err(e)) => (UNFINISHED, e.message.clone()),
+                _ if closest.is_none() && sim_polymers.iter().all(|p| p.referenced) => {
+                    (REJECTED, String::new())
+                }
                 _ => (FAILS, String::new()),
             }
         };
@@ -329,12 +340,13 @@ fn read_input(path: &Path) -> Result<Vec<Row>> {
             .position(|h| *h == name)
             .ok_or_else(|| anyhow!("{}: no column {name}", path.display()))
     };
-    let (sim, acc, pid, num, seq) = (
+    let (sim, acc, pid, num, seq, method) = (
         column("simulation_id")?,
         column("accession")?,
         column("polymer_id")?,
         column("num_residues")?,
         column("sequence")?,
+        column("match_method")?,
     );
     let mut rows = vec![];
     for (n, line) in lines.enumerate() {
@@ -357,6 +369,8 @@ fn read_input(path: &Path) -> Result<Vec<Row>> {
                     .parse()
                     .map_err(|e| anyhow!("{}: {e}", at()))?,
                 sequence: field(seq)?.to_string(),
+                referenced: [reference::PDB, reference::DECLARED, reference::ALIGNED]
+                    .contains(&field(method)?),
             }),
         };
         rows.push(Row {
@@ -380,9 +394,9 @@ mod tests {
         let tsv = dir.path().join("in.tsv");
         fs::write(
             &tsv,
-            "simulation_id\taccession\tpolymer_id\tnum_residues\tsequence\n\
-             7\tP0DP23\t11\t40\tMADQ\n\
-             8\tQ9XYZ1\t\t\t\n",
+            "simulation_id\taccession\tpolymer_id\tnum_residues\tsequence\tmatch_method\n\
+             7\tP0DP23\t11\t40\tMADQ\tpdb\n\
+             8\tQ9XYZ1\t\t\t\t\n",
         )
         .unwrap();
         let rows = read_input(&tsv).unwrap();
@@ -395,7 +409,8 @@ mod tests {
                     polymer: Some(Polymer {
                         id: 11,
                         num_residues: 40,
-                        sequence: "MADQ".into()
+                        sequence: "MADQ".into(),
+                        referenced: true,
                     }),
                 },
                 Row {

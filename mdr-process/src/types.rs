@@ -196,8 +196,8 @@ pub struct BackfillPolymerUniprotArgs {
 #[derive(Debug, Parser)]
 pub struct BackfillDeclaredUniprotArgs {
     /// TSV with a header: simulation_id, accession, polymer_id,
-    /// num_residues, sequence (the last three blank for a simulation with
-    /// no protein polymer to compare); built by
+    /// num_residues, sequence, match_method (the last four blank for a
+    /// simulation with no protein polymer to compare); built by
     /// mdr-process/sql/backfill-declared-uniprot-candidates.sql
     #[arg(value_name = "TSV")]
     pub input: PathBuf,

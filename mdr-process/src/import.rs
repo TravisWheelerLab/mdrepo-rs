@@ -934,28 +934,31 @@ fn set_polymer_reference(
 /// the polymer already has is skipped (`ops::add_polymer_uniprots`). The
 /// polymer is the only place a simulation's UniProt IDs are kept (Ken,
 /// 2026-10-30), so without this a second simulation's declared ID was
-/// lost. Returns the rows added.
+/// lost. Returns the ids of the rows added.
 pub fn add_declared_references(
     conn: &mut PgConnection,
     polymer_id: i64,
     lookup: &PolymerLookup,
-) -> Result<usize> {
+) -> Result<Vec<i64>> {
     let mut hits: Vec<&PolymerHit> = lookup.other_declared.iter().collect();
     if lookup.match_method == reference::DECLARED {
         hits.extend(&lookup.hits);
     }
     if hits.is_empty() {
-        return Ok(0);
+        return Ok(vec![]);
     }
     let rows = hits
         .into_iter()
         .map(|hit| polymer_reference(conn, reference::DECLARED, hit))
         .collect::<Result<Vec<_>>>()?;
-    let n = ops::add_polymer_uniprots(conn, polymer_id, &rows)?;
-    if n > 0 {
-        debug!("Added {n} declared UniProt reference(s) to polymer {polymer_id}");
+    let ids = ops::add_polymer_uniprots(conn, polymer_id, &rows)?;
+    if !ids.is_empty() {
+        debug!(
+            "Added {} declared UniProt reference(s) to polymer {polymer_id}",
+            ids.len()
+        );
     }
-    Ok(n)
+    Ok(ids)
 }
 
 /// A lookup's hits as md_polymer_uniprot rows, each UniProt entry upserted
