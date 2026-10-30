@@ -1,4 +1,5 @@
 pub mod backfill;
+pub mod backfill_declared;
 pub mod backfill_uniprot;
 pub mod import;
 pub mod process;

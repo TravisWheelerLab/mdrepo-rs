@@ -3,12 +3,12 @@ use crate::{
     psf_elements, reference, sequence,
     ticket::dsn_for,
     types::{
-        BlastResult, CheckedLigand, DoiAuthor, DoiPaper, Duration, Export,
-        ExportSimulation, ImportChain, ImportJsonArgs, ImportResult, InferredLigand,
-        MdFile, PdbEntry, PdbResponse, ProcessArgs, ProcessResult,
-        ProcessTrajectoryArgs, ProcessedTarball, ProcessedTrajectory,
-        ProcessedTrajectoryType, PushOutcome, ResolvedLigand, RmsdRmsf, RunImportArgs,
-        Server, UniprotDb, UniprotEntry, UniprotResponse,
+        CheckedLigand, DoiAuthor, DoiPaper, Duration, Export, ExportSimulation,
+        ImportChain, ImportJsonArgs, ImportResult, InferredLigand, MdFile, PdbEntry,
+        PdbResponse, ProcessArgs, ProcessResult, ProcessTrajectoryArgs,
+        ProcessedTarball, ProcessedTrajectory, ProcessedTrajectoryType, PushOutcome,
+        ResolvedLigand, RmsdRmsf, RunImportArgs, Server, UniprotDb, UniprotEntry,
+        UniprotResponse,
     },
     validate,
 };
@@ -21,7 +21,6 @@ use libmdrepo::{
 };
 use log::debug;
 use rayon::prelude::*;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use sha2::{Digest as Sha2Digest, Sha256};
@@ -29,7 +28,7 @@ use std::{
     collections::{HashMap, HashSet},
     env,
     fs::{self, File},
-    io::{BufReader, Read, Write},
+    io::{Read, Write},
     os::unix::process::CommandExt,
     path::{self, Path, PathBuf},
     process::{Command, Output, Stdio},
@@ -43,7 +42,6 @@ use which::which;
 const BLAST_EVALUE: &str = "1e-5";
 const BLAST_MAX_TARGET_SEQS_SWISSPROT: &str = "20";
 const BLAST_MAX_TARGET_SEQS_TREMBL: &str = "100";
-const BLAST_MIN_PIDENT: f64 = 100.0;
 
 // ── Unit conversions ──────────────────────────────────────────────────────────
 const FS_PER_PS: f64 = 1000.0;
@@ -1083,101 +1081,11 @@ pub fn get_all_rmsd_rmsf(
 }
 
 // --------------------------------------------------
-pub fn blast_uniprot(
-    fasta_sequence: &Path,
-    blast_dir: &Path,
-    uniprot_db: UniprotDb,
-    num_threads: usize,
-) -> Result<Vec<String>> {
-    if !blast_dir.is_dir() {
-        bail!(r#"Invalid BLAST dir "{}""#, blast_dir.display());
-    }
-
-    let processed_dir = fasta_sequence.parent().ok_or_else(|| {
-        anyhow!("No parent directory for '{}'", fasta_sequence.display())
-    })?;
-    let db_name = uniprot_db.to_string().to_lowercase();
-    let blast_results = processed_dir.join(format!("blast.{db_name}.tsv"));
-    // The query the results were made from, kept beside them: the results
-    // are reused only for the same sequences (`same_query`)
-    let blast_query = processed_dir.join(format!("blast.{db_name}.fa"));
-    let query_text = read_file(fasta_sequence)?;
-
-    if same_query(&blast_results, &blast_query, &query_text) {
-        debug!(
-            "{uniprot_db} BLAST results exist for these sequences ({})",
-            blast_results.display()
-        );
-    } else {
-        debug!(
-            "Creating {uniprot_db} BLAST results ({})",
-            blast_results.display()
-        );
-        let (blast_db, max_target_seqs) = blast_db(blast_dir, &uniprot_db);
-        run_blastp(
-            fasta_sequence,
-            &blast_db,
-            max_target_seqs,
-            "6",
-            &blast_results,
-            num_threads,
-        )?;
-        fs::write(&blast_query, &query_text)
-            .map_err(|e| anyhow!("{}: {e}", blast_query.display()))?;
-    }
-
-    let mut results = vec![];
-    if file_exists(&blast_results) {
-        let file = BufReader::new(
-            File::open(&blast_results)
-                .map_err(|e| anyhow!("{}: {e}", blast_results.display()))?,
-        );
-
-        let mut reader = csv::ReaderBuilder::new()
-            .delimiter(b'\t')
-            .has_headers(false)
-            .from_reader(file);
-
-        // Swissprot also covers Isoform
-        let swissprot_regex = Regex::new(r"^sp[|]([^|]+)[|]")?;
-        let trembl_regex = Regex::new(r"^tr[|]([^|]+)[|]")?;
-        for result in reader.deserialize() {
-            let hit: BlastResult =
-                result.map_err(|e| anyhow!("{}: {e}", blast_results.display()))?;
-            if hit.pident >= BLAST_MIN_PIDENT {
-                let hit_name =
-                    if let Some(caps) = swissprot_regex.captures(&hit.saccver) {
-                        caps.get(1)
-                            .ok_or_else(|| anyhow!("regex capture group 1 not found"))?
-                            .as_str()
-                            .to_string()
-                    } else if let Some(caps) = trembl_regex.captures(&hit.saccver) {
-                        caps.get(1)
-                            .ok_or_else(|| anyhow!("regex capture group 1 not found"))?
-                            .as_str()
-                            .to_string()
-                    } else {
-                        hit.saccver
-                    };
-
-                results.push(hit_name)
-            }
-        }
-    }
-
-    Ok(results)
-}
-
-// --------------------------------------------------
 /// A UniProt BLAST database under `blast_dir`, and how many targets to keep
 pub fn blast_db(blast_dir: &Path, uniprot_db: &UniprotDb) -> (PathBuf, &'static str) {
     match uniprot_db {
         UniprotDb::Swissprot => (
             blast_dir.join("swissprot").join("swissprot"),
-            BLAST_MAX_TARGET_SEQS_SWISSPROT,
-        ),
-        UniprotDb::Isoform => (
-            blast_dir.join("isoform").join("isoform"),
             BLAST_MAX_TARGET_SEQS_SWISSPROT,
         ),
         UniprotDb::Trembl => (
@@ -1627,7 +1535,7 @@ pub fn make_import_json(
             full_pdb.display()
         );
     }
-    let fasta_sequence_file = get_sequence(&structure_chains, args.processed_dir)?;
+    get_sequence(&structure_chains, args.processed_dir)?;
     let (mut chains, ligand_chains) =
         place_chains(&structure_chains, args.meta.ligands.as_ref(), full_pdb)?;
 
@@ -1670,12 +1578,6 @@ pub fn make_import_json(
     let legacy_unique_file_hash_string = legacy_unique_file_hash(&file_md5s);
 
     let blast_start = Instant::now();
-    let (uniprots, uniprot_warnings) = get_uniprot_entries(
-        args.meta.uniprot_ids.clone(),
-        &fasta_sequence_file,
-        args.blast_dir,
-        args.blast_num_threads,
-    )?;
     let declared_uniprot_ids: Vec<String> =
         args.meta.uniprot_ids.clone().unwrap_or_default();
     let mut reference_warnings = reference::lookup_chains(
@@ -1700,8 +1602,7 @@ pub fn make_import_json(
         args.uv,
     )?;
 
-    let mut warnings = uniprot_warnings;
-    warnings.extend(reference_warnings);
+    let mut warnings = reference_warnings;
     warnings.extend(ligand_notes);
     warnings.extend(ligand_warnings);
 
@@ -1761,7 +1662,6 @@ pub fn make_import_json(
         software_name: args.meta.software_name,
         software_version: args.meta.software_version,
         pdb,
-        uniprots,
         duration: duration.totaltime_ns,
         sampling_frequency: duration.sampling_frequency_ns,
         sampling_frequency_ps: args.meta.sampling_frequency_ps,
@@ -2106,152 +2006,6 @@ fn collect_processed_files(
     }
 
     Ok(files)
-}
-
-// --------------------------------------------------
-pub fn get_uniprot_entries(
-    given_uniprot_ids: Option<Vec<String>>,
-    fasta_sequence_file: &Path,
-    blast_dir: &Path,
-    blast_num_threads: usize,
-) -> Result<(Vec<UniprotEntry>, Vec<String>)> {
-    let mut uniprot_ids: Vec<String> = given_uniprot_ids
-        .unwrap_or_default()
-        .iter()
-        .map(|id| id.to_uppercase())
-        .collect();
-    let mut warnings = vec![];
-
-    // No protein chains (a DNA or RNA system): nothing for blastp. Declared
-    // IDs are still fetched, unchecked.
-    if read_file(fasta_sequence_file)?.trim().is_empty() {
-        if !uniprot_ids.is_empty() {
-            warnings.push(format!(
-                "No protein chains, so the Uniprot IDs were not checked: {}",
-                uniprot_ids.join(", ")
-            ));
-        }
-        uniprot_ids.sort();
-        uniprot_ids.dedup();
-        let entries = uniprot_ids
-            .iter()
-            .filter_map(|id| match get_uniprot_entry(id) {
-                Ok(entry) => Some(entry),
-                Err(e) => {
-                    warnings.push(e.to_string());
-                    None
-                }
-            })
-            .collect();
-        return Ok((entries, warnings));
-    }
-
-    let declared = !uniprot_ids.is_empty();
-    if !declared {
-        // There are no given Uniprot IDs, so search
-        let swissprot_ids = blast_uniprot(
-            fasta_sequence_file,
-            blast_dir,
-            UniprotDb::Swissprot,
-            blast_num_threads,
-        )?;
-
-        if swissprot_ids.is_empty() {
-            // Second-tier hits from Trembl
-            let trembl_ids = blast_uniprot(
-                fasta_sequence_file,
-                blast_dir,
-                UniprotDb::Trembl,
-                blast_num_threads,
-            )?;
-
-            if let Some(first) = trembl_ids.first() {
-                uniprot_ids.push(first.clone());
-            }
-        } else {
-            // Take the best Swissprot match
-            if let Some(first) = swissprot_ids.first() {
-                uniprot_ids.push(first.clone());
-            }
-        }
-    } else {
-        // User-provided IDs might be duplicated
-        uniprot_ids.sort();
-        uniprot_ids.dedup();
-
-        // Check if the given IDs are found in Swissprot/Trembl
-        let swissprot_ids = blast_uniprot(
-            fasta_sequence_file,
-            blast_dir,
-            UniprotDb::Swissprot,
-            blast_num_threads,
-        )?;
-
-        let not_in_swissprot: Vec<_> = uniprot_ids
-            .iter()
-            .filter(|id| !swissprot_ids.contains(id))
-            .collect();
-
-        if !not_in_swissprot.is_empty() {
-            let isoform_ids = blast_uniprot(
-                fasta_sequence_file,
-                blast_dir,
-                UniprotDb::Isoform,
-                blast_num_threads,
-            )?;
-
-            let mut found_in_isoform: Vec<(String, String)> = vec![];
-            for uniprot_id in &not_in_swissprot {
-                for isoform_id in &isoform_ids {
-                    if isoform_id.starts_with(*uniprot_id) {
-                        found_in_isoform
-                            .push((uniprot_id.to_string(), isoform_id.clone()));
-                    }
-                }
-            }
-
-            for (uniprot_id, isoform_id) in &found_in_isoform {
-                warnings.push(format!(
-                    r#"Uniprot ID "{uniprot_id}" found in Isoform as "{isoform_id}""#,
-                ));
-            }
-
-            // If we still haven't found all the Uniprot IDs, look in Trembl
-            if swissprot_ids.len() + found_in_isoform.len() < uniprot_ids.len() {
-                let trembl_ids = blast_uniprot(
-                    fasta_sequence_file,
-                    blast_dir,
-                    UniprotDb::Trembl,
-                    blast_num_threads,
-                )?;
-
-                let not_in_trembl: Vec<_> = not_in_swissprot
-                    .iter()
-                    .filter(|id| !trembl_ids.contains(id))
-                    .map(|val| val.to_string())
-                    .collect();
-
-                if !not_in_trembl.is_empty() {
-                    warnings.push(format!(
-                        "Uniprot IDs not found in Swissprot or Trembl: {}",
-                        not_in_trembl.join(", "),
-                    ));
-                }
-            }
-        }
-    }
-
-    let mut entries = vec![];
-    for uniprot_id in uniprot_ids {
-        match get_uniprot_entry(&uniprot_id) {
-            Ok(entry) => entries.push(entry),
-            // A declared entry not fetched is not linked to the simulation
-            Err(e) if declared => warnings.push(e.to_string()),
-            Err(e) => debug!("{e}"),
-        }
-    }
-
-    Ok((entries, warnings))
 }
 
 // --------------------------------------------------
@@ -4794,109 +4548,16 @@ mol_id: No ligand-like residue found in minimal.pdb
         assert!(!hash.is_empty());
     }
 
-    /// Results for `db` in `dir`, made from `dir/sequence.fa` (the query copy
-    /// `same_query` checks is written too)
-    fn write_blast_tsv(dir: &Path, db: &str, rows: &[(&str, &str, f64)]) {
-        if let Ok(query) = fs::read(dir.join("sequence.fa")) {
-            fs::write(dir.join(format!("blast.{db}.fa")), query).unwrap();
-        }
-        let content = rows
-            .iter()
-            .map(|(qaccver, saccver, pident)| {
-                format!("{qaccver}\t{saccver}\t{pident}\t150\t0\t0\t1\t150\t1\t150\t1e-80\t300.0")
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        fs::write(dir.join(format!("blast.{db}.tsv")), content).unwrap();
-    }
-
-    #[test]
-    fn blast_uniprot_parses_swissprot_hit() {
-        let tmp = tempdir().unwrap();
-        let blast_dir = tempdir().unwrap();
-        let fasta = tmp.path().join("sequence.fa");
-        fs::write(&fasta, b">A\nACGT").unwrap();
-        write_blast_tsv(
-            tmp.path(),
-            "swissprot",
-            &[("A", "sp|P12345|PROT_HUMAN", 100.0)],
-        );
-        let ids =
-            blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Swissprot, 2).unwrap();
-        assert_eq!(ids, vec!["P12345".to_string()]);
-    }
-
-    #[test]
-    fn blast_uniprot_parses_trembl_hit() {
-        let tmp = tempdir().unwrap();
-        let blast_dir = tempdir().unwrap();
-        let fasta = tmp.path().join("sequence.fa");
-        fs::write(&fasta, b">A\nACGT").unwrap();
-        write_blast_tsv(
-            tmp.path(),
-            "trembl",
-            &[("A", "tr|A0A000XYZ|PROT_MOUSE", 100.0)],
-        );
-        let ids =
-            blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Trembl, 2).unwrap();
-        assert_eq!(ids, vec!["A0A000XYZ".to_string()]);
-    }
-
-    #[test]
-    fn blast_uniprot_excludes_low_pident() {
-        let tmp = tempdir().unwrap();
-        let blast_dir = tempdir().unwrap();
-        let fasta = tmp.path().join("sequence.fa");
-        fs::write(&fasta, b">A\nACGT").unwrap();
-        write_blast_tsv(
-            tmp.path(),
-            "swissprot",
-            &[
-                ("A", "sp|P99999|GOOD_HUMAN", 100.0),
-                ("A", "sp|P00001|POOR_HUMAN", 95.0),
-            ],
-        );
-        let ids =
-            blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Swissprot, 2).unwrap();
-        assert_eq!(ids, vec!["P99999".to_string()]);
-    }
-
-    #[test]
-    fn blast_uniprot_parses_chain_id_queries() {
-        // sequence.fa headers are chain IDs: `_` for blank, `A_2` for a repeat
-        let tmp = tempdir().unwrap();
-        let blast_dir = tempdir().unwrap();
-        let fasta = tmp.path().join("sequence.fa");
-        fs::write(&fasta, b">_\nACGT\n>A_2\nACGT").unwrap();
-        write_blast_tsv(
-            tmp.path(),
-            "swissprot",
-            &[
-                ("_", "sp|P05430|OMPA_NEIGO", 100.0),
-                ("A_2", "sp|P57042|OMPB_NEIMA", 100.0),
-            ],
-        );
-        let ids =
-            blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Swissprot, 2).unwrap();
-        assert_eq!(ids, vec!["P05430".to_string(), "P57042".to_string()]);
-    }
-
     #[test]
     fn blast_results_are_reused_only_for_the_same_query() {
         // H3: a results file left by a run with other chains must not be
         // read for these. Without the query copy, or with a different one,
-        // the search runs again (and here fails: no BLAST database).
+        // the search runs again.
         let tmp = tempdir().unwrap();
-        let blast_dir = tempdir().unwrap();
-        let fasta = tmp.path().join("sequence.fa");
-        fs::write(&fasta, b">A\nACGT").unwrap();
-        write_blast_tsv(
-            tmp.path(),
-            "swissprot",
-            &[("A", "sp|P12345|PROT_HUMAN", 100.0)],
-        );
         let results = tmp.path().join("blast.swissprot.tsv");
         let query = tmp.path().join("blast.swissprot.fa");
+        fs::write(&results, "A\tsp|P12345|PROT_HUMAN\n").unwrap();
+        fs::write(&query, ">A\nACGT").unwrap();
         assert!(same_query(&results, &query, ">A\nACGT"));
         assert!(!same_query(&results, &query, ">A\nACGTW"));
         assert!(!same_query(
@@ -4904,16 +4565,8 @@ mol_id: No ligand-like residue found in minimal.pdb
             &query,
             ">A\nACGT"
         ));
-
-        fs::write(&fasta, b">A\nACGTW").unwrap();
-        assert!(
-            blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Swissprot, 2).is_err()
-        );
         fs::remove_file(&query).unwrap();
-        fs::write(&fasta, b">A\nACGT").unwrap();
-        assert!(
-            blast_uniprot(&fasta, blast_dir.path(), UniprotDb::Swissprot, 2).is_err()
-        );
+        assert!(!same_query(&results, &query, ">A\nACGT"));
     }
 
     #[test]
@@ -4965,22 +4618,6 @@ mol_id: No ligand-like residue found in minimal.pdb
         }
         fs::write(tmp.path().join(SOURCE_TIMING_FILE), "not json").unwrap();
         assert_eq!(read_source_timing(tmp.path()), None);
-    }
-
-    #[test]
-    fn blast_uniprot_rejects_nonexistent_blast_dir() {
-        let tmp = tempdir().unwrap();
-        let fasta = tmp.path().join("sequence.fa");
-        fs::write(&fasta, b">1\nACGT").unwrap();
-        assert!(
-            blast_uniprot(
-                &fasta,
-                Path::new("/nonexistent/blast"),
-                UniprotDb::Swissprot,
-                2
-            )
-            .is_err()
-        );
     }
 
     /// A helper for the tests that run the resolver script.

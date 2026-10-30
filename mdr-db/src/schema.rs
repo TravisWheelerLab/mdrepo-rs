@@ -263,15 +263,6 @@ diesel::table! {
 
 diesel::table! {
     use diesel::sql_types::*;
-    md_simulation_uniprot (id) {
-        id -> Int8,
-        simulation_id -> Int8,
-        uniprot_id -> Int8,
-    }
-}
-
-diesel::table! {
-    use diesel::sql_types::*;
     md_software (id) {
         id -> Int8,
         name -> Varchar,
@@ -463,7 +454,6 @@ diesel::allow_tables_to_appear_in_same_query!(
     md_simulation_collection,
     md_simulation_creator,
     md_simulation_pub,
-    md_simulation_uniprot,
     md_software,
     md_solute,
     md_submission_completed_event,

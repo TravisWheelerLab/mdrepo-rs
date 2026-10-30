@@ -827,41 +827,6 @@ pub struct SimulationCollectionUpdate {
     pub collection_id: Option<i64>,
 }
 
-// ── md_simulation_uniprot ─────────────────────────────────────────────────────
-
-#[derive(
-    Debug,
-    Queryable,
-    Selectable,
-    Identifiable,
-    Associations,
-    Serialize,
-    Deserialize,
-    ToSchema,
-)]
-#[diesel(table_name = md_simulation_uniprot)]
-#[diesel(belongs_to(Simulation))]
-#[diesel(belongs_to(Uniprot))]
-pub struct SimulationUniprot {
-    pub id: i64,
-    pub simulation_id: i64,
-    pub uniprot_id: i64,
-}
-
-#[derive(Debug, Insertable, Deserialize)]
-#[diesel(table_name = md_simulation_uniprot)]
-pub struct NewSimulationUniprot {
-    pub simulation_id: i64,
-    pub uniprot_id: i64,
-}
-
-#[derive(Debug, AsChangeset, Default, Deserialize)]
-#[diesel(table_name = md_simulation_uniprot)]
-pub struct SimulationUniprotUpdate {
-    pub simulation_id: Option<i64>,
-    pub uniprot_id: Option<i64>,
-}
-
 // ── md_software ───────────────────────────────────────────────────────────────
 
 #[derive(

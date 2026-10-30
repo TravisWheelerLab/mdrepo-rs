@@ -113,7 +113,6 @@ fn base_sim(key: &str, orcid: &str) -> ExportSimulation {
         software_version: "1.0".to_string(),
         run_commands: None,
         pdb: None,
-        uniprots: vec![],
         external_links: vec![],
         collections: vec![],
         forcefield: None,
@@ -167,12 +166,6 @@ fn import_new_simulation_creates_all_related_rows() {
             classification: "TRANSFERASE".into(),
             ..Default::default()
         }),
-        uniprots: vec![UniprotEntry {
-            uniprot_id: "P00000-importtest".into(),
-            name: "Test protein".into(),
-            sequence: "MLDD".into(),
-            ..Default::default()
-        }],
         external_links: vec![metadata::ExternalLink {
             url: "https://example.org/import-test".into(),
             label: Some("Example".into()),
@@ -266,15 +259,6 @@ fn import_new_simulation_creates_all_related_rows() {
     );
     assert!(
         ops::find_external_link_id(&mut c, sim_id, "https://example.org/import-test")
-            .unwrap()
-            .is_some()
-    );
-
-    let uniprot_pk = ops::find_uniprot_id_by_accession(&mut c, "P00000-importtest")
-        .unwrap()
-        .expect("uniprot row created");
-    assert!(
-        ops::find_simulation_uniprot_id(&mut c, sim_id, uniprot_pk)
             .unwrap()
             .is_some()
     );
@@ -723,6 +707,7 @@ fn parts(method: &str, parts: &[(&str, i32, i32)]) -> PolymerLookup {
                 identity: 96.0,
             })
             .collect(),
+        other_declared: vec![],
     }
 }
 
@@ -801,8 +786,7 @@ fn import_writes_every_part() {
 
 /// The first import's lookup sets the polymer's reference, with the UniProt
 /// entry's raw response; a second simulation with the same residues and a
-/// different answer leaves it (set once), and a hit is not linked to the
-/// simulation (md_simulation_uniprot keeps the TOML's accessions)
+/// different answer leaves it (set once)
 #[test]
 fn polymer_reference_is_written_once() {
     let mut c = conn_or_skip!();
@@ -835,10 +819,6 @@ fn polymer_reference_is_written_once() {
         Some(serde_json::json!({"primaryAccession": "Q00001-importref"}))
     );
     assert!(uniprot.fetched_at.is_some());
-    assert_eq!(
-        ops::find_simulation_uniprot_id(&mut c, first_id, q1).unwrap(),
-        None
-    );
 
     let second = ExportSimulation {
         chains: vec![looked_up_chain(Some(hit("aligned", "Q00002-importref")))],
@@ -913,6 +893,7 @@ fn polymer_lookup_none_and_untried() {
         chains: vec![looked_up_chain(Some(PolymerLookup {
             match_method: "none".into(),
             hits: vec![],
+            other_declared: vec![],
         }))],
         ..base_sim("ref4", orcid)
     };
@@ -966,6 +947,92 @@ fn reference_disagreement_warns() {
     assert!(got[0].contains("Q00012-importref"), "{}", got[0]);
     assert!(got[0].contains("Q00011-importref"), "{}", got[0]);
     assert!(got[0].starts_with("Chain 1 (A)"), "{}", got[0]);
+}
+
+/// A later simulation's declared entries that pass against a polymer looked
+/// up before are added to it as `declared` rows, its reference and method
+/// kept, with no disagreement warning: the polymer is the only place a
+/// simulation's UniProt IDs are kept (Ken, 2026-10-30)
+#[test]
+fn declared_entries_are_added_to_a_polymer_looked_up_before() {
+    let mut c = conn_or_skip!();
+    let orcid = "0000-0002-0000-0301";
+    seed_user_with_orcid(&mut c, "dec1", orcid);
+
+    let first = ExportSimulation {
+        chains: vec![looked_up_chain(Some(hit("pdb", "Q00031-importref")))],
+        ..base_sim("dec1", orcid)
+    };
+    let first_id =
+        import::import_simulation(&mut c, &first, &ImportOpts::default()).unwrap();
+    let polymer_id =
+        ops::list_chains_for_simulation(&mut c, first_id).unwrap()[0].polymer_id;
+
+    let mut declared = hit("declared", "Q00032-importref");
+    declared.other_declared = hit("declared", "Q00033-importref").hits;
+    let second = ExportSimulation {
+        chains: vec![looked_up_chain(Some(declared))],
+        ..base_sim("dec2", orcid)
+    };
+    assert!(
+        import::reference_disagreements(&mut c, &second)
+            .unwrap()
+            .is_empty()
+    );
+    let second_id =
+        import::import_simulation(&mut c, &second, &ImportOpts::default()).unwrap();
+    assert_eq!(
+        ops::list_chains_for_simulation(&mut c, second_id).unwrap()[0].polymer_id,
+        polymer_id
+    );
+    assert_eq!(
+        ops::get_polymer(&mut c, polymer_id)
+            .unwrap()
+            .match_method
+            .as_deref(),
+        Some("pdb")
+    );
+    let mut rows: Vec<(String, String)> =
+        ops::list_polymer_uniprots(&mut c, polymer_id)
+            .unwrap()
+            .iter()
+            .map(|u| {
+                (
+                    ops::get_uniprot(&mut c, u.uniprot_id).unwrap().uniprot_id,
+                    u.match_method.clone(),
+                )
+            })
+            .collect();
+    rows.sort();
+    assert_eq!(
+        rows,
+        [
+            ("Q00031-importref".to_string(), "pdb".to_string()),
+            ("Q00032-importref".to_string(), "declared".to_string()),
+            ("Q00033-importref".to_string(), "declared".to_string()),
+        ]
+    );
+    // Both simulations have all three
+    for sim_id in [first_id, second_id] {
+        assert_eq!(
+            ops::list_simulation_chain_uniprots(&mut c, sim_id).unwrap(),
+            ["Q00031-importref", "Q00032-importref", "Q00033-importref"]
+        );
+    }
+
+    // The first again: nothing new, and its reference still agrees
+    assert!(
+        import::reference_disagreements(&mut c, &first)
+            .unwrap()
+            .is_empty()
+    );
+    import::import_simulation(&mut c, &first, &ImportOpts::default()).unwrap();
+    assert_eq!(
+        ops::list_polymer_uniprots(&mut c, polymer_id)
+            .unwrap()
+            .len(),
+        3
+    );
 }
 
 /// The chain backfill writes a simulation's chains, polymers and references

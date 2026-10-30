@@ -31,7 +31,7 @@
 
 use crate::reference;
 use crate::types::{
-    ExportSimulation, ImportChain, MdFile, PolymerLookup, ResolvedLigand,
+    ExportSimulation, ImportChain, MdFile, PolymerHit, PolymerLookup, ResolvedLigand,
 };
 use anyhow::{Result, anyhow, bail};
 use chrono::Utc;
@@ -114,9 +114,6 @@ pub fn import_simulation(
             // visible, not just stored.
             let n = ops::delete_replicates_for_simulation(conn, sim_id)?;
             debug!("Removed {n} previous replicate(s)");
-
-            let n = ops::delete_uniprots_for_simulation(conn, sim_id)?;
-            debug!("Removed {n} previous uniprot link(s)");
         }
 
         for file in &sim.original_files {
@@ -153,9 +150,6 @@ pub fn import_simulation(
         }
         for paper in &sim.papers {
             upsert_paper(conn, sim_id, paper)?;
-        }
-        for uniprot in &sim.uniprots {
-            upsert_uniprot(conn, sim_id, uniprot)?;
         }
         if !sim.collections.is_empty() {
             let owner_user_id = lead_contributor_id(conn, &sim.lead_contributor_orcid)?
@@ -356,9 +350,11 @@ pub fn replace_structure_chains(
 
 // --------------------------------------------------
 /// A warning for each polymer of `sim` that already has a reference (or a
-/// `none`) other than this simulation's own lookup gave. A polymer's
+/// `none`) without an entry this simulation's own lookup gave. A polymer's
 /// reference is set once, by the first simulation to import it, and is not
-/// changed here; the warning says so. Reads only.
+/// changed here; the warning says so. A declared entry is no disagreement:
+/// the import adds it to the polymer (`add_declared_references`). Reads
+/// only.
 pub fn reference_disagreements(
     conn: &mut PgConnection,
     sim: &ExportSimulation,
@@ -374,6 +370,9 @@ pub fn reference_disagreements(
         let Some(lookup) = &chain.reference else {
             continue;
         };
+        if lookup.match_method == reference::DECLARED {
+            continue;
+        }
         let Some(polymer) = ops::find_polymer(
             conn,
             &chain.polymer_type,
@@ -385,10 +384,13 @@ pub fn reference_disagreements(
         let Some(stored_method) = polymer.match_method.as_deref() else {
             continue;
         };
-        // The parts' entries in sequence order, against this lookup's (one
-        // per part since 0.17.0; a polymer looked up before has one)
+        // The reference's entries in sequence order (a part each since
+        // 0.17.0), against this lookup's. Declared entries added to the
+        // polymer since (0.21.0, `add_declared_references`) have another
+        // method, unless the reference is declared too.
         let stored = ops::list_polymer_uniprots(conn, polymer.id)?
             .iter()
+            .filter(|part| part.match_method == stored_method)
             .map(|part| Ok(ops::get_uniprot(conn, part.uniprot_id)?.uniprot_id))
             .collect::<Result<Vec<String>>>()?;
         let ours: Vec<String> = lookup
@@ -886,6 +888,7 @@ fn insert_chain(
 
     if let Some(lookup) = &chain.reference {
         set_polymer_reference(conn, polymer_id, lookup)?;
+        add_declared_references(conn, polymer_id, lookup)?;
     }
 
     Ok(ops::insert_chain(
@@ -909,8 +912,7 @@ fn insert_chain(
 /// Write a polymer's UniProt lookup, unless it was looked up before: a
 /// polymer's reference is set once (`ops::set_polymer_reference`), all its
 /// parts in one transaction. A hit's UniProt entry is upserted only when it
-/// will be written, and is not linked to the simulation;
-/// md_simulation_uniprot keeps the TOML's accessions.
+/// will be written.
 fn set_polymer_reference(
     conn: &mut PgConnection,
     polymer_id: i64,
@@ -926,6 +928,36 @@ fn set_polymer_reference(
     Ok(())
 }
 
+/// Add the simulation's declared UniProt IDs that passed against the
+/// polymer to it, as `declared` rows, whoever looked it up first: the
+/// lookup's reference when it is declared, and `other_declared`. An entry
+/// the polymer already has is skipped (`ops::add_polymer_uniprots`). The
+/// polymer is the only place a simulation's UniProt IDs are kept (Ken,
+/// 2026-10-30), so without this a second simulation's declared ID was
+/// lost. Returns the rows added.
+pub fn add_declared_references(
+    conn: &mut PgConnection,
+    polymer_id: i64,
+    lookup: &PolymerLookup,
+) -> Result<usize> {
+    let mut hits: Vec<&PolymerHit> = lookup.other_declared.iter().collect();
+    if lookup.match_method == reference::DECLARED {
+        hits.extend(&lookup.hits);
+    }
+    if hits.is_empty() {
+        return Ok(0);
+    }
+    let rows = hits
+        .into_iter()
+        .map(|hit| polymer_reference(conn, reference::DECLARED, hit))
+        .collect::<Result<Vec<_>>>()?;
+    let n = ops::add_polymer_uniprots(conn, polymer_id, &rows)?;
+    if n > 0 {
+        debug!("Added {n} declared UniProt reference(s) to polymer {polymer_id}");
+    }
+    Ok(n)
+}
+
 /// A lookup's hits as md_polymer_uniprot rows, each UniProt entry upserted
 /// first (the row's foreign key). The UniProt backfill
 /// (`backfill_uniprot`) writes its parts with them too.
@@ -936,18 +968,26 @@ pub fn polymer_references(
     lookup
         .hits
         .iter()
-        .map(|hit| {
-            Ok(PolymerReference {
-                match_method: lookup.match_method.clone(),
-                uniprot_id: ops::upsert_uniprot(conn, new_uniprot(&hit.uniprot))?.id,
-                query_start: hit.query_start,
-                query_end: hit.query_end,
-                reference_start: hit.reference_start,
-                reference_end: hit.reference_end,
-                identity: hit.identity,
-            })
-        })
+        .map(|hit| polymer_reference(conn, &lookup.match_method, hit))
         .collect()
+}
+
+/// One hit as an md_polymer_uniprot row by `match_method`, its UniProt
+/// entry upserted first
+fn polymer_reference(
+    conn: &mut PgConnection,
+    match_method: &str,
+    hit: &PolymerHit,
+) -> Result<PolymerReference> {
+    Ok(PolymerReference {
+        match_method: match_method.to_string(),
+        uniprot_id: ops::upsert_uniprot(conn, new_uniprot(&hit.uniprot))?.id,
+        query_start: hit.query_start,
+        query_end: hit.query_end,
+        reference_start: hit.reference_start,
+        reference_end: hit.reference_end,
+        identity: hit.identity,
+    })
 }
 
 // --------------------------------------------------
@@ -1073,35 +1113,6 @@ fn upsert_paper(
 }
 
 // --------------------------------------------------
-/// Find or create the UniProt entry (shared across simulations), refresh it from
-/// this payload, then link it to the simulation.
-fn upsert_uniprot(
-    conn: &mut PgConnection,
-    sim_id: i64,
-    uniprot: &crate::types::UniprotEntry,
-) -> Result<i64> {
-    // One statement, not find-then-insert: landing directories are processed in
-    // parallel and md_uniprot is shared across simulations, so two threads
-    // citing the same new accession used to both find nothing and both insert.
-    // See ops::upsert_uniprot for the ticket 2175 failure this fixes. Both old
-    // branches ended up writing these same three fields, so the behaviour for
-    // an accession that already exists is unchanged.
-    let uniprot_pk = ops::upsert_uniprot(conn, new_uniprot(uniprot))?.id;
-
-    if let Some(id) = ops::find_simulation_uniprot_id(conn, sim_id, uniprot_pk)? {
-        return Ok(id);
-    }
-
-    Ok(ops::insert_simulation_uniprot(
-        conn,
-        NewSimulationUniprot {
-            simulation_id: sim_id,
-            uniprot_id: uniprot_pk,
-        },
-    )?
-    .id)
-}
-
 /// An md_uniprot row from a fetched entry. A raw response left out (None)
 /// keeps the stored one (`ops::upsert_uniprot`).
 fn new_uniprot(uniprot: &crate::types::UniprotEntry) -> NewUniprot {

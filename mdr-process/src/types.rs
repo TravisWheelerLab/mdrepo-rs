@@ -106,6 +106,10 @@ pub enum Command {
     /// Rewrite the UniProt references of polymers looked up before a fused
     /// chain could have one per part (SIFTS's parts; pdb and none only)
     BackfillPolymerUniprot(BackfillPolymerUniprotArgs),
+
+    /// Check md_simulation_uniprot's links against the simulations' chains,
+    /// add those that pass to the polymers, and report those that do not
+    BackfillDeclaredUniprot(BackfillDeclaredUniprotArgs),
 }
 
 // --------------------------------------------------
@@ -186,6 +190,34 @@ pub struct BackfillPolymerUniprotArgs {
     /// BLAST dir holding the PDB index (default: $MDREPO_WORK_DIR/blast)
     #[arg(long, value_name = "DIR")]
     pub blast_dir: Option<PathBuf>,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Parser)]
+pub struct BackfillDeclaredUniprotArgs {
+    /// TSV with a header: simulation_id, accession, polymer_id,
+    /// num_residues, sequence (the last three blank for a simulation with
+    /// no protein polymer to compare); built by
+    /// mdr-process/sql/backfill-declared-uniprot-candidates.sql
+    #[arg(value_name = "TSV")]
+    pub input: PathBuf,
+
+    /// Server to write to; required unless --dry-run
+    #[arg(short, long, value_name = "SERVER")]
+    pub server: Option<Server>,
+
+    /// Compare everything and write the report, but touch no database
+    #[arg(short, long)]
+    pub dry_run: bool,
+
+    /// The report: one row per link (simulation, accession)
+    #[arg(short, long, value_name = "FILE")]
+    pub out: PathBuf,
+
+    /// Directory for the BLAST files and the UniProt cache (`uniprot/`);
+    /// give the real run its dry run's, so it compares the same entries
+    #[arg(short, long, value_name = "DIR")]
+    pub work_dir: PathBuf,
 }
 
 // --------------------------------------------------
@@ -709,9 +741,6 @@ pub struct ExportSimulation {
     pub pdb: Option<PdbEntry>,
 
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub uniprots: Vec<UniprotEntry>,
-
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub external_links: Vec<metadata::ExternalLink>,
 
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -837,9 +866,10 @@ pub struct ImportChain {
 }
 
 // --------------------------------------------------
-/// What one polymer's UniProt lookup found, written once, to
+/// What one polymer's UniProt lookup found: its `hits` are written once, to
 /// md_polymer.match_method and an md_polymer_uniprot row per hit
-/// (`ops::set_polymer_reference`)
+/// (`ops::set_polymer_reference`); declared ones are added to a polymer
+/// looked up before (`import::add_declared_references`)
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct PolymerLookup {
     /// `pdb`, `declared`, `aligned` or `none`; with several hits, the first
@@ -852,6 +882,13 @@ pub struct PolymerLookup {
     /// `hit`; nothing reads the file back.)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hits: Vec<PolymerHit>,
+
+    /// The simulation's other declared UniProt IDs that pass over the chain
+    /// (`reference::passes`), not among `hits`: two entries with the same
+    /// sequence, say. Each is another `declared` md_polymer_uniprot row
+    /// (`ops::add_polymer_uniprots`), even on a polymer looked up before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub other_declared: Vec<PolymerHit>,
 }
 
 // --------------------------------------------------
@@ -917,8 +954,8 @@ pub struct ProcessResult {
     /// Wall-clock time spent in the parallel trajectory-processing step.
     pub trajectory_processing_elapsed: std::time::Duration,
 
-    /// Wall-clock time spent on the BLAST/UniProt search
-    /// (`get_uniprot_entries`).
+    /// Wall-clock time spent on the chains' UniProt lookup
+    /// (`reference::lookup_chains`).
     pub blast_elapsed: std::time::Duration,
 
     /// Wall-clock time spent pushing processed files to iRODS
@@ -1226,27 +1263,9 @@ pub struct CheckedLigand {
 }
 
 // --------------------------------------------------
-#[derive(Debug, Deserialize, Serialize)]
-pub struct BlastResult {
-    pub qaccver: String,
-    pub saccver: String,
-    pub pident: f64,
-    pub length: u32,
-    pub mismatch: u32,
-    pub gapopen: u32,
-    pub qstart: u32,
-    pub qend: u32,
-    pub sstart: u32,
-    pub send: u32,
-    pub evalue: f64,
-    pub bitscore: f64,
-}
-
-// --------------------------------------------------
 #[derive(Debug, strum_macros::Display)]
 pub enum UniprotDb {
     Swissprot,
-    Isoform,
     Trembl,
 }
 
