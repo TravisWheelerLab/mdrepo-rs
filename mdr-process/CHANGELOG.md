@@ -11,6 +11,18 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.23.0 (unreleased)
+
+- **A declared UniProt ID aligned over 80 or more of the chain's residues
+  at 95% identity is confirmed, whatever the coverage**
+  (`MIN_DECLARED_ALIGNED`, `confirms_declared`). The 50% floor turned down
+  antibody constant domains just under half a Fab chain: in the prod
+  backfill-declared-uniprot run (2026-11-02), 211 fails had >=95%
+  identity under 50% coverage, ~165 of them over 80+ residues (P01834
+  49, P01837 40, P0DOY2 14, P01857 13, ...). Applies to imports and to
+  backfill-declared-uniprot, whose rerun adds the newly confirmed rows
+  (Ken, 2026-11-02).
+
 ## 0.22.0 (unreleased)
 
 - **The standard `.psf` is published, and the `.gro` files are no longer

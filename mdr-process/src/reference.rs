@@ -113,6 +113,13 @@ const MIN_COVERAGE: f64 = 0.9;
 /// its mismatches (`confirms_declared`)
 const MIN_MUTANT_IDENTITY: f64 = 90.0;
 
+/// A declared ID aligned over this many of the chain's residues at
+/// `MIN_IDENTITY` confirms it whatever the coverage: 80 residues at 95%
+/// do not happen by chance, and a percentage of the chain penalises a long
+/// one (an antibody constant domain just under half a Fab chain; Ken,
+/// 2026-11-02: 165 of the backfill's 211 near-misses)
+const MIN_DECLARED_ALIGNED: u32 = 80;
+
 /// A SIFTS accession skips the pass rule but must cover this much of the
 /// chain, against a simulation that declares the wrong PDB ID (Ken,
 /// 2026-10-13: "50% until things go sideways")
@@ -1774,7 +1781,8 @@ pub fn passes(hit: &PolymerBlastHit) -> bool {
 /// chain at 95% identity (an antibody's constant domain on a chain that
 /// also has its variable one: SIFTS's floor), or 90% of it at 90% identity
 /// with any number of mismatches (a drug-resistant HIV protease, an
-/// engineered kinase). Looser than `passes`, which picks the reference;
+/// engineered kinase), or `MIN_DECLARED_ALIGNED` residues at 95% whatever
+/// the coverage. Looser than `passes`, which picks the reference;
 /// this only says the declared entry is in the chain (Ken, 2026-10-30,
 /// after the backfill-declared-uniprot dry run).
 pub fn confirms_declared(hit: &PolymerBlastHit) -> bool {
@@ -1786,6 +1794,7 @@ pub fn confirms_declared(hit: &PolymerBlastHit) -> bool {
     passes(hit)
         || (identity >= MIN_IDENTITY && coverage >= MIN_SIFTS_COVERAGE)
         || (identity >= MIN_MUTANT_IDENTITY && coverage >= MIN_COVERAGE)
+        || (identity >= MIN_IDENTITY && covered(hit) >= MIN_DECLARED_ALIGNED)
 }
 
 /// The accession in `sp|P04585|POL_HV1H2` or `tr|A0A...|...`
@@ -3521,8 +3530,9 @@ mod tests {
         assert!((hit.identity - 800.0 / 9.0).abs() < 1e-9);
     }
 
-    /// A declared ID is confirmed over half the chain at 95%, or over 90%
-    /// of it at 90% whatever the mismatches; less is not
+    /// A declared ID is confirmed over half the chain at 95%, over 90% of
+    /// it at 90% whatever the mismatches, or over 80 residues at 95%
+    /// whatever the coverage; less is not
     #[test]
     fn declared_ids_confirmed_more_loosely_than_a_reference() {
         let row = |pident, mismatch, qse, qlen| {
@@ -3534,8 +3544,12 @@ mod tests {
         // A drug-resistant HIV protease: 92%, 8 mismatches
         let mutant = row(92.0, 8, (1, 99), 99);
         assert!(!passes(&mutant) && confirms_declared(&mutant));
+        // A constant domain just under half a longer chain: 80 residues
+        let long = row(100.0, 0, (1, 80), 430);
+        assert!(!passes(&long) && confirms_declared(&long));
         for weak in [
-            row(100.0, 0, (1, 90), 214),
+            row(100.0, 0, (1, 79), 214),
+            row(94.0, 6, (1, 100), 430),
             row(94.0, 3, (1, 120), 214),
             row(89.0, 10, (1, 99), 99),
         ] {
