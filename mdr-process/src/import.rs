@@ -39,7 +39,6 @@ use diesel::{PgConnection, connection::Connection};
 use libmdrepo::metadata;
 use log::debug;
 use mdr_db::{models::*, ops};
-use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
@@ -864,7 +863,7 @@ fn upsert_ligand(
 /// joined by commas (`ALA,GLY,SER`). Any other writer of md_polymer (the
 /// full.pdb backfill) must hash the same way, or one sequence gets two rows.
 pub fn residues_hash(residues: &[String]) -> String {
-    format!("{:x}", Sha256::digest(residues.join(",").as_bytes()))
+    crate::process::sha256_hex(residues.join(",").as_bytes())
 }
 
 // --------------------------------------------------

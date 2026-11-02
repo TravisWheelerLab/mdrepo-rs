@@ -23,7 +23,7 @@ use log::{debug, warn};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
-use sha2::{Digest as Sha2Digest, Sha256};
+use sha2::Sha256;
 use std::{
     collections::{HashMap, HashSet},
     env,
@@ -2375,9 +2375,18 @@ pub fn same_query(results: &Path, query: &Path, query_text: &str) -> bool {
 /// The SHA-256 of a file, as hex
 pub fn sha256_of_file(path: &Path) -> Result<String> {
     let bytes = fs::read(path).map_err(|e| anyhow!("{}: {e}", path.display()))?;
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(sha256_hex(&bytes))
+}
+
+/// The lower-case hex SHA-256 of `bytes`: the one place the stored hashes
+/// are made (`unique_file_hash`, `import::residues_hash`, `sha256_of_file`;
+/// pinned to `sha256sum` by `sha256_strings_match_sha256sum`). sha2 0.11's
+/// digest no longer formats with `{:x}`, so each byte is written here.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 // --------------------------------------------------
@@ -3168,9 +3177,7 @@ pub fn get_file_md5s(meta: &Meta, input_dir: &Path) -> Vec<String> {
 /// (2026-10-21). Simulations imported before carry the joined form, which
 /// [`legacy_unique_file_hash`] still produces for `import` to match them by.
 pub fn unique_file_hash(md5s: &[String]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(legacy_unique_file_hash(md5s).as_bytes());
-    format!("{:x}", hasher.finalize())
+    sha256_hex(legacy_unique_file_hash(md5s).as_bytes())
 }
 
 /// The form `unique_file_hash_string` took before it was digested: the sorted
