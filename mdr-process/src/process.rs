@@ -5103,13 +5103,43 @@ mol_id: No ligand-like residue found in minimal.pdb
         assert!(digest.chars().all(|c| c.is_ascii_hexdigit()));
         assert_eq!(legacy_unique_file_hash(&few), format!("{a},{b}"));
 
-        let mut hasher = Sha256::new();
-        hasher.update(format!("{a},{b}").as_bytes());
-        assert_eq!(digest, format!("{:x}", hasher.finalize()));
+        // `printf '%s' "$a,$b" | sha256sum`: independent of sha2, so a
+        // dependency bump cannot change the stored strings unnoticed
+        assert_eq!(
+            digest,
+            "ba0bc0b28b19a838dda280b5223690ccfd4a1bd50361c416dcff46e60a6fed5a"
+        );
 
         let many: Vec<String> = (0..100).map(|i| format!("{i:032x}")).collect();
         assert_eq!(unique_file_hash(&many).len(), 64);
         assert!(legacy_unique_file_hash(&many).len() > 2704);
         assert_ne!(unique_file_hash(&many), digest);
+    }
+
+    /// The three SHA-256 strings the database keys on, pinned to
+    /// `sha256sum`'s output: `md_simulation.unique_file_hash_string`
+    /// (`unique_file_hash`, above), `md_polymer.residues_hash`
+    /// (`import::residues_hash`) and file checksums (`sha256_of_file`). If
+    /// one changes, an import no longer finds the rows it made before and
+    /// writes duplicates.
+    #[test]
+    fn sha256_strings_match_sha256sum() {
+        let codes = |s: &[&str]| s.iter().map(|c| c.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            crate::import::residues_hash(&codes(&["ALA", "GLY", "SER"])),
+            "63b3cf80d5e087c26e9c9bea0ba797ae59489bf46ae4996ab8b53175bcb9c59a"
+        );
+        assert_eq!(
+            crate::import::residues_hash(&[]),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("abc.txt");
+        fs::write(&file, "abc").unwrap();
+        assert_eq!(
+            sha256_of_file(&file).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 }
