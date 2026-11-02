@@ -461,6 +461,10 @@ pub struct ProcessTrajectoryArgs<'a> {
 pub struct ProcessedTrajectory {
     pub full_gro: PathBuf,
     pub full_pdb: PathBuf,
+    /// The standard topology beside full.pdb and minimal.pdb (graph only);
+    /// None for coarse-grained systems, or when it could not be written
+    pub full_psf: Option<PathBuf>,
+    pub min_psf: Option<PathBuf>,
     pub full_xtc: PathBuf,
     pub min_gro: PathBuf,
     pub min_pdb: PathBuf,

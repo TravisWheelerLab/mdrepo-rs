@@ -4,6 +4,7 @@ pub mod backfill_uniprot;
 pub mod import;
 pub mod process;
 pub mod psf_elements;
+pub mod psf_writer;
 pub mod reference;
 pub mod reprocess;
 pub mod sequence;

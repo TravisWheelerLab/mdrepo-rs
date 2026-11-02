@@ -11,6 +11,25 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.21.1 (unreleased)
+
+- **The standard `.psf` is written for every replicate** (`full.psf` and
+  `minimal.psf` beside the PDBs; Travis, 2026-10-22: pdb, xtc and psf are
+  the standard files, and the psf is the graph only). New module
+  `psf_writer`: atoms, elements, residues, segments (the chain ID, or one
+  per TER-separated block where the column is blank) and bonds, in
+  psfgen's PSF EXT layout; charges 0, standard masses, the element as the
+  type; read back with `psf_elements::parse_psf` before it is kept. The
+  bonds come from simulation-processing `extract_bonds.py`, which maps the
+  upload's best topology onto `full.pdb` (.tpr, .psf, prmtop, a
+  self-contained GROMACS .top) or guesses them from distances. Skipped for
+  coarse-grained systems.
+- **Not yet published.** The files are not registered as processed files,
+  so nothing new reaches iRODS or the database: md-repo-app has no file
+  type for them until the `.gro` files stop being "topology". A failure
+  is a warning, never a failed import, and so is a missing
+  `extract_bonds.py` (a host whose simulation-processing predates it).
+
 ## 0.21.0 (unreleased)
 
 - **UniProt IDs are kept only on the chains, and a declared one only when
