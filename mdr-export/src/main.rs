@@ -154,16 +154,8 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
         .pdb_id
         .map(|pdb_pk| ops::get_pdb(conn, pdb_pk))
         .transpose()?;
-    let (_, sim2uniprot) =
-        ops::list_simulation_uniprots(conn, Some(sim_id), None, true, None, None)?;
-    let mut uniprot_ids: Vec<String> = vec![];
-    for s2u in sim2uniprot {
-        uniprot_ids.push(
-            ops::get_uniprot(conn, s2u.uniprot_id)?
-                .uniprot_id
-                .to_string(),
-        );
-    }
+    // The chains' references: the only UniProt IDs a simulation has
+    let uniprot_ids = ops::list_simulation_chain_uniprots(conn, sim_id)?;
     let (_, sim2collection) =
         ops::list_simulation_collections(conn, Some(sim_id), None, true, None, None)?;
     let mut collections: Vec<String> = vec![];

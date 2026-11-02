@@ -4,8 +4,9 @@
 //! Input is a TSV (`simulation_id`, `pdb_id`, `structure`, and optionally
 //! `uniprot_ids`): each simulation's ID, its declared PDB ID (may be blank),
 //! a local copy of its processed structure, and its declared UniProt IDs
-//! (comma-separated, may be blank; md_simulation_uniprot). The chains come from the same splitter imports
-//! use (`sequence.rs`), so they carry their backbone breaks. Only `structure`
+//! (comma-separated, may be blank; from the TOML). The chains come from
+//! the same splitter imports use (`sequence.rs`), so they carry their
+//! backbone breaks. Only `structure`
 //! chains: a ligand declared by sequence (a `declared` chain) needs the
 //! TOML, which this does not read.
 //!
@@ -485,6 +486,7 @@ mod tests {
         Some(PolymerLookup {
             match_method: method.into(),
             hits: vec![],
+            other_declared: vec![],
         })
     }
 

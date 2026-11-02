@@ -53,8 +53,17 @@
 //! own PDB and UniProt IDs, so simulations sharing a polymer can disagree;
 //! the first to import decides, and a later one that disagrees gets a
 //! warning (`import::reference_disagreements`). Ken relaxed "no simulation
-//! may point to the wrong UniProt entry" to allow this (2026-10-09). Every
-//! declared UniProt ID is linked to the simulation regardless.
+//! may point to the wrong UniProt entry" to allow this (2026-10-09).
+//!
+//! A declared UniProt ID is kept only on a polymer it passes against
+//! (Travis, 2026-10-22, MDR-104): md_simulation_uniprot, which linked every
+//! declared ID to the simulation unchecked, is gone (Ken, 2026-10-30). One
+//! that passes but is not the reference (`PolymerLookup::other_declared`,
+//! two entries with one sequence), or that passes against a polymer an
+//! earlier simulation decided, is added to the polymer as another
+//! `declared` row (`import::add_declared_references`), for every
+//! simulation that shares it. One that passes nowhere is reported
+//! (`declared_not_referenced`) and not recorded.
 //!
 //! Nothing here writes to the database. A polymer whose lookup could not be
 //! finished (no PDB index on the host, a UniProt fetch that failed) gets no
@@ -84,12 +93,25 @@ use std::{
 /// UniProt entries fetched at once by a batch
 const UNIPROT_FETCHES: usize = 8;
 
-/// Shorter chains get `none` (question a, Ken, 2026-10-09)
+/// Shorter chains get `none` (question a, Ken, 2026-10-09), unless a
+/// declared entry contains them (`peptide_lookup`)
 pub const MIN_RESIDUES: usize = 20;
+
+/// A shorter chain is not looked for even in a declared entry: a few
+/// residues are found in many proteins by chance
+pub const MIN_PEPTIDE_RESIDUES: usize = 5;
+
+/// From this length a peptide may differ from its declared entry by one
+/// residue (`peptide_lookup`)
+pub const MIN_PEPTIDE_RESIDUES_ONE_OFF: usize = 8;
 
 const MIN_IDENTITY: f64 = 95.0;
 const MAX_MISMATCHES: u32 = 3;
 const MIN_COVERAGE: f64 = 0.9;
+
+/// A declared ID covering the chain confirms it at this identity, whatever
+/// its mismatches (`confirms_declared`)
+const MIN_MUTANT_IDENTITY: f64 = 90.0;
 
 /// A SIFTS accession skips the pass rule but must cover this much of the
 /// chain, against a simulation that declares the wrong PDB ID (Ken,
@@ -222,6 +244,12 @@ pub struct DeclaredMatches {
     pub related: HashSet<usize>,
     /// Per polymer, its SIFTS rows that overlap (`sifts_parts`)
     pub overlaps: HashMap<usize, Vec<Overlap>>,
+    /// Per polymer, the UniProt IDs it declares that pass (`passes`) but
+    /// are not in its `Declared::Match`, each by its best BLAST row
+    pub other_declared: HashMap<usize, Vec<Candidate>>,
+    /// BLAST's rows, each polymer's query `p<i>`, for a report of why a
+    /// candidate did not pass
+    pub rows: Vec<PolymerBlastHit>,
 }
 
 // --------------------------------------------------
@@ -364,13 +392,31 @@ pub fn lookup_polymers(
     let mut warnings = vec![];
     let mut lookups: Vec<Option<PolymerLookup>> = vec![None; queries.len()];
 
-    // 1. Not protein, or short
+    // 1. Not protein, or short; a short peptide may still be found in a
+    // declared entry
     let mut wanted = vec![];
+    let mut short = vec![];
     for (i, q) in queries.iter().enumerate() {
-        if q.polymer_type == "protein" && q.num_residues >= MIN_RESIDUES {
+        if q.polymer_type != "protein" {
+            lookups[i] = Some(none());
+        } else if q.num_residues >= MIN_RESIDUES {
             wanted.push(i);
         } else {
-            lookups[i] = Some(none());
+            short.push(i);
+        }
+    }
+    if !short.is_empty() {
+        let entries = fetch_entries(
+            short
+                .iter()
+                .flat_map(|&i| declared_accessions(&queries[i]))
+                .collect::<Vec<_>>()
+                .iter()
+                .map(String::as_str),
+            uniprot_cache,
+        );
+        for &i in &short {
+            lookups[i] = peptide_lookup(&queries[i], &entries, &mut warnings);
         }
     }
     if wanted.is_empty() {
@@ -393,6 +439,7 @@ pub fn lookup_polymers(
         mut entries,
         warnings: declared_warnings,
         related,
+        other_declared,
         ..
     } = declared_matches(queries, &wanted, &sifts, work_dir, uniprot_cache)?;
     warnings.extend(declared_warnings);
@@ -441,6 +488,28 @@ pub fn lookup_polymers(
                 None => Some(none()),
             };
         }
+    }
+
+    // The other declared IDs that pass, whatever the reference came from
+    for &i in &wanted {
+        let Some(lookup) = lookups[i].as_mut() else {
+            continue;
+        };
+        let taken: HashSet<String> = lookup
+            .hits
+            .iter()
+            .map(|h| h.uniprot.uniprot_id.to_uppercase())
+            .collect();
+        lookup.other_declared = other_declared
+            .get(&i)
+            .into_iter()
+            .flatten()
+            .filter(|c| !taken.contains(&c.accession))
+            .filter_map(|c| match &entries[&c.accession] {
+                Ok(entry) => make_hit(c, &queries[i].sequence, entry),
+                Err(_) => None,
+            })
+            .collect();
     }
 
     Ok((lookups, warnings, related))
@@ -630,6 +699,7 @@ pub fn declared_matches(
     // reference, as before. When the parts together are too little,
     // things go as before 0.17.0: the best single candidate, or the search.
     let mut overlaps = HashMap::new();
+    let mut other_declared = HashMap::new();
     for (&i, found) in &candidates {
         if outcome.contains_key(&i) {
             continue;
@@ -656,6 +726,11 @@ pub fn declared_matches(
             Some(c) => Declared::Match(vec![c]),
             None => Declared::NoMatch,
         };
+        let others =
+            declared_passes(&rows, &id, &queries[i].uniprot_ids, found, &result);
+        if !others.is_empty() {
+            other_declared.insert(i, others);
+        }
         outcome.insert(i, result);
     }
     Ok(DeclaredMatches {
@@ -664,7 +739,69 @@ pub fn declared_matches(
         warnings,
         related,
         overlaps,
+        other_declared,
+        rows,
     })
+}
+
+/// The declared UniProt IDs (`declared`) whose best BLAST row for query `id`
+/// confirms them (`confirms_declared`), other than those `result` took, by
+/// accession, and still a candidate (`found`: not dropped as gone). Only one
+/// candidate can be a polymer's reference, but a declared ID the chain
+/// confirms is recorded too (Ken, 2026-10-30), since the polymer is the
+/// only place a simulation's UniProt IDs are kept.
+fn declared_passes(
+    rows: &[PolymerBlastHit],
+    id: &str,
+    declared: &[String],
+    found: &BTreeMap<String, &'static str>,
+    result: &Declared,
+) -> Vec<Candidate> {
+    let taken: HashSet<&str> = match result {
+        Declared::Match(parts) => parts.iter().map(|c| c.accession.as_str()).collect(),
+        _ => HashSet::new(),
+    };
+    let declared: HashSet<String> = declared
+        .iter()
+        .map(|acc| acc.trim().to_uppercase())
+        .collect();
+    let mut best: BTreeMap<String, &PolymerBlastHit> = BTreeMap::new();
+    for hit in rows
+        .iter()
+        .filter(|h| h.qaccver == id && confirms_declared(h))
+    {
+        let acc = accession(&hit.saccver);
+        if !declared.contains(&acc) || taken.contains(acc.as_str()) {
+            continue;
+        }
+        best.entry(acc)
+            .and_modify(|b| {
+                if hit.bitscore > b.bitscore {
+                    *b = hit;
+                }
+            })
+            .or_insert(hit);
+    }
+    best.into_iter()
+        .filter_map(|(acc, hit)| {
+            found
+                .contains_key(&acc)
+                .then(|| candidate_of(hit, DECLARED))
+        })
+        .collect()
+}
+
+/// A BLAST row as a candidate by `match_method`
+fn candidate_of(hit: &PolymerBlastHit, match_method: &'static str) -> Candidate {
+    Candidate {
+        match_method,
+        accession: accession(&hit.saccver),
+        query_start: hit.qstart.min(hit.qend) as i32,
+        query_end: hit.qstart.max(hit.qend) as i32,
+        reference_start: hit.sstart.min(hit.send) as i32,
+        reference_end: hit.sstart.max(hit.send) as i32,
+        identity: identity(hit),
+    }
 }
 
 // --------------------------------------------------
@@ -1082,7 +1219,7 @@ fn compare(
 /// read instead of fetched, and a fetched one is saved, so a later run
 /// sees the same entries: a backfill's real run writes what its dry run
 /// reported.
-fn fetch_entries<'a>(
+pub fn fetch_entries<'a>(
     accessions: impl Iterator<Item = &'a str>,
     cache: Option<&Path>,
 ) -> Entries {
@@ -1277,6 +1414,7 @@ pub fn none() -> PolymerLookup {
     PolymerLookup {
         match_method: NONE.to_string(),
         hits: vec![],
+        other_declared: vec![],
     }
 }
 
@@ -1288,7 +1426,102 @@ fn lookup(candidates: &[Candidate], mut hits: Vec<PolymerHit>) -> PolymerLookup 
     PolymerLookup {
         match_method: first.map_or(NONE, |c| c.match_method).to_string(),
         hits,
+        other_declared: vec![],
     }
+}
+
+// --------------------------------------------------
+/// A query's declared UniProt IDs, upper case, each once
+pub fn declared_accessions(query: &PolymerQuery) -> Vec<String> {
+    let mut accs: Vec<String> = query
+        .uniprot_ids
+        .iter()
+        .map(|acc| acc.trim().to_uppercase())
+        .filter(|acc| !acc.is_empty())
+        .collect();
+    accs.sort();
+    accs.dedup();
+    accs
+}
+
+/// A protein chain too short for BLAST (under `MIN_RESIDUES`), such as a
+/// coactivator peptide bound to a nuclear receptor, and its declared
+/// UniProt IDs (Ken, 2026-10-30): every declared entry whose sequence
+/// contains the chain's, at the first place it does, is a `declared`
+/// reference, the first by accession the reference and the rest
+/// `other_declared`. Exactly, or from `MIN_PEPTIDE_RESIDUES_ONE_OFF`
+/// residues with one substitution (6qhl's p65 peptide, AGSIPGRRS, is
+/// p65's AGSIPGERS with E49R), at the identity that leaves; an exact place
+/// is taken over one with a substitution. No BLAST, and no SIFTS: a PDB entry's
+/// accessions are not the submitter's word for a peptide. `none` when no
+/// entry contains it, the chain is under `MIN_PEPTIDE_RESIDUES`, or nothing
+/// was declared; None (untried), with a warning, when an entry that might
+/// have contained it could not be fetched.
+pub fn peptide_lookup(
+    query: &PolymerQuery,
+    entries: &Entries,
+    warnings: &mut Vec<String>,
+) -> Option<PolymerLookup> {
+    let n = query.sequence.len();
+    if n < MIN_PEPTIDE_RESIDUES || n != query.num_residues {
+        return Some(none());
+    }
+    let mut hits = vec![];
+    let mut failed = vec![];
+    for acc in declared_accessions(query) {
+        match entries.get(&acc) {
+            Some(Ok(entry)) => {
+                if let Some((at, mismatches)) =
+                    peptide_place(&query.sequence, &entry.sequence)
+                {
+                    hits.push(PolymerHit {
+                        uniprot: entry.clone(),
+                        query_start: 1,
+                        query_end: n as i32,
+                        reference_start: at as i32 + 1,
+                        reference_end: (at + n) as i32,
+                        identity: 100.0 * (n - mismatches) as f64 / n as f64,
+                    });
+                }
+            }
+            Some(Err(e)) if e.gone => {}
+            Some(Err(e)) => failed.push(format!("{acc} ({e})")),
+            None => failed.push(acc),
+        }
+    }
+    if hits.is_empty() {
+        if !failed.is_empty() {
+            warnings.push(format!(
+                "A peptide chain's UniProt reference was not looked up: a declared \
+                 candidate could not be fetched: {}",
+                failed.join(", ")
+            ));
+            return None;
+        }
+        return Some(none());
+    }
+    let other_declared = hits.split_off(1);
+    Some(PolymerLookup {
+        match_method: DECLARED.to_string(),
+        hits,
+        other_declared,
+    })
+}
+
+/// Where `peptide` is in `entry` (0-based) and its substitutions there:
+/// exactly, else, from `MIN_PEPTIDE_RESIDUES_ONE_OFF` residues, the first
+/// place with one substitution. No gaps.
+fn peptide_place(peptide: &str, entry: &str) -> Option<(usize, usize)> {
+    if let Some(at) = entry.find(peptide) {
+        return Some((at, 0));
+    }
+    let (p, e) = (peptide.as_bytes(), entry.as_bytes());
+    if p.len() < MIN_PEPTIDE_RESIDUES_ONE_OFF || e.len() < p.len() {
+        return None;
+    }
+    (0..=e.len() - p.len())
+        .find(|&at| p.iter().zip(&e[at..]).filter(|(a, b)| a != b).count() == 1)
+        .map(|at| (at, 1))
 }
 
 fn not_recorded(candidate: &Candidate, e: &str) -> String {
@@ -1516,7 +1749,7 @@ pub fn read_hits(results: &Path) -> Result<Vec<PolymerBlastHit>> {
 }
 
 /// Our residues inside a hit's alignment
-fn covered(hit: &PolymerBlastHit) -> u32 {
+pub fn covered(hit: &PolymerBlastHit) -> u32 {
     hit.qend.max(hit.qstart) - hit.qstart.min(hit.qend) + 1
 }
 
@@ -1534,6 +1767,25 @@ pub fn passes(hit: &PolymerBlastHit) -> bool {
         && identity(hit) >= MIN_IDENTITY
         && hit.mismatch <= MAX_MISMATCHES
         && covered(hit) as f64 / hit.qlen as f64 >= MIN_COVERAGE
+}
+
+/// Whether a BLAST hit confirms a declared UniProt ID as one of the chain's
+/// entries, besides its reference: it passes (`passes`), or covers half the
+/// chain at 95% identity (an antibody's constant domain on a chain that
+/// also has its variable one: SIFTS's floor), or 90% of it at 90% identity
+/// with any number of mismatches (a drug-resistant HIV protease, an
+/// engineered kinase). Looser than `passes`, which picks the reference;
+/// this only says the declared entry is in the chain (Ken, 2026-10-30,
+/// after the backfill-declared-uniprot dry run).
+pub fn confirms_declared(hit: &PolymerBlastHit) -> bool {
+    if hit.qlen == 0 {
+        return false;
+    }
+    let coverage = covered(hit) as f64 / hit.qlen as f64;
+    let identity = identity(hit);
+    passes(hit)
+        || (identity >= MIN_IDENTITY && coverage >= MIN_SIFTS_COVERAGE)
+        || (identity >= MIN_MUTANT_IDENTITY && coverage >= MIN_COVERAGE)
 }
 
 /// The accession in `sp|P04585|POL_HV1H2` or `tr|A0A...|...`
@@ -1634,18 +1886,7 @@ fn best_hits_by(
                 accession(&top.saccver)
             );
         }
-        best.insert(
-            query.to_string(),
-            Candidate {
-                match_method: ALIGNED,
-                accession: accession(&top.saccver),
-                query_start: top.qstart.min(top.qend) as i32,
-                query_end: top.qstart.max(top.qend) as i32,
-                reference_start: top.sstart.min(top.send) as i32,
-                reference_end: top.sstart.max(top.send) as i32,
-                identity: identity(top),
-            },
-        );
+        best.insert(query.to_string(), candidate_of(top, ALIGNED));
     }
     best
 }
@@ -1705,8 +1946,11 @@ fn none_related(related: &[Option<bool>]) -> bool {
 }
 
 // --------------------------------------------------
-/// A warning for each declared accession that is no chain's reference, when
-/// some chain has one. The link from the TOML is kept regardless (item 5).
+/// A warning for each declared accession that is no chain's reference. It
+/// is not recorded: the chains' references are the only place a
+/// simulation's UniProt IDs are kept, and a declared one is kept only when
+/// it passes against a chain (Travis, 2026-10-22, MDR-104; Ken, 2026-10-30).
+/// An isoform of a reference (`P04585-2` for `P04585`) counts as found.
 pub fn declared_not_referenced(
     declared: &[String],
     chains: &[ImportChain],
@@ -1714,22 +1958,23 @@ pub fn declared_not_referenced(
     let mut references: Vec<&str> = chains
         .iter()
         .filter_map(|c| c.reference.as_ref())
-        .flat_map(|r| &r.hits)
+        .flat_map(|r| r.hits.iter().chain(&r.other_declared))
         .map(|h| h.uniprot.uniprot_id.as_str())
         .collect();
     references.sort();
     references.dedup();
-    if references.is_empty() {
-        return vec![];
-    }
+    let mapped = if references.is_empty() {
+        "no chain maps to a UniProt entry".to_string()
+    } else {
+        format!("the chains map to {}", references.join(", "))
+    };
     let base = |acc: &str| acc.split('-').next().unwrap_or(acc).to_uppercase();
     declared
         .iter()
         .filter(|d| !references.iter().any(|r| base(r) == base(d)))
         .map(|d| {
             format!(
-                r#"UniProt ID "{d}" was declared, but no chain's residues map to it (the chains map to {})"#,
-                references.join(", ")
+                r#"UniProt ID "{d}" was declared, but no chain's residues match it, so it was not recorded ({mapped})"#,
             )
         })
         .collect()
@@ -3135,6 +3380,169 @@ mod tests {
         assert_eq!(chains[1].reference, Some(none()));
     }
 
+    /// Every declared ID that passes, but the one taken, by its best row;
+    /// one the chain does not confirm, one not declared (a SIFTS candidate)
+    /// and one dropped as gone are not
+    #[test]
+    fn other_declared_ids_that_pass() {
+        let rows = vec![
+            blast_row("p0", "P0DP23", 100.0, 0, (1, 40), 40, 80.0),
+            blast_row("p0", "P0DP24", 100.0, 0, (1, 40), 40, 80.0),
+            blast_row("p0", "P0DP24", 100.0, 0, (1, 20), 40, 40.0),
+            blast_row("p0", "P0DP25", 100.0, 0, (1, 40), 40, 80.0),
+            blast_row("p0", "P62158", 85.0, 6, (1, 40), 40, 70.0),
+            blast_row("p0", "Q96HY3", 100.0, 0, (1, 40), 40, 80.0),
+            blast_row("p0", "P99999", 100.0, 0, (1, 40), 40, 80.0),
+            blast_row("p1", "P0DP25", 100.0, 0, (1, 40), 40, 80.0),
+        ];
+        let declared: Vec<String> = ["P0DP23", "p0dp24 ", "P0DP25", "P62158", "P99999"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let found: BTreeMap<String, &'static str> = [
+            ("P0DP23", DECLARED),
+            ("P0DP24", DECLARED),
+            ("P0DP25", PDB),
+            ("P62158", DECLARED),
+            ("Q96HY3", PDB),
+        ]
+        .into_iter()
+        .map(|(acc, m)| (acc.to_string(), m))
+        .collect();
+        let taken = Declared::Match(vec![candidate_of(&rows[0], DECLARED)]);
+        let got = declared_passes(&rows, "p0", &declared, &found, &taken);
+        let accs: Vec<&str> = got.iter().map(|c| c.accession.as_str()).collect();
+        assert_eq!(accs, ["P0DP24", "P0DP25"]);
+        assert!(got.iter().all(|c| c.match_method == DECLARED));
+        assert_eq!((got[0].query_start, got[0].query_end), (1, 40));
+
+        let got = declared_passes(&rows, "p0", &declared, &found, &Declared::NoMatch);
+        assert_eq!(got.len(), 3, "nothing taken");
+    }
+
+    /// A short chain is found in each declared entry that contains it
+    /// exactly, the first by accession its reference; one not contained,
+    /// one gone, and too short a chain give none; a failed fetch, untried
+    #[test]
+    fn peptide_found_in_declared_entries() {
+        let entry = |acc: &str, seq: &str| {
+            Ok(UniprotEntry {
+                uniprot_id: acc.into(),
+                sequence: seq.into(),
+                ..Default::default()
+            })
+        };
+        let mut entries: Entries = HashMap::new();
+        entries.insert("Q15788".into(), entry("Q15788", "MSGLGENLDPLASSLHKDLLHNEE"));
+        entries.insert("Q15596".into(), entry("Q15596", "AAHKILHRLLQEGSPS"));
+        entries.insert("P00001".into(), entry("P00001", "MKKLLPTAAAGLLLLAAQPAMA"));
+        entries.insert(
+            "P00002".into(),
+            Err(FetchFailure {
+                message: "deleted".into(),
+                gone: true,
+            }),
+        );
+        let query = |seq: &str, accs: &[&str]| PolymerQuery {
+            polymer_type: "protein".into(),
+            num_residues: seq.len(),
+            sequence: seq.into(),
+            pdb_ids: vec!["1abc".into()],
+            uniprot_ids: accs.iter().map(|a| a.to_string()).collect(),
+        };
+        let mut warnings = vec![];
+
+        let got = peptide_lookup(
+            &query("HKILHRLLQ", &["q15788", "Q15596", "P00001", "P00002"]),
+            &entries,
+            &mut warnings,
+        )
+        .unwrap();
+        assert_eq!(got.match_method, DECLARED);
+        assert_eq!(got.hits.len(), 1);
+        let hit = &got.hits[0];
+        assert_eq!(hit.uniprot.uniprot_id, "Q15596");
+        assert_eq!((hit.query_start, hit.query_end), (1, 9));
+        assert_eq!((hit.reference_start, hit.reference_end), (3, 11));
+        assert_eq!(hit.identity, 100.0);
+        assert!(got.other_declared.is_empty());
+
+        let got =
+            peptide_lookup(&query("LHKDLLHNEE", &["Q15788"]), &entries, &mut warnings)
+                .unwrap();
+        assert_eq!(got.hits[0].uniprot.uniprot_id, "Q15788");
+
+        for q in [
+            query("HKILHRLLQ", &["P00001", "P00002"]),
+            query("HKILHRLLQ", &[]),
+            query("HKIL", &["Q15596"]),
+        ] {
+            assert_eq!(peptide_lookup(&q, &entries, &mut warnings), Some(none()));
+        }
+        assert!(warnings.is_empty());
+
+        assert_eq!(
+            peptide_lookup(&query("HKILHRLLQ", &["P99999"]), &entries, &mut warnings),
+            None
+        );
+        assert_eq!(warnings.len(), 1);
+    }
+
+    /// One substitution from 8 residues, none below; an exact place first
+    #[test]
+    fn peptide_place_allows_one_substitution_from_eight() {
+        let p65 = "YKCEGRSAGSIPGERSTDTT";
+        assert_eq!(peptide_place("AGSIPGRRS", p65), Some((7, 1)));
+        assert_eq!(peptide_place("AGSIPGERS", p65), Some((7, 0)));
+        assert_eq!(peptide_place("AGSIPGRR", p65), Some((7, 1)));
+        assert_eq!(peptide_place("AGSIPGR", p65), None);
+        assert_eq!(peptide_place("AGSIPKRRS", p65), None);
+        assert_eq!(peptide_place("AGSIPGRRSTDTTKTHPAAA", p65), None);
+
+        let query = PolymerQuery {
+            polymer_type: "protein".into(),
+            num_residues: 9,
+            sequence: "AGSIPGRRS".into(),
+            pdb_ids: vec![],
+            uniprot_ids: vec!["Q04206".into()],
+        };
+        let mut entries: Entries = HashMap::new();
+        entries.insert(
+            "Q04206".into(),
+            Ok(UniprotEntry {
+                uniprot_id: "Q04206".into(),
+                sequence: format!("MDE{p65}"),
+                ..Default::default()
+            }),
+        );
+        let got = peptide_lookup(&query, &entries, &mut vec![]).unwrap();
+        let hit = &got.hits[0];
+        assert_eq!((hit.reference_start, hit.reference_end), (11, 19));
+        assert!((hit.identity - 800.0 / 9.0).abs() < 1e-9);
+    }
+
+    /// A declared ID is confirmed over half the chain at 95%, or over 90%
+    /// of it at 90% whatever the mismatches; less is not
+    #[test]
+    fn declared_ids_confirmed_more_loosely_than_a_reference() {
+        let row = |pident, mismatch, qse, qlen| {
+            blast_row("p0", "P01834", pident, mismatch, qse, qlen, 100.0)
+        };
+        // An antibody's constant domain on a light chain
+        let constant = row(100.0, 0, (108, 214), 214);
+        assert!(!passes(&constant) && confirms_declared(&constant));
+        // A drug-resistant HIV protease: 92%, 8 mismatches
+        let mutant = row(92.0, 8, (1, 99), 99);
+        assert!(!passes(&mutant) && confirms_declared(&mutant));
+        for weak in [
+            row(100.0, 0, (1, 90), 214),
+            row(94.0, 3, (1, 120), 214),
+            row(89.0, 10, (1, 99), 99),
+        ] {
+            assert!(!confirms_declared(&weak));
+        }
+    }
+
     #[test]
     fn declared_accession_that_is_no_reference_warns() {
         let mut a = chain(1, "protein", PROTEASE);
@@ -3151,14 +3559,25 @@ mod tests {
                 reference_end: 587,
                 identity: 96.0,
             }],
+            other_declared: vec![],
         });
         let declared = vec!["P04585-2".to_string(), "P03367".to_string()];
         let got = declared_not_referenced(&declared, &[a.clone()]);
         assert_eq!(got.len(), 1);
         assert!(got[0].contains(r#""P03367""#));
+        assert!(got[0].contains("not recorded"));
 
+        // Another declared ID that passed is recorded too, so it is found
+        let mut other = a.reference.as_ref().unwrap().hits[0].clone();
+        other.uniprot.uniprot_id = "P03367".into();
+        a.reference.as_mut().unwrap().other_declared = vec![other];
+        assert!(declared_not_referenced(&declared, &[a.clone()]).is_empty());
+
+        // With no reference at all, nothing declared is recorded
         a.reference = Some(none());
-        assert!(declared_not_referenced(&declared, &[a]).is_empty());
+        let got = declared_not_referenced(&declared, &[a]);
+        assert_eq!(got.len(), 2);
+        assert!(got[0].contains("no chain maps to a UniProt entry"));
     }
 
     /// A declared PDB ID warns only when SIFTS maps it, every protein

@@ -201,37 +201,6 @@ fn seed_replicate(c: &mut PgConnection, sim_id: i64, name: &str) -> i64 {
     .id
 }
 
-/// Link a simulation to a fresh accession. `acc` must be distinct per test:
-/// `md_uniprot` is unique on the accession and tests run in parallel.
-fn seed_simulation_uniprot(c: &mut PgConnection, sim_id: i64, acc: &str) -> (i64, i64) {
-    let uniprot = ops::insert_uniprot(
-        c,
-        NewUniprot {
-            uniprot_id: acc.into(),
-            name: format!("{acc}_HUMAN"),
-            amino_length: 42,
-            sequence: "MTEST".into(),
-            response: None,
-            entry_version: None,
-            fetched_at: None,
-        },
-    )
-    .expect("insert uniprot")
-    .id;
-
-    let link = ops::insert_simulation_uniprot(
-        c,
-        NewSimulationUniprot {
-            simulation_id: sim_id,
-            uniprot_id: uniprot,
-        },
-    )
-    .expect("insert simulation uniprot")
-    .id;
-
-    (uniprot, link)
-}
-
 /// Set the alias / creator / file-hash keys the alias & hash finders look up.
 fn set_sim_keys(
     c: &mut PgConnection,
@@ -1204,8 +1173,8 @@ fn part(uniprot_id: i64, q: (i32, i32), r: (i32, i32)) -> PolymerReference {
 /// 3odu's shape: CXCR4, T4 lysozyme, CXCR4 again, written in one go. The
 /// parts are rows in sequence order whatever order they come in, and the
 /// polymer takes the first part's method; a second lookup changes nothing.
-/// Two parts at one query_start (the table's unique key) fail the whole
-/// write, leaving the polymer untried.
+/// One entry twice at one query_start (the table's unique key) fails the
+/// whole write, leaving the polymer untried.
 #[test]
 fn set_polymer_reference_with_several_parts() {
     let mut c = conn_or_skip!();
@@ -1246,10 +1215,10 @@ fn set_polymer_reference_with_several_parts() {
         ]
     );
 
-    let (clash, ids) = seed_parts(&mut c, "a2", &["P61073", "P00720"]);
+    let (clash, ids) = seed_parts(&mut c, "a2", &["P61073"]);
     let same_start = [
         part(ids[0], (1, 98), (27, 124)),
-        part(ids[1], (1, 160), (2, 161)),
+        part(ids[0], (1, 160), (2, 161)),
     ];
     assert!(ops::set_polymer_reference(&mut c, clash, &same_start).is_err());
     assert_eq!(ops::get_polymer(&mut c, clash).unwrap().match_method, None);
@@ -1257,6 +1226,87 @@ fn set_polymer_reference_with_several_parts() {
         ops::list_polymer_uniprots(&mut c, clash)
             .unwrap()
             .is_empty()
+    );
+}
+
+/// A simulation's declared entries are added to a polymer looked up before
+/// (Ken, 2026-10-30): a second entry over the same residues is a row of its
+/// own, one the polymer has already (at any range) is skipped, and a
+/// polymer that was `none` becomes `declared`.
+#[test]
+fn add_polymer_uniprots_adds_declared_entries() {
+    let mut c = conn_or_skip!();
+    let (polymer, ids) = seed_parts(&mut c, "a3", &["P0DP23", "P0DP24", "P0DP25"]);
+    let declared = |uniprot_id, q| PolymerReference {
+        match_method: "declared".into(),
+        ..part(uniprot_id, q, (1, 149))
+    };
+    assert!(
+        ops::set_polymer_reference(
+            &mut c,
+            polymer,
+            &[part(ids[0], (1, 149), (1, 149))]
+        )
+        .unwrap()
+    );
+    let added = [
+        declared(ids[0], (2, 149)),
+        declared(ids[1], (1, 149)),
+        declared(ids[2], (1, 149)),
+        declared(ids[2], (1, 149)),
+    ];
+    let new = ops::add_polymer_uniprots(&mut c, polymer, &added).unwrap();
+    assert_eq!(new.len(), 2);
+    assert!(
+        ops::add_polymer_uniprots(&mut c, polymer, &added)
+            .unwrap()
+            .is_empty()
+    );
+    let mut got: Vec<(i64, String)> = ops::list_polymer_uniprots(&mut c, polymer)
+        .unwrap()
+        .into_iter()
+        .map(|u| (u.uniprot_id, u.match_method))
+        .collect();
+    got.sort();
+    assert_eq!(
+        got,
+        [
+            (ids[0], "pdb".to_string()),
+            (ids[1], "declared".to_string()),
+            (ids[2], "declared".to_string()),
+        ]
+    );
+    let mut rows: Vec<i64> = ops::list_polymer_uniprots(&mut c, polymer)
+        .unwrap()
+        .into_iter()
+        .filter(|u| u.match_method == "declared")
+        .map(|u| u.id)
+        .collect();
+    rows.sort();
+    assert_eq!(rows, new, "the ids returned are the rows added");
+    assert_eq!(
+        ops::get_polymer(&mut c, polymer)
+            .unwrap()
+            .match_method
+            .as_deref(),
+        Some("pdb"),
+        "the first lookup's method is kept"
+    );
+
+    let (none, ids) = seed_parts(&mut c, "a4", &["P0DP23"]);
+    assert!(ops::set_polymer_reference(&mut c, none, &[]).unwrap());
+    assert_eq!(
+        ops::add_polymer_uniprots(&mut c, none, &[declared(ids[0], (1, 149))])
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        ops::get_polymer(&mut c, none)
+            .unwrap()
+            .match_method
+            .as_deref(),
+        Some("declared")
     );
 }
 
@@ -1339,7 +1389,6 @@ fn replace_polymer_uniprots_rewrites_a_polymer() {
 #[test]
 fn find_uniprot_and_pdb_by_their_string_keys() {
     let mut c = conn_or_skip!();
-    let sim = seed_sim(&mut c);
     let uni = ops::insert_uniprot(
         &mut c,
         NewUniprot {
@@ -1381,25 +1430,6 @@ fn find_uniprot_and_pdb_by_their_string_keys() {
         Some(pdb)
     );
     assert_eq!(ops::find_pdb_id_by_code(&mut c, "absent").unwrap(), None);
-
-    // The simulation link is separate from the uniprot row itself.
-    assert_eq!(
-        ops::find_simulation_uniprot_id(&mut c, sim, uni).unwrap(),
-        None
-    );
-    let link = ops::insert_simulation_uniprot(
-        &mut c,
-        NewSimulationUniprot {
-            simulation_id: sim,
-            uniprot_id: uni,
-        },
-    )
-    .unwrap()
-    .id;
-    assert_eq!(
-        ops::find_simulation_uniprot_id(&mut c, sim, uni).unwrap(),
-        Some(link)
-    );
 }
 
 // ── reprocess delete-cascade ──────────────────────────────────────────────────
@@ -1498,37 +1528,6 @@ fn delete_replicates_on_a_sim_with_none_is_a_noop() {
 
     let n = ops::delete_replicates_for_simulation(&mut c, sim).unwrap();
     assert_eq!(n, 0, "nothing to delete, and no error");
-}
-
-#[test]
-fn delete_uniprots_removes_links_but_keeps_the_accession() {
-    let mut c = conn_or_skip!();
-    let sim = seed_sim(&mut c);
-    let other_sim = seed_sim(&mut c);
-    let (acc, link) = seed_simulation_uniprot(&mut c, sim, "T00001");
-    let (other_acc, other_link) = seed_simulation_uniprot(&mut c, other_sim, "T00002");
-
-    let n = ops::delete_uniprots_for_simulation(&mut c, sim).unwrap();
-    assert_eq!(n, 1, "one link deleted");
-    assert!(
-        ops::get_simulation_uniprot(&mut c, link).is_err(),
-        "link gone"
-    );
-    assert!(
-        ops::get_simulation_uniprot(&mut c, other_link).is_ok(),
-        "other sim's link untouched"
-    );
-
-    // The accessions are shared across simulations -- clearing a simulation's
-    // links must not delete the protein records themselves.
-    assert!(
-        ops::get_uniprot(&mut c, acc).is_ok(),
-        "accession kept, only the link was cleared"
-    );
-    assert!(
-        ops::get_uniprot(&mut c, other_acc).is_ok(),
-        "other accession kept"
-    );
 }
 
 // ── get_visible_simulation_ids ────────────────────────────────────────────────

@@ -823,8 +823,11 @@ pub fn replace_polymer_uniprots(
 fn polymer_method(hits: &[PolymerReference]) -> &str {
     hits.iter()
         .min_by_key(|h| h.query_start)
-        .map_or("none", |h| h.match_method.as_str())
+        .map_or(NONE_METHOD, |h| h.match_method.as_str())
 }
+
+/// md_polymer.match_method for a polymer looked up with nothing found
+const NONE_METHOD: &str = "none";
 
 fn insert_polymer_uniprots(
     conn: &mut PgConnection,
@@ -852,6 +855,58 @@ fn insert_polymer_uniprots(
         .execute(conn)
 }
 
+/// Add `hits` to a polymer's UniProt references, skipping an entry it has
+/// already (at any range) and a row a unique constraint refuses: the
+/// declared UniProt IDs of a simulation, added to a polymer whoever looked
+/// it up first (`import::add_declared_references`). A polymer that was
+/// `none` becomes `declared` when one is added. Returns the ids of the rows
+/// added, so a backfill can list them and be undone exactly.
+pub fn add_polymer_uniprots(
+    conn: &mut PgConnection,
+    polymer_id: i64,
+    hits: &[PolymerReference],
+) -> QueryResult<Vec<i64>> {
+    conn.transaction(|conn| {
+        let have: Vec<i64> = md_polymer_uniprot::table
+            .filter(md_polymer_uniprot::polymer_id.eq(polymer_id))
+            .select(md_polymer_uniprot::uniprot_id)
+            .load(conn)?;
+        let mut seen = std::collections::HashSet::new();
+        let rows: Vec<NewPolymerUniprot> = hits
+            .iter()
+            .filter(|h| !have.contains(&h.uniprot_id) && seen.insert(h.uniprot_id))
+            .map(|h| NewPolymerUniprot {
+                polymer_id,
+                uniprot_id: h.uniprot_id,
+                match_method: &h.match_method,
+                query_start: h.query_start,
+                query_end: h.query_end,
+                reference_start: h.reference_start,
+                reference_end: h.reference_end,
+                identity: h.identity,
+            })
+            .collect();
+        if rows.is_empty() {
+            return Ok(vec![]);
+        }
+        let ids: Vec<i64> = diesel::insert_into(md_polymer_uniprot::table)
+            .values(&rows)
+            .on_conflict_do_nothing()
+            .returning(md_polymer_uniprot::id)
+            .get_results(conn)?;
+        if !ids.is_empty() {
+            diesel::update(
+                md_polymer::table
+                    .filter(md_polymer::id.eq(polymer_id))
+                    .filter(md_polymer::match_method.eq(NONE_METHOD)),
+            )
+            .set(md_polymer::match_method.eq(polymer_method(hits)))
+            .execute(conn)?;
+        }
+        Ok(ids)
+    })
+}
+
 /// A polymer's UniProt references, one per part, in sequence order
 pub fn list_polymer_uniprots(
     conn: &mut PgConnection,
@@ -862,6 +917,37 @@ pub fn list_polymer_uniprots(
         .order(md_polymer_uniprot::query_start)
         .select(PolymerUniprot::as_select())
         .load(conn)
+}
+
+/// The UniProt accessions of a simulation's chains (md_chain ->
+/// md_polymer_uniprot -> md_uniprot), each once, by chain order and then
+/// position in the chain: the simulation's UniProt IDs, since
+/// md_simulation_uniprot was dropped (Ken, 2026-10-30)
+pub fn list_simulation_chain_uniprots(
+    conn: &mut PgConnection,
+    sim_id: i64,
+) -> QueryResult<Vec<String>> {
+    let rows: Vec<String> = md_chain::table
+        .inner_join(
+            md_polymer_uniprot::table
+                .on(md_polymer_uniprot::polymer_id.eq(md_chain::polymer_id)),
+        )
+        .inner_join(
+            md_uniprot::table.on(md_uniprot::id.eq(md_polymer_uniprot::uniprot_id)),
+        )
+        .filter(md_chain::simulation_id.eq(sim_id))
+        .order((
+            md_chain::chain_order,
+            md_polymer_uniprot::query_start,
+            md_uniprot::uniprot_id,
+        ))
+        .select(md_uniprot::uniprot_id)
+        .load(conn)?;
+    let mut seen = std::collections::HashSet::new();
+    Ok(rows
+        .into_iter()
+        .filter(|acc| seen.insert(acc.clone()))
+        .collect())
 }
 
 pub fn get_polymer(conn: &mut PgConnection, rid: i64) -> QueryResult<Polymer> {
@@ -1511,8 +1597,7 @@ pub fn delete_simulation_collection(
 }
 
 /// Existing `md_simulation_collection` link id for `(simulation_id,
-/// collection_id)`, so the importer doesn't create a duplicate link (mirrors
-/// `find_simulation_uniprot_id`).
+/// collection_id)`, so the importer doesn't create a duplicate link.
 pub fn find_simulation_collection_id(
     conn: &mut PgConnection,
     sim_id: i64,
@@ -1525,83 +1610,6 @@ pub fn find_simulation_collection_id(
         .select(id)
         .first::<i64>(conn)
         .optional()
-}
-
-// ── md_simulation_uniprot ─────────────────────────────────────────────────────
-
-fn simulation_uniprot_query(
-    sim_id: Option<i64>,
-    upid: Option<i64>,
-) -> md_simulation_uniprot::BoxedQuery<'static, Pg> {
-    use crate::schema::md_simulation_uniprot::dsl::*;
-    let mut q = md_simulation_uniprot.into_boxed();
-    if let Some(s) = sim_id {
-        q = q.filter(simulation_id.eq(s));
-    }
-    if let Some(u) = upid {
-        q = q.filter(uniprot_id.eq(u));
-    }
-    q
-}
-
-pub fn list_simulation_uniprots(
-    conn: &mut PgConnection,
-    sim_id: Option<i64>,
-    upid: Option<i64>,
-    all: bool,
-    lim: Option<i64>,
-    offset: Option<i64>,
-) -> QueryResult<(i64, Vec<SimulationUniprot>)> {
-    use crate::schema::md_simulation_uniprot::dsl::id;
-    let count = simulation_uniprot_query(sim_id, upid)
-        .select(count_star())
-        .first(conn)?;
-    let mut q = simulation_uniprot_query(sim_id, upid)
-        .order(id.desc())
-        .select(SimulationUniprot::as_select());
-    if !all {
-        q = q.limit(limit(lim)).offset(offset.unwrap_or(0));
-    }
-    let results = q.load(conn)?;
-    Ok((count, results))
-}
-
-pub fn get_simulation_uniprot(
-    conn: &mut PgConnection,
-    rid: i64,
-) -> QueryResult<SimulationUniprot> {
-    md_simulation_uniprot::table
-        .find(rid)
-        .select(SimulationUniprot::as_select())
-        .first(conn)
-}
-
-pub fn insert_simulation_uniprot(
-    conn: &mut PgConnection,
-    new: NewSimulationUniprot,
-) -> QueryResult<SimulationUniprot> {
-    diesel::insert_into(md_simulation_uniprot::table)
-        .values(&new)
-        .returning(SimulationUniprot::as_returning())
-        .get_result(conn)
-}
-
-pub fn update_simulation_uniprot(
-    conn: &mut PgConnection,
-    rid: i64,
-    cs: SimulationUniprotUpdate,
-) -> QueryResult<SimulationUniprot> {
-    diesel::update(md_simulation_uniprot::table.find(rid))
-        .set(&cs)
-        .returning(SimulationUniprot::as_returning())
-        .get_result(conn)
-}
-
-pub fn delete_simulation_uniprot(
-    conn: &mut PgConnection,
-    rid: i64,
-) -> QueryResult<usize> {
-    diesel::delete(md_simulation_uniprot::table.find(rid)).execute(conn)
 }
 
 // ── md_software ───────────────────────────────────────────────────────────────
@@ -2693,21 +2701,6 @@ pub fn find_uniprot_id_by_accession(
         .optional()
 }
 
-/// Existing `md_simulation_uniprot` link id for `(simulation_id, uniprot_id)`.
-pub fn find_simulation_uniprot_id(
-    conn: &mut PgConnection,
-    sim_id: i64,
-    uniprot_pk: i64,
-) -> QueryResult<Option<i64>> {
-    use crate::schema::md_simulation_uniprot::dsl::*;
-    md_simulation_uniprot
-        .filter(simulation_id.eq(sim_id))
-        .filter(uniprot_id.eq(uniprot_pk))
-        .select(id)
-        .first::<i64>(conn)
-        .optional()
-}
-
 /// PDB row id for a PDB code (`md_pdb.pdb_id`, the string code — not the primary
 /// key). The script lowercases the code before looking it up.
 pub fn find_pdb_id_by_code(
@@ -2840,23 +2833,5 @@ pub fn set_chain_order(
     use crate::schema::md_chain::dsl as c;
     diesel::update(c::md_chain.find(rid))
         .set(c::chain_order.eq(order))
-        .execute(conn)
-}
-
-/// Delete a simulation's `md_simulation_uniprot` links. Used on the reprocess
-/// path.
-///
-/// This clears the join rows only; the `md_uniprot` accessions they point at
-/// are shared across simulations and are left alone. `upsert_uniprot` is
-/// find-or-insert like the replicate case, so a correction made between two
-/// uploads otherwise leaves both the corrected and the mistaken link behind —
-/// simulation 84214 carried a stale `P01892` that way.
-pub fn delete_uniprots_for_simulation(
-    conn: &mut PgConnection,
-    sim_id: i64,
-) -> QueryResult<usize> {
-    use crate::schema::md_simulation_uniprot::dsl as su;
-
-    diesel::delete(su::md_simulation_uniprot.filter(su::simulation_id.eq(sim_id)))
         .execute(conn)
 }

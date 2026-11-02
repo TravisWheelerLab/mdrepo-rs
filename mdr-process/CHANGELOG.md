@@ -11,7 +11,56 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
-## 0.20.0 (unreleased)
+## 0.21.0 (unreleased)
+
+- **UniProt IDs are kept only on the chains, and a declared one only when
+  it passes against a chain** (Travis, 2026-10-22, MDR-104; Ken,
+  2026-10-30). The import no longer writes `md_simulation_uniprot`, which
+  linked every declared ID to the simulation unchecked (or the top
+  Swiss-Prot hit when none was declared); md-repo-app drops the table.
+  A simulation's UniProt IDs are its chains' references
+  (md_chain -> md_polymer_uniprot), which `mdr-export` now writes as
+  `uniprot_ids`.
+- **The old UniProt search is gone** (`get_uniprot_entries`,
+  `blast_uniprot`): a Swiss-Prot BLAST on every import with a protein,
+  plus isoform and TrEMBL searches when a declared ID was not hit, whose
+  only result was that table and a few warnings. Declared IDs are
+  compared with the chains pairwise (`blastp -subject`), as they already
+  were for the chains' references, and the databases are searched only
+  for a polymer no candidate passes.
+- **Every declared UniProt ID that passes is recorded.** A polymer has one
+  reference, so a second declared ID that also passed (two entries with
+  one sequence) was dropped; it is now another `declared`
+  md_polymer_uniprot row (`PolymerLookup::other_declared`). A declared ID
+  that passes against a polymer an earlier simulation looked up is added
+  to it the same way (`import::add_declared_references`), where before
+  the polymer's first lookup was all that was kept. A polymer that was
+  `none` becomes `declared`. Needs md-repo-app's migration replacing
+  md_polymer_uniprot's unique (polymer_id, query_start) with
+  (polymer_id, uniprot_id, query_start); before it, a declared entry at
+  the start of an existing row is skipped, not an error.
+- **A peptide too short for BLAST is found in its declared entries**
+  (Ken, 2026-10-30). A protein chain of 5 to 19 residues was always
+  `none`; now each declared UniProt entry that contains its sequence
+  exactly is a `declared` reference at 100% identity
+  (`reference::peptide_lookup`), with no BLAST and no SIFTS. On the
+  laptop copy of prod this keeps 1,705 md_simulation_uniprot links, such
+  as coactivator peptides bound to nuclear receptors, that would have
+  failed.
+- **A declared ID is confirmed more loosely than a reference is chosen**
+  (`reference::confirms_declared`, Ken, 2026-10-30): besides the pass
+  rule, over half the chain at 95% identity (an antibody's constant
+  domain), or 90% of it at 90% identity whatever the mismatches (a
+  drug-resistant HIV protease). A peptide of 8 or more residues may
+  differ from its declared entry by one substitution (6qhl's p65 E49R).
+  The reference is still chosen by the pass rule.
+- `backfill-declared-uniprot` reports `rejected` for an entry that aligns
+  to nothing when every protein chain has a reference of its own: a
+  protein that was not simulated (BRIL, T4 lysozyme).
+- A declared ID that passes against no chain is reported as not recorded
+  (`declared_not_referenced`), now also when no chain has a reference.
+
+## 0.20.0
 
 - **A declared UniProt ID that UniProt will never serve no longer leaves
   the chains untried.** If a candidate's entry could not be fetched, the

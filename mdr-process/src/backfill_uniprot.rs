@@ -584,6 +584,7 @@ mod tests {
         PolymerLookup {
             match_method: method.into(),
             hits: vec![],
+            other_declared: vec![],
         }
     }
 
