@@ -4446,11 +4446,13 @@ ALTER TABLE ONLY public.socialaccount_socialaccount
 
 INSERT INTO public.md_processed_file_type (name) VALUES
     ('Full Trajectories (All)'),
+    ('Minimal GRO structure'),
     ('Minimal structure'),
     ('Minimal topology'),
     ('Minimal Trajectories (All)'),
     ('Minimal trajectory'),
     ('Preview image'),
+    ('Processed GRO structure'),
     ('Processed structure'),
     ('Processed topology'),
     ('Processed trajectory'),
