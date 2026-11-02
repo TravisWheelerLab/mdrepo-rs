@@ -1,7 +1,18 @@
 use clap::{Parser, ValueEnum, builder::PossibleValue};
 use std::{fmt, path::PathBuf};
 
+/// The version and the commit it was built from, e.g. `0.1.1 (048d03d)`.
+/// The commit comes from build.rs.
+pub const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("MDR_EXPORT_COMMIT"),
+    ")"
+);
+
+/// Export simulations' metadata from the MDRepo database
 #[derive(Debug, Parser)]
+#[command(version = VERSION, about)]
 pub struct Args {
     /// Simulation IDs
     #[arg(short('i'), long, value_name = "ID", num_args = 0..)]
