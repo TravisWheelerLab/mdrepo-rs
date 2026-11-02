@@ -11,6 +11,17 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.23.1 (unreleased)
+
+- **sha2 0.10 -> 0.11, with the stored hashes unchanged.** sha2 0.11's
+  digest no longer formats with `{:x}`; the three hashes the database keys
+  on (`unique_file_hash` -> md_simulation.unique_file_hash_string,
+  `import::residues_hash` -> md_polymer.residues_hash, `sha256_of_file`)
+  now go through one helper, `process::sha256_hex`. A new test pins all
+  three to `sha256sum`'s output, written and passing on sha2 0.10 before
+  the bump; the old `unique_file_hash` test compared sha2 with itself.
+  Split out of Dependabot's #62, which failed to build on this.
+
 ## 0.23.0 (unreleased)
 
 - **A declared UniProt ID aligned over 80 or more of the chain's residues

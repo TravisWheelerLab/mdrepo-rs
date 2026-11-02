@@ -23,7 +23,7 @@ use log::{debug, warn};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
-use sha2::{Digest as Sha2Digest, Sha256};
+use sha2::Sha256;
 use std::{
     collections::{HashMap, HashSet},
     env,
@@ -2375,9 +2375,18 @@ pub fn same_query(results: &Path, query: &Path, query_text: &str) -> bool {
 /// The SHA-256 of a file, as hex
 pub fn sha256_of_file(path: &Path) -> Result<String> {
     let bytes = fs::read(path).map_err(|e| anyhow!("{}: {e}", path.display()))?;
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(sha256_hex(&bytes))
+}
+
+/// The lower-case hex SHA-256 of `bytes`: the one place the stored hashes
+/// are made (`unique_file_hash`, `import::residues_hash`, `sha256_of_file`;
+/// pinned to `sha256sum` by `sha256_strings_match_sha256sum`). sha2 0.11's
+/// digest no longer formats with `{:x}`, so each byte is written here.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 // --------------------------------------------------
@@ -3168,9 +3177,7 @@ pub fn get_file_md5s(meta: &Meta, input_dir: &Path) -> Vec<String> {
 /// (2026-10-21). Simulations imported before carry the joined form, which
 /// [`legacy_unique_file_hash`] still produces for `import` to match them by.
 pub fn unique_file_hash(md5s: &[String]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(legacy_unique_file_hash(md5s).as_bytes());
-    format!("{:x}", hasher.finalize())
+    sha256_hex(legacy_unique_file_hash(md5s).as_bytes())
 }
 
 /// The form `unique_file_hash_string` took before it was digested: the sorted
@@ -5103,13 +5110,43 @@ mol_id: No ligand-like residue found in minimal.pdb
         assert!(digest.chars().all(|c| c.is_ascii_hexdigit()));
         assert_eq!(legacy_unique_file_hash(&few), format!("{a},{b}"));
 
-        let mut hasher = Sha256::new();
-        hasher.update(format!("{a},{b}").as_bytes());
-        assert_eq!(digest, format!("{:x}", hasher.finalize()));
+        // `printf '%s' "$a,$b" | sha256sum`: independent of sha2, so a
+        // dependency bump cannot change the stored strings unnoticed
+        assert_eq!(
+            digest,
+            "ba0bc0b28b19a838dda280b5223690ccfd4a1bd50361c416dcff46e60a6fed5a"
+        );
 
         let many: Vec<String> = (0..100).map(|i| format!("{i:032x}")).collect();
         assert_eq!(unique_file_hash(&many).len(), 64);
         assert!(legacy_unique_file_hash(&many).len() > 2704);
         assert_ne!(unique_file_hash(&many), digest);
+    }
+
+    /// The three SHA-256 strings the database keys on, pinned to
+    /// `sha256sum`'s output: `md_simulation.unique_file_hash_string`
+    /// (`unique_file_hash`, above), `md_polymer.residues_hash`
+    /// (`import::residues_hash`) and file checksums (`sha256_of_file`). If
+    /// one changes, an import no longer finds the rows it made before and
+    /// writes duplicates.
+    #[test]
+    fn sha256_strings_match_sha256sum() {
+        let codes = |s: &[&str]| s.iter().map(|c| c.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            crate::import::residues_hash(&codes(&["ALA", "GLY", "SER"])),
+            "63b3cf80d5e087c26e9c9bea0ba797ae59489bf46ae4996ab8b53175bcb9c59a"
+        );
+        assert_eq!(
+            crate::import::residues_hash(&[]),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("abc.txt");
+        fs::write(&file, "abc").unwrap();
+        assert_eq!(
+            sha256_of_file(&file).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 }
