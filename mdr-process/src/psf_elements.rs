@@ -34,7 +34,7 @@ use log::{debug, warn};
 use std::{collections::HashMap, fs, path::Path};
 
 /// Standard atomic weights of the elements biomolecular simulations hold.
-const WEIGHTS: &[(&str, f64)] = &[
+pub(crate) const WEIGHTS: &[(&str, f64)] = &[
     ("H", 1.008),
     ("LI", 6.94),
     ("B", 10.81),

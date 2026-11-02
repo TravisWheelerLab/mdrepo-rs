@@ -1,6 +1,6 @@
 use crate::{
     import::{self, ImportOpts},
-    psf_elements, reference, sequence,
+    psf_elements, psf_writer, reference, sequence,
     ticket::dsn_for,
     types::{
         CheckedLigand, DoiAuthor, DoiPaper, Duration, Export, ExportSimulation,
@@ -19,7 +19,7 @@ use libmdrepo::{
     constants,
     metadata::{self, Meta, MetaCheckOptions},
 };
-use log::debug;
+use log::{debug, warn};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
@@ -776,13 +776,31 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
     // repartitioned hydrogen as helium. Everything downstream -- the ligand
     // inference, the sequence, the thumbnail -- reads these two files.
     let top = args.input_dir.join(args.topology_file_name);
-    let warnings = if psf_elements::is_psf(&top) {
+    let mut warnings = if psf_elements::is_psf(&top) {
         psf_elements::fix_psf_elements(&top, &[&full_pdb, &min_pdb])?
     } else {
         vec![]
     };
 
     let is_coarse_grained = check_coarse_grained(&full_pdb, &min_pdb)?;
+
+    // The standard .psf pair, after the element fix above (its masses come
+    // from the elements). Not yet a published file: a failure is a warning.
+    let (full_psf, min_psf) = if is_coarse_grained {
+        (None, None)
+    } else {
+        match standard_psfs(&args, &trajectory_dir, &full_pdb, &min_pdb) {
+            Ok((psfs, notes)) => {
+                warnings.extend(notes);
+                (Some(psfs.0), Some(psfs.1))
+            }
+            Err(e) => {
+                warn!("No standard .psf: {e}");
+                warnings.push(format!("The standard .psf was not written: {e}"));
+                (None, None)
+            }
+        }
+    };
 
     sample_trajectory(&min_xtc, &min_pdb, &sampled_xtc, args.script_dir, args.uv)?;
 
@@ -831,6 +849,8 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
     Ok(ProcessedTrajectory {
         full_gro,
         full_pdb,
+        full_psf,
+        min_psf,
         full_xtc,
         min_gro,
         min_pdb,
@@ -845,6 +865,96 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
         source_has_time_axis,
         warnings,
     })
+}
+
+// --------------------------------------------------
+/// Extensions of the uploaded files that may carry bonds; extract_bonds.py
+/// ranks them
+const BOND_SOURCE_EXTS: &[&str] = &["tpr", "psf", "prmtop", "parm7", "top"];
+
+/// Write `full.psf` and `minimal.psf` in `trajectory_dir`: bonds from
+/// simulation-processing `extract_bonds.py` (the upload's best topology
+/// mapped onto full.pdb, or a distance guess), the file from
+/// `psf_writer`. Returns the two paths and any warnings for the submitter.
+fn standard_psfs(
+    args: &ProcessTrajectoryArgs,
+    trajectory_dir: &Path,
+    full_pdb: &Path,
+    min_pdb: &Path,
+) -> Result<((PathBuf, PathBuf), Vec<String>)> {
+    let script = args.script_dir.join("extract_bonds.py");
+    if !script.is_file() {
+        bail!(r#"Missing "{}""#, script.display());
+    }
+
+    let mut sources: Vec<PathBuf> = fs::read_dir(args.input_dir)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.is_file()
+                && p.extension().is_some_and(|e| {
+                    BOND_SOURCE_EXTS
+                        .contains(&e.to_string_lossy().to_lowercase().as_str())
+                })
+        })
+        .collect();
+    sources.sort();
+
+    let bonds_tsv = trajectory_dir.join("bonds.tsv");
+    let bonds_json = trajectory_dir.join("bonds.json");
+    let mut cmd = Command::new(args.uv);
+    cmd.current_dir(args.script_dir).args([
+        "run".to_string(),
+        script.to_string_lossy().to_string(),
+        "--pdb".into(),
+        full_pdb.to_string_lossy().to_string(),
+        "--out".into(),
+        bonds_tsv.to_string_lossy().to_string(),
+        "--summary".into(),
+        bonds_json.to_string_lossy().to_string(),
+        "--topology".into(),
+    ]);
+    cmd.args(&sources);
+    debug!("Running {cmd:?}");
+    let out = cmd.output()?;
+    if !out.status.success() {
+        bail!(
+            "extract_bonds.py failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+
+    let summary: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&bonds_json)?)?;
+    let source = summary["source"].as_str().unwrap_or("unknown");
+    let title = match summary["source_file"].as_str() {
+        Some(file) => format!("Bonds from {file} ({source})"),
+        None => "Bonds guessed from full.pdb's distances".to_string(),
+    };
+    debug!("Bonds: {title}; {summary}");
+
+    let full_psf = trajectory_dir.join("full.psf");
+    let min_psf = trajectory_dir.join("minimal.psf");
+    let (full, min) = psf_writer::write_psfs(
+        full_pdb, min_pdb, &bonds_tsv, &full_psf, &min_psf, &title,
+    )?;
+    debug!("full.psf {full:?}, minimal.psf {min:?}");
+
+    // For the submitter, only what says the bonds may be wrong: the topology
+    // and the distances disagree, or a bond is implausibly long. Which
+    // source was skipped, and why, is for the log.
+    let mut notes = vec![];
+    for w in summary["warnings"].as_array().into_iter().flatten() {
+        let w = w.as_str().unwrap_or_default();
+        if w.contains("disagree") || w.contains("longer than") {
+            notes.push(format!("Standard .psf: {w}"));
+        } else {
+            debug!("extract_bonds: {w}");
+        }
+    }
+    // (full.long_bonds counts without the periodic image, so it would also
+    // count a molecule split across the box; extract_bonds.py's count, in
+    // the warnings above, is the one that means something.)
+    Ok(((full_psf, min_psf), notes))
 }
 
 // --------------------------------------------------
@@ -3484,6 +3594,8 @@ END
         ProcessedTrajectory {
             full_gro: rep_dir.join("full.gro"),
             full_pdb: rep_dir.join("full.pdb"),
+            full_psf: None,
+            min_psf: None,
             full_xtc: rep_dir.join("full.xtc"),
             min_gro: rep_dir.join("minimal.gro"),
             min_pdb: rep_dir.join("minimal.pdb"),
