@@ -2064,11 +2064,14 @@ fn collect_processed_files(
 ) -> Result<Vec<MdFile>> {
     let mut files = vec![];
 
-    for (file_type, path) in &[
-        ("Processed topology", &example_trajectory.full_gro),
+    // A .gro has coordinates and a box but no bonds, so it is a "GRO
+    // structure" (md-repo-app migration 0298). "topology" is the standard
+    // .psf, when it was written (not for coarse-grained systems).
+    let mut outputs: Vec<(&str, &PathBuf)> = vec![
+        ("Processed GRO structure", &example_trajectory.full_gro),
         ("Processed structure", &example_trajectory.full_pdb),
         ("Processed trajectory", &example_trajectory.full_xtc),
-        ("Minimal topology", &example_trajectory.min_gro),
+        ("Minimal GRO structure", &example_trajectory.min_gro),
         ("Minimal structure", &example_trajectory.min_pdb),
         ("Minimal trajectory", &example_trajectory.min_xtc),
         (
@@ -2076,7 +2079,15 @@ fn collect_processed_files(
             &example_trajectory.sampled_xtc,
         ),
         ("Preview image", &example_trajectory.thumbnail_png),
-    ] {
+    ];
+    if let (Some(full_psf), Some(min_psf)) =
+        (&example_trajectory.full_psf, &example_trajectory.min_psf)
+    {
+        outputs.push(("Processed topology", full_psf));
+        outputs.push(("Minimal topology", min_psf));
+    }
+
+    for (file_type, path) in &outputs {
         let filename = path
             .file_name()
             .ok_or_else(|| anyhow!("No filename for '{}'", path.display()))?
@@ -3584,6 +3595,62 @@ END
             names,
             vec!["CA"; atoms.len()],
             "not every bead was renamed:\n{rewritten}"
+        );
+        Ok(())
+    }
+
+    /// The .gro files are "GRO structure"; "topology" is the standard .psf,
+    /// registered only when it was written.
+    #[test]
+    fn processed_file_types_put_the_psf_under_topology() -> Result<()> {
+        let dir = tempdir()?;
+        let rep = dir.path().join("rep_1");
+        fs::create_dir_all(&rep)?;
+        for name in [
+            "full.gro",
+            "full.pdb",
+            "full.xtc",
+            "minimal.gro",
+            "minimal.pdb",
+            "minimal.xtc",
+            "sampled.xtc",
+            "thumbnail.png",
+            "full.psf",
+            "minimal.psf",
+        ] {
+            fs::write(rep.join(name), name)?;
+        }
+        let types = |traj: &ProcessedTrajectory| -> Result<Vec<(String, String)>> {
+            Ok(collect_processed_files(dir.path(), traj, &[])?
+                .into_iter()
+                .map(|f| (f.file_type, f.name))
+                .filter(|(t, _)| t.contains("topology") || t.contains("GRO"))
+                .collect())
+        };
+
+        let mut traj = fake_trajectory(&rep, "run.xtc");
+        assert_eq!(
+            types(&traj)?,
+            [
+                (
+                    "Processed GRO structure".to_string(),
+                    "full.gro".to_string()
+                ),
+                (
+                    "Minimal GRO structure".to_string(),
+                    "minimal.gro".to_string()
+                ),
+            ]
+        );
+
+        traj.full_psf = Some(rep.join("full.psf"));
+        traj.min_psf = Some(rep.join("minimal.psf"));
+        let got = types(&traj)?;
+        assert!(
+            got.contains(&("Processed topology".to_string(), "full.psf".to_string()))
+        );
+        assert!(
+            got.contains(&("Minimal topology".to_string(), "minimal.psf".to_string()))
         );
         Ok(())
     }

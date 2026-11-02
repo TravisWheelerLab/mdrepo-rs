@@ -11,6 +11,18 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.22.0 (unreleased)
+
+- **The standard `.psf` is published, and the `.gro` files are no longer
+  called topology.** `full.psf` and `minimal.psf` are registered as
+  "Processed topology" and "Minimal topology"; `full.gro` and
+  `minimal.gro` as "Processed GRO structure" and "Minimal GRO structure"
+  (a .gro has coordinates and a box, no bonds; Travis, 2026-10-19). A
+  replicate with no psf (coarse-grained, or the psf could not be
+  written) has no topology file. **Needs md-repo-app migration 0298 on
+  the server first**: md_processed_file.file_type is a foreign key, so
+  without the two new types every import fails.
+
 ## 0.21.1 (unreleased)
 
 - **The standard `.psf` is written for every replicate** (`full.psf` and
