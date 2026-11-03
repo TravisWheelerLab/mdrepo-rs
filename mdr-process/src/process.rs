@@ -1,6 +1,6 @@
 use crate::{
     import::{self, ImportOpts},
-    psf_elements, psf_writer, reference, sequence,
+    mmcif_writer, psf_elements, psf_writer, reference, sequence,
     ticket::dsn_for,
     types::{
         CheckedLigand, DoiAuthor, DoiPaper, Duration, Export, ExportSimulation,
@@ -210,6 +210,16 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
         simulation_id = Some(imported_id);
         warnings.extend(import_warnings);
 
+        // The standard mmCIF pair names the accession, which the import
+        // just made: written now, recorded, and pushed with the rest
+        warnings.extend(add_import_mmcifs(
+            &args.server,
+            imported_id,
+            example_trajectory,
+            &processed_dir,
+            import_json,
+        )?);
+
         let import_result = ImportResult {
             filename: import_json.to_string_lossy().to_string(),
             simulation_id: imported_id,
@@ -276,6 +286,145 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
         blast_elapsed,
         push_elapsed,
     })
+}
+
+// --------------------------------------------------
+/// `mmcif-input.json` beside import.json: what the mmCIF needs from the
+/// import besides the pdbs (`add_import_mmcifs` reads it after the import).
+/// UniProt ranges per structure chain, in the splitter's order; the
+/// ligands whose residue name mol_id.py found, by InChIKey.
+fn save_mmcif_input(
+    processed_dir: &Path,
+    title: &str,
+    chains: &[ImportChain],
+    ligands: &[ResolvedLigand],
+    resname_of: &HashMap<String, String>,
+) -> Result<()> {
+    let references = chains
+        .iter()
+        .filter(|c| c.source == "structure")
+        .map(|c| {
+            c.reference
+                .iter()
+                .flat_map(|r| r.hits.iter().chain(r.other_declared.iter()))
+                .map(|h| mmcif_writer::UniprotRef {
+                    accession: h.uniprot.uniprot_id.clone(),
+                    query_start: h.query_start,
+                    query_end: h.query_end,
+                    reference_start: h.reference_start,
+                    reference_end: h.reference_end,
+                })
+                .collect()
+        })
+        .collect();
+    let ligands = ligands
+        .iter()
+        .filter_map(|l| {
+            let resname = resname_of.get(l.inchikey.as_ref()?)?;
+            Some(mmcif_writer::LigandInfo {
+                resname: resname.clone(),
+                name: l.name.clone(),
+                smiles: l.smiles.clone(),
+                inchikey: l.inchikey.clone(),
+            })
+        })
+        .collect();
+    let input = mmcif_writer::MmcifInput {
+        entry_id: String::new(),
+        title: title.to_string(),
+        references,
+        ligands,
+    };
+    fs::write(
+        processed_dir.join(MMCIF_INPUT),
+        serde_json::to_string_pretty(&input)?,
+    )?;
+    Ok(())
+}
+
+const MMCIF_INPUT: &str = "mmcif-input.json";
+
+// --------------------------------------------------
+/// After the import: write full.mmcif and minimal.mmcif (MDR-110) beside
+/// the example trajectory's pdbs, named by the new accession; record them
+/// in md_processed_file ("Processed/Minimal mmCIF structure", md-repo-app
+/// 0300); and add them to import.json so the push uploads and verifies
+/// them with the rest. A failure to write them is a warning, as for the
+/// psf; a failure to record them is an error, as for any import write.
+fn add_import_mmcifs(
+    server: &Server,
+    sim_id: u32,
+    example: &ProcessedTrajectory,
+    processed_dir: &Path,
+    import_json: &Path,
+) -> Result<Vec<String>> {
+    let mut input: mmcif_writer::MmcifInput =
+        match fs::read_to_string(processed_dir.join(MMCIF_INPUT)) {
+            Ok(text) => serde_json::from_str(&text)?,
+            Err(e) => return Ok(vec![format!("No mmCIF written: {MMCIF_INPUT}: {e}")]),
+        };
+    input.entry_id = format!("MDR{sim_id:08}");
+    let dir = Path::new(&example.directory_name);
+    let bonds = dir.join("bonds.tsv");
+    let (full, min) = (dir.join("full.mmcif"), dir.join("minimal.mmcif"));
+    if let Err(e) = mmcif_writer::write_mmcifs(
+        &example.full_pdb,
+        &example.min_pdb,
+        bonds.is_file().then_some(bonds.as_path()),
+        &full,
+        &min,
+        &input,
+    ) {
+        warn!("No mmCIF: {e}");
+        return Ok(vec![format!("The standard mmCIF was not written: {e}")]);
+    }
+
+    let mut files = vec![];
+    for (file_type, path) in [
+        ("Processed mmCIF structure", &full),
+        ("Minimal mmCIF structure", &min),
+    ] {
+        let name = path
+            .file_name()
+            .ok_or_else(|| anyhow!("No filename for '{}'", path.display()))?
+            .to_string_lossy()
+            .to_string();
+        let link = processed_dir.join(&name);
+        if link.exists() || link.is_symlink() {
+            fs::remove_file(&link)?;
+        }
+        std::os::unix::fs::symlink(path, &link)?;
+        files.push(MdFile {
+            name,
+            file_type: file_type.to_string(),
+            size: path.metadata()?.len(),
+            md5_sum: get_md5(path)?,
+            description: None,
+            is_primary: None,
+        });
+    }
+
+    let env_key = dsn_for(server);
+    let url = env::var(env_key).map_err(|e| anyhow!("{env_key}: {e}"))?;
+    let mut conn =
+        mdr_db::connect(&url).map_err(|e| anyhow!("Failed to connect: {e}"))?;
+    import::add_processed_files(&mut conn, i64::from(sim_id), &files)?;
+
+    let mut json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(import_json)?)?;
+    let list = json["processed_files"]
+        .as_array_mut()
+        .ok_or_else(|| anyhow!("{}: no processed_files", import_json.display()))?;
+    list.retain(|f| {
+        !files
+            .iter()
+            .any(|n| f["name"].as_str() == Some(n.name.as_str()))
+    });
+    for f in &files {
+        list.push(serde_json::to_value(f)?);
+    }
+    fs::write(import_json, serde_json::to_string_pretty(&json)?)?;
+    Ok(vec![])
 }
 
 // --------------------------------------------------
@@ -1914,6 +2063,13 @@ pub fn make_import_json(
     ));
     let blast_elapsed = blast_start.elapsed();
 
+    // For the mmCIF (written after the import, MDR-110): which residue name
+    // each inferred ligand is, by InChIKey
+    let resname_of: HashMap<String, String> = inferred_ligands
+        .iter()
+        .map(|l| (l.structure.inchikey.clone(), l.structure.resname.clone()))
+        .collect();
+
     let (ligands, ligand_warnings) = resolve_ligands(
         args.meta.ligands.as_ref(),
         inferred_ligands,
@@ -1953,6 +2109,14 @@ pub fn make_import_json(
         args.processed_dir,
         args.example_trajectory,
         args.trajectory_tarballs,
+    )?;
+
+    save_mmcif_input(
+        args.processed_dir,
+        &args.meta.short_description,
+        &chains,
+        &ligands,
+        &resname_of,
     )?;
 
     let mut papers: Vec<metadata::Paper> = args.meta.papers.unwrap_or_default();

@@ -32,6 +32,7 @@
 //! residue name and coordinates must be the pdb's, or it is removed.
 
 use anyhow::{Result, anyhow, bail};
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
     fmt::Write as _,
@@ -46,7 +47,7 @@ use crate::{
 
 /// One UniProt range on a chain: positions in the chain's residues (caps
 /// excluded, 1-based) and in the UniProt sequence, as md_polymer_uniprot
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct UniprotRef {
     pub accession: String,
     pub query_start: i32,
@@ -56,7 +57,7 @@ pub struct UniprotRef {
 }
 
 /// A ligand whose residue name in the pdb is known
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct LigandInfo {
     pub resname: String,
     pub name: String,
@@ -65,7 +66,7 @@ pub struct LigandInfo {
 }
 
 /// What the writer needs besides the pdb
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct MmcifInput {
     /// `_entry.id`: the MDR accession, e.g. MDR00105918
     pub entry_id: String,
