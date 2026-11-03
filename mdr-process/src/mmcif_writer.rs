@@ -9,8 +9,9 @@
 //!   - entities: one per polymer (same polymer type, caps and residues = the
 //!     same entity, so a homodimer's chains share one), one per ligand
 //!     residue name, one for water, one per ion name;
-//!   - chains: `auth_asym_id` is the pdb's chain ID (blank -> the label),
-//!     so Mol* colors as with the pdb; `label_asym_id` is one per polymer
+//!   - chains: `auth_asym_id` is the pdb's chain ID, so Mol* colors as
+//!     with the pdb; a blank one outside every chain is WAT, ION or HET,
+//!     the psf's segments; `label_asym_id` is one per polymer
 //!     chain, one per other molecule (residue), one for all water, one per
 //!     ion name, as the PDB does;
 //!   - the chain table's sequences (`_entity_poly`, `_entity_poly_seq`;
@@ -398,12 +399,22 @@ pub fn mmcif_text(
         }
     }
 
+    // auth_asym_id: the pdb's chain ID. Blank on a chain (a file left as
+    // written): the chain's label. Blank outside every chain: WAT, ION or
+    // HET, the psf's segments for the same atoms (Ken, 2026-11-03), so a
+    // membrane is not hundreds of chains
     let auth_asym = |r: usize| -> String {
         let a = &atoms[residues[r].first_atom];
-        if a.chain.is_empty() {
-            sites[r].asym.clone()
-        } else {
+        if !a.chain.is_empty() {
             a.chain.clone()
+        } else if residues[r].chain.is_some() {
+            sites[r].asym.clone()
+        } else if residues[r].water {
+            "WAT".to_string()
+        } else if residues[r].ion {
+            "ION".to_string()
+        } else {
+            "HET".to_string()
         }
     };
     let ligand_of: HashMap<&str, &LigandInfo> = input
@@ -1179,6 +1190,15 @@ mod tests {
         let back = read_back(&text).unwrap();
         assert_eq!(back.len(), 24);
         assert_eq!(back[6].0, "SG");
+        // the ligand and the water, blank in the pdb: HET and WAT
+        assert!(
+            text.lines()
+                .any(|l| l.starts_with("ATOM 21 ") && l.contains(" HET "))
+        );
+        assert!(
+            text.lines()
+                .any(|l| l.starts_with("ATOM 23 ") && l.contains(" WAT "))
+        );
     }
 
     #[test]
