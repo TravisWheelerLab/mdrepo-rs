@@ -199,10 +199,19 @@ fn run(args: Cli) -> Result<()> {
                 ),
             };
             let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
-            let report =
-                process::standardize(&args.input_dir, &args.out_dir, &script_dir, &uv)?;
+            let mmcif_from = match (&args.server, args.simulation_id) {
+                (Some(server), Some(id)) => Some((server, id)),
+                _ => None,
+            };
+            let report = process::standardize(
+                &args.input_dir,
+                &args.out_dir,
+                &script_dir,
+                &uv,
+                mmcif_from,
+            )?;
             println!(
-                "{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}",
                 args.input_dir.display(),
                 report["chains"]
                     .as_array()
@@ -214,6 +223,7 @@ fn run(args: Cli) -> Result<()> {
                     .unwrap_or_default(),
                 report["pdb_changed"],
                 report["psf"]["status"].as_str().unwrap_or(""),
+                report["mmcif"]["status"].as_str().unwrap_or(""),
                 report["thumbnail"].as_str().unwrap_or(""),
             );
             Ok(())
