@@ -108,6 +108,11 @@ pub enum Command {
     /// (MDR-106 + psf backfill); the inputs are not changed
     Standardize(StandardizeArgs),
 
+    /// Write full.mmcif and minimal.mmcif from full.pdb and minimal.pdb
+    /// (MDR-110), without the database: chains, entities, sequences, box,
+    /// and the links in --bonds
+    WriteMmcif(WriteMmcifArgs),
+
     /// Fill md_chain, md_polymer and the polymers' UniProt references for
     /// simulations imported before mdr-process wrote them
     BackfillChains(BackfillArgs),
@@ -227,6 +232,30 @@ pub struct BackfillDeclaredUniprotArgs {
     /// give the real run its dry run's, so it compares the same entries
     #[arg(short, long, value_name = "DIR")]
     pub work_dir: PathBuf,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Parser)]
+pub struct WriteMmcifArgs {
+    /// full.pdb
+    #[arg(long, value_name = "PDB")]
+    pub full: PathBuf,
+
+    /// minimal.pdb
+    #[arg(long, value_name = "PDB")]
+    pub minimal: PathBuf,
+
+    /// extract_bonds.py's bonds.tsv for full.pdb
+    #[arg(long, value_name = "TSV")]
+    pub bonds: Option<PathBuf>,
+
+    /// _entry.id, e.g. MDR00105918
+    #[arg(long, default_value = "")]
+    pub id: String,
+
+    /// Where full.mmcif and minimal.mmcif go
+    #[arg(short, long, value_name = "DIR")]
+    pub out_dir: PathBuf,
 }
 
 // --------------------------------------------------

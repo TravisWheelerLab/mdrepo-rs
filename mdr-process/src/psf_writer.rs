@@ -260,7 +260,7 @@ fn block_letter(block: usize) -> String {
 
 // --------------------------------------------------
 /// The element column, or a guess from the atom name
-fn element_of(column: &str, name: &str) -> String {
+pub(crate) fn element_of(column: &str, name: &str) -> String {
     let col = column.trim().to_uppercase();
     if !col.is_empty() && col.chars().all(|c| c.is_ascii_alphabetic()) {
         return col;
