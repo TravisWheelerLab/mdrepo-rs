@@ -103,6 +103,11 @@ pub enum Command {
     /// results to another directory; the inputs are not changed
     LabelChains(LabelChainsArgs),
 
+    /// Bring one existing simulation's full.pdb/minimal.pdb, psf pair and
+    /// thumbnail up to what an import writes now, into another directory
+    /// (MDR-106 + psf backfill); the inputs are not changed
+    Standardize(StandardizeArgs),
+
     /// Fill md_chain, md_polymer and the polymers' UniProt references for
     /// simulations imported before mdr-process wrote them
     BackfillChains(BackfillArgs),
@@ -222,6 +227,24 @@ pub struct BackfillDeclaredUniprotArgs {
     /// give the real run its dry run's, so it compares the same entries
     #[arg(short, long, value_name = "DIR")]
     pub work_dir: PathBuf,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Parser)]
+pub struct StandardizeArgs {
+    /// Holds full.pdb, minimal.pdb, the upload topology to take bonds from
+    /// (.tpr, .psf, .prmtop, .parm7 or .top; none means guessed bonds) and
+    /// optionally sampled.xtc (for the thumbnail)
+    #[arg(short, long, value_name = "DIR")]
+    pub input_dir: PathBuf,
+
+    /// Where the changed and new files go, with report.json
+    #[arg(short, long, value_name = "DIR")]
+    pub out_dir: PathBuf,
+
+    /// Script directory (simulation-processing/python); default $SCRIPT_DIR
+    #[arg(short('S'), long, value_name = "SCRIPT_DIR")]
+    pub script_dir: Option<PathBuf>,
 }
 
 // --------------------------------------------------

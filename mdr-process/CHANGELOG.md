@@ -11,6 +11,26 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.25.0 (unreleased)
+
+- **psf segments for atoms outside every chain: WAT, ION, HET** (Ken,
+  2026-11-03). cpptraj writes a TER after every molecule, and a segment
+  per TER block gave every water its own segment (MDR00087113: 131,294
+  segments; since 0.22.0, new imports too). Now a blank-ID atom is in
+  WAT (water), ION (one-atom residue) or HET (anything else: ligands,
+  lipids), its residues numbered 1, 2, 3... in file order within each, so
+  each stays distinct where the pdb repeats numbers (MDR00000778's waters
+  are all residue 1). Chains keep their letter as the segment; a file with
+  no chain ID at all keeps a segment per TER block for what is not water
+  or an ion. A minimal.psf atom takes the segment and residue number of
+  its full.pdb atom, so the pair agree. `psf_writer::blank_segments`.
+- **`mdr-process standardize -i DIR -o DIR`** for the MDR-106 + psf
+  backfill (PLAN-2026-11-03-chain-ids-psf-backfill.md): one existing
+  simulation's full.pdb/minimal.pdb (chain-ID rule), psf pair, and a
+  thumbnail where 2+ chains were relettered, by the same code as an import,
+  into another directory with report.json; the inputs are not changed.
+  `standard_psfs` now takes paths instead of the import's arguments.
+
 ## 0.24.0 (unreleased)
 
 - **One rule for the chain IDs of full.pdb and minimal.pdb (MDR-106,

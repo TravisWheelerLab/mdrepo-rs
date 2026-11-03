@@ -16,11 +16,11 @@
 //! minimal file drops whole residues, so the first match onward is the right
 //! one. A bond is kept in `minimal.psf` when both its atoms are.
 //!
-//! The segment of an atom is its chain ID. Where the chain column is blank
-//! throughout (files from before MDR-106, or with more chains than letters),
-//! each TER-separated block is a segment, lettered from A. Where only some
-//! atoms are blank (since MDR-106 every polymer chain has a letter and the
-//! rest stay blank), the blank ones are S1, S2, ... by TER block.
+//! The segment of an atom is its chain ID. An atom with a blank chain
+//! column (outside every chain, since MDR-106) is in segment WAT, ION or
+//! HET, with its residues numbered 1, 2, 3... (`blank_segments`). A
+//! minimal.psf atom takes the segment and residue number of its full.pdb
+//! atom.
 //!
 //! Each file written is read back with `psf_elements::parse_psf` and must
 //! hold the atoms and bonds it was given, or it is removed: a half-written
@@ -73,8 +73,16 @@ pub fn write_psfs(
     }
     let bonds = read_bonds(&fs::read_to_string(bonds_tsv)?, full.len())?;
 
+    let mut min = min;
     let in_full =
         find_in_full(&min, &full).map_err(|e| anyhow!("{}: {e}", min_pdb.display()))?;
+    // The pair names each residue alike: a minimal atom takes the segment
+    // and residue number of its full.pdb atom (minimal drops water and
+    // ions, so its own WAT/ION/HET numbering would differ)
+    for (m, &f) in in_full.iter().enumerate() {
+        min[m].segid = full[f].segid.clone();
+        min[m].resid = full[f].resid.clone();
+    }
     let to_min: HashMap<usize, usize> =
         in_full.iter().enumerate().map(|(m, &f)| (f, m)).collect();
     let min_bonds: Vec<(usize, usize)> = bonds
@@ -175,22 +183,69 @@ pub fn read_pdb(text: &str) -> Vec<PdbAtom> {
         block_has_atoms = true;
     }
 
-    // Where no atom has a chain ID, each TER block is a segment lettered
-    // from A. Where some do (since MDR-106, every polymer chain), the atoms
-    // left blank (ligands, ions, water) are S1, S2, ... by TER block, which
-    // no one-letter chain ID can equal.
-    let any_chain_id = atoms.iter().any(|a| !a.segid.starts_with('\0'));
-    for atom in &mut atoms {
-        if let Some(block) = atom.segid.strip_prefix('\0') {
-            let block: usize = block.parse().unwrap_or(0);
-            atom.segid = if any_chain_id {
-                format!("S{}", block + 1)
-            } else {
-                block_letter(block)
-            };
-        }
-    }
+    blank_segments(&mut atoms);
     atoms
+}
+
+// --------------------------------------------------
+/// Segments for the atoms whose chain column is blank (each marked
+/// "\0<TER block>" by `read_pdb`). Since MDR-106 every polymer chain has a
+/// letter, so these are what lies outside the chains. cpptraj writes a TER
+/// after every molecule, and a segment per TER block made one segment per
+/// water (MDR00087113: 131,294). Instead (Ken, 2026-11-03):
+///
+///   - WAT: water (`sequence::WATER` names); ION: one-atom residues; HET:
+///     everything else (ligands, lipids). Residues are numbered 1, 2, 3...
+///     in file order within each, so each stays distinct where the pdb
+///     repeats numbers (MDR00000778's waters are all residue 1).
+///   - In a file with no chain ID at all (no polymer chain, or one left as
+///     written), what is not water or an ion keeps a segment per TER block,
+///     lettered A, B, ...
+///
+/// A residue here is a run of atoms with the same TER block, residue name
+/// and residue number.
+fn blank_segments(atoms: &mut [PdbAtom]) {
+    let any_chain_id = atoms.iter().any(|a| !a.segid.starts_with('\0'));
+    let mut counts: HashMap<&'static str, usize> = HashMap::new();
+    let mut i = 0;
+    while i < atoms.len() {
+        let Some(block) = atoms[i].segid.strip_prefix('\0').map(str::to_string) else {
+            i += 1;
+            continue;
+        };
+        let mut j = i + 1;
+        while j < atoms.len()
+            && atoms[j].segid == atoms[i].segid
+            && atoms[j].resname == atoms[i].resname
+            && atoms[j].resid == atoms[i].resid
+        {
+            j += 1;
+        }
+        let resname = atoms[i].resname.to_uppercase();
+        let class = if crate::sequence::WATER.contains(&resname.as_str()) {
+            Some("WAT")
+        } else if j - i == 1 {
+            Some("ION")
+        } else if any_chain_id {
+            Some("HET")
+        } else {
+            None
+        };
+        for atom in &mut atoms[i..j] {
+            match class {
+                Some(seg) => atom.segid = seg.to_string(),
+                None => atom.segid = block_letter(block.parse().unwrap_or(0)),
+            }
+        }
+        if let Some(seg) = class {
+            let n = counts.entry(seg).or_insert(0);
+            *n += 1;
+            for atom in &mut atoms[i..j] {
+                atom.resid = n.to_string();
+            }
+        }
+        i = j;
+    }
 }
 
 // --------------------------------------------------
@@ -412,10 +467,11 @@ mod tests {
     }
 
     #[test]
-    fn blank_chains_become_one_segment_per_ter_block() {
+    fn with_no_chain_id_at_all_ter_blocks_are_segments_but_water_is_wat() {
         let atoms = read_pdb(&blank_chain_pdb());
         let segs: Vec<&str> = atoms.iter().map(|a| a.segid.as_str()).collect();
-        assert_eq!(segs, ["A", "A", "B", "B", "C", "C"]);
+        assert_eq!(segs, ["A", "A", "B", "B", "WAT", "WAT"]);
+        assert_eq!(atoms[4].resid, "1");
         assert_eq!(atoms[4].resname, "TIP3");
         assert_eq!(atoms[5].element, "H");
     }
@@ -431,15 +487,47 @@ mod tests {
     }
 
     #[test]
-    fn blank_atoms_beside_lettered_chains_are_s_segments() {
-        // Two lettered chains (MDR-106), then a blank ligand, TER, blank water
-        let pdb = atom(1, "N", "ALA", 'A', 1, "N", 0.0)
+    fn blank_atoms_beside_lettered_chains_are_wat_ion_het_renumbered() {
+        // Two lettered chains (MDR-106), then a blank two-atom ligand, TER,
+        // a lipid, three waters all numbered 1 with a TER after each
+        // (MDR00000778's shape), and an ion
+        let mut pdb = atom(1, "N", "ALA", 'A', 1, "N", 0.0)
             + &atom(2, "N", "GLY", 'B', 1, "N", 30.0)
-            + &atom(3, "C1", "LIG", ' ', 2, "C", 60.0)
+            + &atom(3, "C1", "LIG", ' ', 900, "C", 60.0)
+            + &atom(4, "O1", "LIG", ' ', 900, "O", 61.0)
             + "TER\n"
-            + &atom(4, "O", "HOH", ' ', 3, "O", 90.0);
-        let segs: Vec<String> = read_pdb(&pdb).into_iter().map(|a| a.segid).collect();
-        assert_eq!(segs, ["A", "B", "S1", "S2"]);
+            + &atom(5, "P", "POPC", ' ', 7, "P", 70.0)
+            + &atom(6, "N", "POPC", ' ', 7, "N", 71.0)
+            + "TER\n";
+        for (k, x) in [(7, 80.0), (9, 82.0), (11, 84.0)] {
+            pdb += &atom(k, "OH2", "TIP3", ' ', 1, "O", x);
+            pdb += &atom(k + 1, "H1", "TIP3", ' ', 1, "H", x + 0.96);
+            pdb += "TER\n";
+        }
+        pdb += &atom(13, "SOD", "SOD", ' ', 5, "NA", 90.0);
+        let atoms = read_pdb(&pdb);
+        let got: Vec<(&str, &str)> = atoms
+            .iter()
+            .map(|a| (a.segid.as_str(), a.resid.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("A", "1"),
+                ("B", "1"),
+                ("HET", "1"),
+                ("HET", "1"),
+                ("HET", "2"),
+                ("HET", "2"),
+                ("WAT", "1"),
+                ("WAT", "1"),
+                ("WAT", "2"),
+                ("WAT", "2"),
+                ("WAT", "3"),
+                ("WAT", "3"),
+                ("ION", "1"),
+            ]
+        );
     }
 
     #[test]
@@ -454,7 +542,7 @@ mod tests {
         assert!((back.masses[1] - 12.011).abs() < 1e-6);
         assert!((back.masses[5] - 1.008).abs() < 1e-6);
         assert!(back.residues[0].starts_with("A 1 ALA"));
-        assert!(back.residues[4].starts_with("C 3 TIP3"));
+        assert!(back.residues[4].starts_with("WAT 1 TIP3"));
         assert!(text.contains("* bonds from test.psf"));
     }
 

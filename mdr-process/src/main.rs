@@ -173,6 +173,34 @@ fn run(args: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Command::Standardize(args) => {
+            // One tab-separated line: input, chains, pdb changed, psf, thumbnail
+            let script_dir = match &args.script_dir {
+                Some(dir) => dir.clone(),
+                None => PathBuf::from(
+                    env::var("SCRIPT_DIR").map_err(|e| anyhow!("SCRIPT_DIR: {e}"))?,
+                ),
+            };
+            let uv = which("uv").map_err(|e| anyhow!("Failed to find uv ({e})"))?;
+            let report =
+                process::standardize(&args.input_dir, &args.out_dir, &script_dir, &uv)?;
+            println!(
+                "{}\t{}\t{}\t{}\t{}",
+                args.input_dir.display(),
+                report["chains"]
+                    .as_array()
+                    .map(|a| a
+                        .iter()
+                        .filter_map(|c| c.as_str())
+                        .collect::<Vec<_>>()
+                        .join(","))
+                    .unwrap_or_default(),
+                report["pdb_changed"],
+                report["psf"]["status"].as_str().unwrap_or(""),
+                report["thumbnail"].as_str().unwrap_or(""),
+            );
+            Ok(())
+        }
         Command::LabelChains(args) => {
             // One tab-separated line: the first input, the result, the
             // number of chains lettered, and why not when it was not
