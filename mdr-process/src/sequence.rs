@@ -92,7 +92,7 @@ const MAX_CA_CA: f64 = 4.2;
 /// rounded up, so that the minimum image is unambiguous for any real cell.
 const MIN_CELL_EDGE: f64 = 10.0;
 
-const WATER: &[&str] = &[
+pub(crate) const WATER: &[&str] = &[
     "HOH", "WAT", "SOL", "H2O", "DOD", "TIP", "TIP3", "TIP4", "TIP5", "T3P", "T4P",
     "T5P", "SPC", "SPCE", "TP3",
 ];

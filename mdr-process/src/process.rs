@@ -793,7 +793,14 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
     let (full_psf, min_psf) = if is_coarse_grained {
         (None, None)
     } else {
-        match standard_psfs(&args, &trajectory_dir, &full_pdb, &min_pdb) {
+        match standard_psfs(
+            args.input_dir,
+            args.script_dir,
+            args.uv,
+            &trajectory_dir,
+            &full_pdb,
+            &min_pdb,
+        ) {
             Ok((psfs, notes)) => {
                 warnings.extend(notes);
                 (Some(psfs.0), Some(psfs.1))
@@ -948,6 +955,127 @@ pub fn label_chains(full_pdb: &Path, min_pdb: &Path) -> Result<Vec<String>> {
 }
 
 // --------------------------------------------------
+/// MDR-106 + the psf backfill (PLAN-2026-11-03-chain-ids-psf-backfill.md):
+/// bring one existing simulation's published files up to what an import
+/// writes today, into `out_dir`. `input_dir` holds its full.pdb and
+/// minimal.pdb, the upload topology to take bonds from (any of
+/// `BOND_SOURCE_EXTS`; none means guessed bonds), and optionally
+/// sampled.xtc for the thumbnail. Nothing in `input_dir` changes.
+///
+/// The same steps as `process_trajectory`, in the same order: the chain-ID
+/// rule (`label_chains`), the coarse-grained check, the standard psf pair
+/// (`standard_psfs`). A thumbnail is rendered (`make_thumbnail`) only where
+/// the chain IDs changed on a structure of 2+ chains (Ken, 2026-11-03,
+/// decision 4) and sampled.xtc is there. `out_dir` keeps only what
+/// changed or is new, plus `report.json`; the report is also returned.
+pub fn standardize(
+    input_dir: &Path,
+    out_dir: &Path,
+    script_dir: &Path,
+    uv: &Path,
+) -> Result<serde_json::Value> {
+    // The helpers run from script_dir, so every path they get is absolute
+    fs::create_dir_all(out_dir)?;
+    let input_dir = &fs::canonicalize(input_dir)?;
+    let out_dir = &fs::canonicalize(out_dir)?;
+    let (in_full, in_min) = (input_dir.join("full.pdb"), input_dir.join("minimal.pdb"));
+    let (full_pdb, min_pdb) = (out_dir.join("full.pdb"), out_dir.join("minimal.pdb"));
+    fs::copy(&in_full, &full_pdb)?;
+    fs::copy(&in_min, &min_pdb)?;
+
+    let mut warnings = label_chains(&full_pdb, &min_pdb)?;
+    let full_changed = fs::read(&full_pdb)? != fs::read(&in_full)?;
+    let min_changed = fs::read(&min_pdb)? != fs::read(&in_min)?;
+    let chains: Vec<String> = sequence::chains_from_pdb(&full_pdb)?
+        .into_iter()
+        .map(|c| c.label)
+        .collect();
+
+    let is_coarse_grained = check_coarse_grained(&full_pdb, &min_pdb)?;
+    let psf = if is_coarse_grained {
+        serde_json::json!({"status": "skipped", "why": "coarse-grained"})
+    } else {
+        match standard_psfs(input_dir, script_dir, uv, out_dir, &full_pdb, &min_pdb) {
+            Ok((_, notes)) => {
+                warnings.extend(notes);
+                let bonds: serde_json::Value = serde_json::from_str(
+                    &fs::read_to_string(out_dir.join("bonds.json"))?,
+                )?;
+                serde_json::json!({
+                    "status": "written",
+                    "source": bonds["source"],
+                    "source_file": bonds["source_file"],
+                    "num_bonds": bonds["num_bonds"],
+                })
+            }
+            Err(e) => {
+                warn!("No standard .psf: {e}");
+                serde_json::json!({"status": "failed", "why": e.to_string()})
+            }
+        }
+    };
+    // bonds.tsv is rebuilt on any rerun and can be large; bonds.json stays
+    let _ = fs::remove_file(out_dir.join("bonds.tsv"));
+
+    let sampled = input_dir.join("sampled.xtc");
+    let thumbnail = out_dir.join("thumbnail.png");
+    let thumb = if !(full_changed || min_changed) || chains.len() < 2 {
+        "not needed".to_string()
+    } else if !sampled.is_file() {
+        "needed, no sampled.xtc".to_string()
+    } else {
+        let _ = fs::remove_file(&thumbnail);
+        match make_thumbnail(&thumbnail, &sampled, &min_pdb, script_dir, uv) {
+            Ok(()) => "rendered".to_string(),
+            Err(e) => format!("failed: {e}"),
+        }
+    };
+
+    // Keep only what changed or is new
+    if !full_changed {
+        fs::remove_file(&full_pdb)?;
+    }
+    if !min_changed {
+        fs::remove_file(&min_pdb)?;
+    }
+
+    let mut files = serde_json::Map::new();
+    for name in [
+        "full.pdb",
+        "minimal.pdb",
+        "full.psf",
+        "minimal.psf",
+        "thumbnail.png",
+    ] {
+        let path = out_dir.join(name);
+        if path.is_file() {
+            files.insert(
+                name.to_string(),
+                serde_json::json!({
+                    "size": fs::metadata(&path)?.len(),
+                    "md5": get_md5(&path)?,
+                }),
+            );
+        }
+    }
+    let report = serde_json::json!({
+        "mdr_process": crate::types::VERSION,
+        "chains": chains,
+        "pdb_changed": {"full": full_changed, "minimal": min_changed},
+        "coarse_grained": is_coarse_grained,
+        "psf": psf,
+        "thumbnail": thumb,
+        "files": files,
+        "warnings": warnings,
+    });
+    fs::write(
+        out_dir.join("report.json"),
+        serde_json::to_string_pretty(&report)?,
+    )?;
+    Ok(report)
+}
+
+// --------------------------------------------------
 /// Extensions of the uploaded files that may carry bonds; extract_bonds.py
 /// ranks them
 const BOND_SOURCE_EXTS: &[&str] = &["tpr", "psf", "prmtop", "parm7", "top"];
@@ -957,17 +1085,19 @@ const BOND_SOURCE_EXTS: &[&str] = &["tpr", "psf", "prmtop", "parm7", "top"];
 /// mapped onto full.pdb, or a distance guess), the file from
 /// `psf_writer`. Returns the two paths and any warnings for the submitter.
 fn standard_psfs(
-    args: &ProcessTrajectoryArgs,
+    input_dir: &Path,
+    script_dir: &Path,
+    uv: &Path,
     trajectory_dir: &Path,
     full_pdb: &Path,
     min_pdb: &Path,
 ) -> Result<((PathBuf, PathBuf), Vec<String>)> {
-    let script = args.script_dir.join("extract_bonds.py");
+    let script = script_dir.join("extract_bonds.py");
     if !script.is_file() {
         bail!(r#"Missing "{}""#, script.display());
     }
 
-    let mut sources: Vec<PathBuf> = fs::read_dir(args.input_dir)?
+    let mut sources: Vec<PathBuf> = fs::read_dir(input_dir)?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| {
             p.is_file()
@@ -981,8 +1111,8 @@ fn standard_psfs(
 
     let bonds_tsv = trajectory_dir.join("bonds.tsv");
     let bonds_json = trajectory_dir.join("bonds.json");
-    let mut cmd = Command::new(args.uv);
-    cmd.current_dir(args.script_dir).args([
+    let mut cmd = Command::new(uv);
+    cmd.current_dir(script_dir).args([
         "run".to_string(),
         script.to_string_lossy().to_string(),
         "--pdb".into(),
