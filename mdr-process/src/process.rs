@@ -782,6 +782,10 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
         vec![]
     };
 
+    // MDR-106: letter blank chain columns, before anything reads the chains
+    // (the psf's segments, md_chain's labels)
+    warnings.extend(label_chains(&full_pdb, &min_pdb)?);
+
     let is_coarse_grained = check_coarse_grained(&full_pdb, &min_pdb)?;
 
     // The standard .psf pair, after the element fix above (its masses come
@@ -865,6 +869,75 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
         source_has_time_axis,
         warnings,
     })
+}
+
+// --------------------------------------------------
+/// MDR-106: where the chain column of `full_pdb` and `min_pdb` is blank
+/// throughout, letter each polymer chain (`sequence::label_blank_chains`).
+/// Both files are written or neither: their chains must read back the same
+/// (minimal.pdb drops solvent and ions, never a chain residue), or the
+/// viewer's chains and md_chain's (read from full.pdb) would differ.
+/// Returns a warning for the submitter when the files are left blank.
+pub fn label_chains(full_pdb: &Path, min_pdb: &Path) -> Result<Vec<String>> {
+    use sequence::Labeled;
+
+    let full_text = fs::read_to_string(full_pdb)?;
+    let min_text = fs::read_to_string(min_pdb)?;
+    let left = |why: String| {
+        let msg =
+            format!("The chain IDs of full.pdb and minimal.pdb were left blank: {why}");
+        warn!("{msg}");
+        vec![msg]
+    };
+
+    let (full_new, chains) = match sequence::label_blank_chains(&full_text)? {
+        Labeled::HasChainIds | Labeled::NoChains => return Ok(vec![]),
+        Labeled::TooManyChains(n) => {
+            return Ok(left(format!(
+                "{n} chains, more than the {} letters available",
+                sequence::CHAIN_LETTERS.len()
+            )));
+        }
+        Labeled::SeveralModels => {
+            return Ok(left("full.pdb has more than one MODEL".to_string()));
+        }
+        Labeled::Done { text, chains } => (text, chains),
+    };
+    let min_new = match sequence::label_blank_chains(&min_text)? {
+        Labeled::Done { text, .. } => text,
+        other => {
+            return Ok(left(format!(
+                "minimal.pdb could not be lettered as full.pdb was ({other:?})"
+            )));
+        }
+    };
+
+    let key = |text: &str| -> Result<Vec<(String, Vec<String>)>> {
+        Ok(sequence::chains_from_text(text)?
+            .into_iter()
+            .map(|c| (c.label, c.residues))
+            .collect())
+    };
+    let (full_chains, min_chains) = (key(&full_new)?, key(&min_new)?);
+    if full_chains != min_chains {
+        return Ok(left(format!(
+            "full.pdb has {} chains and minimal.pdb {}, or their residues differ",
+            full_chains.len(),
+            min_chains.len()
+        )));
+    }
+
+    for (path, text) in [(full_pdb, full_new), (min_pdb, min_new)] {
+        let tmp = path.with_extension("pdb.chains");
+        fs::write(&tmp, text)?;
+        fs::rename(&tmp, path)?;
+    }
+    debug!(
+        r#"Lettered {chains} blank chain(s) in "{}" and "{}""#,
+        full_pdb.display(),
+        min_pdb.display()
+    );
+    Ok(vec![])
 }
 
 // --------------------------------------------------
@@ -3320,6 +3393,68 @@ pub(crate) fn python_env_builds(uv: &Path, script_dir: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two blank chains of backbone atoms 100 A apart, then a water
+    fn blank_pdb(with_water: bool, second_chain: &str) -> String {
+        let mut lines = vec![];
+        let mut s = 0;
+        for (c, names) in [(0.0, "MET ALA"), (100.0, second_chain)] {
+            for (i, res) in names.split(' ').enumerate() {
+                for (name, dx) in [("N", 0.0), ("CA", 1.2), ("C", 2.47)] {
+                    s += 1;
+                    lines.push(format!(
+                        "ATOM  {s:>5} {name:<4} {res:>3}  {:>4}    {:>8.3}{:>8.3}{:>8.3}  1.00  0.00",
+                        i + 1,
+                        c + 3.8 * i as f64 + dx,
+                        0.0,
+                        0.0
+                    ));
+                }
+            }
+        }
+        if with_water {
+            lines.push(format!(
+                "ATOM  {:>5} O    HOH  {:>4}    {:>8.3}{:>8.3}{:>8.3}  1.00  0.00",
+                s + 1,
+                9,
+                300.0,
+                0.0,
+                0.0
+            ));
+        }
+        lines.join("\n") + "\n"
+    }
+
+    #[test]
+    fn label_chains_letters_both_files_or_neither() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (full, min) = (dir.path().join("full.pdb"), dir.path().join("minimal.pdb"));
+
+        // minimal.pdb = full.pdb without the water: both lettered
+        fs::write(&full, blank_pdb(true, "GLY SER"))?;
+        fs::write(&min, blank_pdb(false, "GLY SER"))?;
+        assert!(label_chains(&full, &min)?.is_empty());
+        for path in [&full, &min] {
+            let labels: Vec<String> = sequence::chains_from_pdb(path)?
+                .into_iter()
+                .map(|c| c.label)
+                .collect();
+            assert_eq!(labels, ["A", "B"]);
+        }
+        // Run again: nothing to do
+        assert!(label_chains(&full, &min)?.is_empty());
+
+        // The chains differ: neither file is changed, and a warning
+        let (f, m) = (blank_pdb(true, "GLY SER"), blank_pdb(false, "GLY TRP"));
+        fs::write(&full, &f)?;
+        fs::write(&min, &m)?;
+        let warnings = label_chains(&full, &min)?;
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("left blank"));
+        assert_eq!(fs::read_to_string(&full)?, f);
+        assert_eq!(fs::read_to_string(&min)?, m);
+        Ok(())
+    }
 
     #[test]
     fn inactive_reason_of_deleted_and_demerged_entries() {
