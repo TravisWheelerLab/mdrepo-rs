@@ -173,6 +173,23 @@ fn run(args: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Command::WriteMmcif(args) => {
+            fs::create_dir_all(&args.out_dir)?;
+            let input = mdr_process::mmcif_writer::MmcifInput {
+                entry_id: args.id.clone(),
+                ..Default::default()
+            };
+            let (full, min) = mdr_process::mmcif_writer::write_mmcifs(
+                &args.full,
+                &args.minimal,
+                args.bonds.as_deref(),
+                &args.out_dir.join("full.mmcif"),
+                &args.out_dir.join("minimal.mmcif"),
+                &input,
+            )?;
+            println!("full {full:?}\nminimal {min:?}");
+            Ok(())
+        }
         Command::Standardize(args) => {
             // One tab-separated line: input, chains, pdb changed, psf, thumbnail
             let script_dir = match &args.script_dir {

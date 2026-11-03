@@ -669,6 +669,21 @@ fn upsert_uploaded_file(
 }
 
 // --------------------------------------------------
+/// Record processed files made after the import, when the accession is
+/// known (the standard mmCIF pair, MDR-110), as the import records the rest
+pub fn add_processed_files(
+    conn: &mut PgConnection,
+    sim_id: i64,
+    files: &[MdFile],
+) -> Result<()> {
+    let mdrepo_id = format!("MDR{sim_id:08}");
+    for file in files {
+        upsert_processed_file(conn, sim_id, &mdrepo_id, file)?;
+    }
+    Ok(())
+}
+
+// --------------------------------------------------
 fn upsert_processed_file(
     conn: &mut PgConnection,
     sim_id: i64,

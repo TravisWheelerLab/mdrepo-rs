@@ -888,6 +888,41 @@ pub fn find_blobs(text: &str, expected: &Formula) -> Result<Vec<Blob>> {
 }
 
 // --------------------------------------------------
+/// One residue of a structure as the splitter sees it, for writers that
+/// need every residue (the mmCIF writer): where its atoms are, the chain
+/// it is in (an index into the chains returned with it; caps included),
+/// and whether it is water or a one-atom ion
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResidueInfo {
+    pub first_atom: usize,
+    pub num_atoms: usize,
+    pub chain: Option<usize>,
+    pub water: bool,
+    pub ion: bool,
+}
+
+/// The chains of PDB text, and every residue (`ResidueInfo`) in file order
+pub fn residue_layout(text: &str) -> Result<(Vec<Chain>, Vec<ResidueInfo>)> {
+    let structure = Structure::read(text)?;
+    let residues = structure
+        .residues
+        .iter()
+        .zip(&structure.chain_of)
+        .map(|(res, chain)| {
+            let kind = res.kind();
+            ResidueInfo {
+                first_atom: res.first_atom,
+                num_atoms: res.num_atoms,
+                chain: *chain,
+                water: kind == Kind::Water,
+                ion: kind == Kind::Ion && chain.is_none(),
+            }
+        })
+        .collect();
+    Ok((structure.chains, residues))
+}
+
+// --------------------------------------------------
 /// The chain IDs given when a file is relettered, in order
 pub const CHAIN_LETTERS: &str =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";

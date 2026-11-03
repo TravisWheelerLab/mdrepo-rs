@@ -11,6 +11,30 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.26.0 (unreleased)
+
+- **The standard mmCIF pair, `full.mmcif` and `minimal.mmcif` (MDR-110,
+  #75; plan PLAN-2026-11-03-mmcif-writer.md, Ken's answers 2026-11-03).**
+  `mmcif_writer.rs`: the pdb's atoms, order and coordinates; entities (a
+  polymer by type, caps and residues; a ligand by name; water; an ion by
+  name); label_asym per chain/molecule and auth_asym = the pdb's chain ID
+  (blank outside every chain: WAT/ION/HET, as the psf); sequences; the
+  cell (not GROMACS's 1 A placeholder); UniProt references; ligand name,
+  SMILES and InChIKey where mol_id.py named the residue; `_struct_conn`
+  for links between residues other than a chain's backbone (from
+  extract_bonds.py's bonds). Each file is read back against the pdb.
+- **Written after the import**, which makes the accession the file names
+  (Ken): `make_import_json` saves `mmcif-input.json` (the title, and each
+  ligand's residue name from mol_id.py by InChIKey); after `run_import`,
+  `add_import_mmcifs` reads the UniProt references and ligands from the
+  database (`mmcif_input_from_db`: a polymer seen before is not looked up
+  again, so only the database has every chain's references), writes the
+  pair, adds them to import.json and then records them as "Processed/
+  Minimal mmCIF structure" (md-repo-app 0300), so the push uploads and
+  verifies them. Not written: a warning, as for the psf.
+- `mdr-process write-mmcif` writes the pair from two pdbs without the
+  database, for trying it.
+
 ## 0.25.0 (unreleased)
 
 - **psf segments for atoms outside every chain: WAT, ION, HET** (Ken,

@@ -1,6 +1,6 @@
 use crate::{
     import::{self, ImportOpts},
-    psf_elements, psf_writer, reference, sequence,
+    mmcif_writer, psf_elements, psf_writer, reference, sequence,
     ticket::dsn_for,
     types::{
         CheckedLigand, DoiAuthor, DoiPaper, Duration, Export, ExportSimulation,
@@ -210,6 +210,16 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
         simulation_id = Some(imported_id);
         warnings.extend(import_warnings);
 
+        // The standard mmCIF pair names the accession, which the import
+        // just made: written now, recorded, and pushed with the rest
+        warnings.extend(add_import_mmcifs(
+            &args.server,
+            imported_id,
+            example_trajectory,
+            &processed_dir,
+            import_json,
+        )?);
+
         let import_result = ImportResult {
             filename: import_json.to_string_lossy().to_string(),
             simulation_id: imported_id,
@@ -276,6 +286,182 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
         blast_elapsed,
         push_elapsed,
     })
+}
+
+// --------------------------------------------------
+/// `mmcif-input.json` beside import.json: what the mmCIF needs from the
+/// import that the database does not hold: the title, and the residue name
+/// mol_id.py found for each ligand, by InChIKey. The UniProt references and
+/// the ligands themselves are read from the database after the import
+/// (`mmcif_input_from_db`): a polymer seen before is not looked up again,
+/// so only the database has every chain's references.
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct MmcifImportInput {
+    pub title: String,
+    pub resname_of: HashMap<String, String>,
+}
+
+fn save_mmcif_input(
+    processed_dir: &Path,
+    title: &str,
+    resname_of: &HashMap<String, String>,
+) -> Result<()> {
+    let input = MmcifImportInput {
+        title: title.to_string(),
+        resname_of: resname_of.clone(),
+    };
+    fs::write(
+        processed_dir.join(MMCIF_INPUT),
+        serde_json::to_string_pretty(&input)?,
+    )?;
+    Ok(())
+}
+
+// --------------------------------------------------
+/// The mmCIF's input for simulation `sim_id` from the database: UniProt
+/// ranges per structure chain (md_chain -> md_polymer_uniprot ->
+/// md_uniprot, in chain order, as the splitter numbers the chains), and
+/// its ligands that `resname_of` (InChIKey -> residue name) places. For an
+/// import, after it; for the backfill (`standardize`), as stored.
+pub fn mmcif_input_from_db(
+    conn: &mut diesel::PgConnection,
+    sim_id: i64,
+    title: &str,
+    resname_of: &HashMap<String, String>,
+) -> Result<mmcif_writer::MmcifInput> {
+    let mut references = vec![];
+    for chain in mdr_db::ops::list_chains_for_simulation(conn, sim_id)?
+        .into_iter()
+        .filter(|c| c.source == "structure")
+    {
+        let mut refs = vec![];
+        for pu in mdr_db::ops::list_polymer_uniprots(conn, chain.polymer_id)? {
+            let uniprot = mdr_db::ops::get_uniprot(conn, pu.uniprot_id)?;
+            refs.push(mmcif_writer::UniprotRef {
+                accession: uniprot.uniprot_id,
+                query_start: pu.query_start,
+                query_end: pu.query_end,
+                reference_start: pu.reference_start,
+                reference_end: pu.reference_end,
+            });
+        }
+        references.push(refs);
+    }
+    let (_, stored) =
+        mdr_db::ops::list_ligands(conn, None, Some(sim_id), true, None, None)?;
+    let ligands = stored
+        .into_iter()
+        .filter_map(|l| {
+            let resname = resname_of.get(l.inchikey.as_ref()?)?.clone();
+            Some(mmcif_writer::LigandInfo {
+                resname,
+                name: l.name,
+                smiles: l.smiles,
+                inchikey: l.inchikey,
+            })
+        })
+        .collect();
+    Ok(mmcif_writer::MmcifInput {
+        entry_id: format!("MDR{sim_id:08}"),
+        title: title.to_string(),
+        references,
+        ligands,
+    })
+}
+
+const MMCIF_INPUT: &str = "mmcif-input.json";
+
+// --------------------------------------------------
+/// After the import: write full.mmcif and minimal.mmcif (MDR-110) beside
+/// the example trajectory's pdbs, named by the new accession; record them
+/// in md_processed_file ("Processed/Minimal mmCIF structure", md-repo-app
+/// 0300); and add them to import.json so the push uploads and verifies
+/// them with the rest. A failure to write them is a warning, as for the
+/// psf; a failure to record them is an error, as for any import write.
+fn add_import_mmcifs(
+    server: &Server,
+    sim_id: u32,
+    example: &ProcessedTrajectory,
+    processed_dir: &Path,
+    import_json: &Path,
+) -> Result<Vec<String>> {
+    let saved: MmcifImportInput =
+        match fs::read_to_string(processed_dir.join(MMCIF_INPUT)) {
+            Ok(text) => serde_json::from_str(&text)?,
+            Err(e) => return Ok(vec![format!("No mmCIF written: {MMCIF_INPUT}: {e}")]),
+        };
+    let env_key = dsn_for(server);
+    let url = env::var(env_key).map_err(|e| anyhow!("{env_key}: {e}"))?;
+    let mut conn =
+        mdr_db::connect(&url).map_err(|e| anyhow!("Failed to connect: {e}"))?;
+    let input = mmcif_input_from_db(
+        &mut conn,
+        i64::from(sim_id),
+        &saved.title,
+        &saved.resname_of,
+    )?;
+
+    let dir = Path::new(&example.directory_name);
+    let bonds = dir.join("bonds.tsv");
+    let (full, min) = (dir.join("full.mmcif"), dir.join("minimal.mmcif"));
+    if let Err(e) = mmcif_writer::write_mmcifs(
+        &example.full_pdb,
+        &example.min_pdb,
+        bonds.is_file().then_some(bonds.as_path()),
+        &full,
+        &min,
+        &input,
+    ) {
+        warn!("No mmCIF: {e}");
+        return Ok(vec![format!("The standard mmCIF was not written: {e}")]);
+    }
+
+    let mut files = vec![];
+    for (file_type, path) in [
+        ("Processed mmCIF structure", &full),
+        ("Minimal mmCIF structure", &min),
+    ] {
+        let name = path
+            .file_name()
+            .ok_or_else(|| anyhow!("No filename for '{}'", path.display()))?
+            .to_string_lossy()
+            .to_string();
+        let link = processed_dir.join(&name);
+        if link.exists() || link.is_symlink() {
+            fs::remove_file(&link)?;
+        }
+        std::os::unix::fs::symlink(path, &link)?;
+        files.push(MdFile {
+            name,
+            file_type: file_type.to_string(),
+            size: path.metadata()?.len(),
+            md5_sum: get_md5(path)?,
+            description: None,
+            is_primary: None,
+        });
+    }
+
+    // import.json first (the push's list), so a failure here leaves no rows
+    // for files that will not be pushed
+    let mut json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(import_json)?)?;
+    let list = json["simulation"]["processed_files"]
+        .as_array_mut()
+        .ok_or_else(|| {
+            anyhow!("{}: no simulation.processed_files", import_json.display())
+        })?;
+    list.retain(|f| {
+        !files
+            .iter()
+            .any(|n| f["name"].as_str() == Some(n.name.as_str()))
+    });
+    for f in &files {
+        list.push(serde_json::to_value(f)?);
+    }
+    fs::write(import_json, serde_json::to_string_pretty(&json)?)?;
+
+    import::add_processed_files(&mut conn, i64::from(sim_id), &files)?;
+    Ok(vec![])
 }
 
 // --------------------------------------------------
@@ -1914,6 +2100,13 @@ pub fn make_import_json(
     ));
     let blast_elapsed = blast_start.elapsed();
 
+    // For the mmCIF (written after the import, MDR-110): which residue name
+    // each inferred ligand is, by InChIKey
+    let resname_of: HashMap<String, String> = inferred_ligands
+        .iter()
+        .map(|l| (l.structure.inchikey.clone(), l.structure.resname.clone()))
+        .collect();
+
     let (ligands, ligand_warnings) = resolve_ligands(
         args.meta.ligands.as_ref(),
         inferred_ligands,
@@ -1953,6 +2146,12 @@ pub fn make_import_json(
         args.processed_dir,
         args.example_trajectory,
         args.trajectory_tarballs,
+    )?;
+
+    save_mmcif_input(
+        args.processed_dir,
+        &args.meta.short_description,
+        &resname_of,
     )?;
 
     let mut papers: Vec<metadata::Paper> = args.meta.papers.unwrap_or_default();
