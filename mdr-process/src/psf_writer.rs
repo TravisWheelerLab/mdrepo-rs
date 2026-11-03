@@ -17,8 +17,10 @@
 //! one. A bond is kept in `minimal.psf` when both its atoms are.
 //!
 //! The segment of an atom is its chain ID. Where the chain column is blank
-//! (MDR-106: many files separate chains only with TER), each TER-separated
-//! block is a segment, lettered from A.
+//! throughout (files from before MDR-106, or with more chains than letters),
+//! each TER-separated block is a segment, lettered from A. Where only some
+//! atoms are blank (since MDR-106 every polymer chain has a letter and the
+//! rest stay blank), the blank ones are S1, S2, ... by TER block.
 //!
 //! Each file written is read back with `psf_elements::parse_psf` and must
 //! hold the atoms and bonds it was given, or it is removed: a half-written
@@ -153,8 +155,10 @@ pub fn read_pdb(text: &str) -> Vec<PdbAtom> {
         let coord = |a: usize, b: usize| col(a, b).parse::<f64>().unwrap_or(0.0);
         let name = col(12, 16).to_string();
         let chain = col(21, 22);
+        // A blank chain column: its TER block, set below once the whole
+        // file is read
         let segid = if chain.is_empty() {
-            block_letter(block)
+            format!("\0{block}")
         } else {
             chain.to_string()
         };
@@ -169,6 +173,22 @@ pub fn read_pdb(text: &str) -> Vec<PdbAtom> {
             xyz: [coord(30, 38), coord(38, 46), coord(46, 54)],
         });
         block_has_atoms = true;
+    }
+
+    // Where no atom has a chain ID, each TER block is a segment lettered
+    // from A. Where some do (since MDR-106, every polymer chain), the atoms
+    // left blank (ligands, ions, water) are S1, S2, ... by TER block, which
+    // no one-letter chain ID can equal.
+    let any_chain_id = atoms.iter().any(|a| !a.segid.starts_with('\0'));
+    for atom in &mut atoms {
+        if let Some(block) = atom.segid.strip_prefix('\0') {
+            let block: usize = block.parse().unwrap_or(0);
+            atom.segid = if any_chain_id {
+                format!("S{}", block + 1)
+            } else {
+                block_letter(block)
+            };
+        }
     }
     atoms
 }
@@ -408,6 +428,18 @@ mod tests {
         let atoms = read_pdb(&pdb);
         assert_eq!(atoms[0].segid, "X");
         assert_eq!(atoms[1].segid, "X");
+    }
+
+    #[test]
+    fn blank_atoms_beside_lettered_chains_are_s_segments() {
+        // Two lettered chains (MDR-106), then a blank ligand, TER, blank water
+        let pdb = atom(1, "N", "ALA", 'A', 1, "N", 0.0)
+            + &atom(2, "N", "GLY", 'B', 1, "N", 30.0)
+            + &atom(3, "C1", "LIG", ' ', 2, "C", 60.0)
+            + "TER\n"
+            + &atom(4, "O", "HOH", ' ', 3, "O", 90.0);
+        let segs: Vec<String> = read_pdb(&pdb).into_iter().map(|a| a.segid).collect();
+        assert_eq!(segs, ["A", "B", "S1", "S2"]);
     }
 
     #[test]

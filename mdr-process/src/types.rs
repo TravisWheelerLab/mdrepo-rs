@@ -99,6 +99,10 @@ pub enum Command {
     /// Print the polymer chains in structure files (read only)
     Sequence(SequenceArgs),
 
+    /// Set the chain IDs of PDB files by the MDR-106 rule, writing the
+    /// results to another directory; the inputs are not changed
+    LabelChains(LabelChainsArgs),
+
     /// Fill md_chain, md_polymer and the polymers' UniProt references for
     /// simulations imported before mdr-process wrote them
     BackfillChains(BackfillArgs),
@@ -218,6 +222,21 @@ pub struct BackfillDeclaredUniprotArgs {
     /// give the real run its dry run's, so it compares the same entries
     #[arg(short, long, value_name = "DIR")]
     pub work_dir: PathBuf,
+}
+
+// --------------------------------------------------
+#[derive(Debug, Parser)]
+pub struct LabelChainsArgs {
+    /// Either one PDB, or a full.pdb then its minimal.pdb (lettered together:
+    /// both or neither, and their chains must read back the same)
+    #[arg(value_name = "PDB", required = true, num_args = 1..=2)]
+    pub files: Vec<PathBuf>,
+
+    /// Where the lettered files go, under the input names (a pair as
+    /// full.pdb and minimal.pdb). Nothing is written when a file is left as
+    /// it is
+    #[arg(short, long, value_name = "DIR")]
+    pub out_dir: PathBuf,
 }
 
 // --------------------------------------------------

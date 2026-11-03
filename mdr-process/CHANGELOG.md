@@ -11,6 +11,31 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.24.0 (unreleased)
+
+- **One rule for the chain IDs of full.pdb and minimal.pdb (MDR-106,
+  #61), whatever wrote them** (GROMACS, cpptraj for Amber, cpptraj/parmed
+  for NAMD/CHARMM; `sequence::assign_chain_ids`, `process::label_chains`).
+  The chains are the splitter's (md_chain's). Their IDs are kept when each
+  chain already has its own letter (A-Z or a-z, none repeated: DDD's and
+  the PDB's own IDs). Otherwise every chain is relettered A, B, ... in file
+  order (A-Z, a-z, 0-9): a blank column, mdCATH's "0", GPCRmd's "P" on
+  every protein chain. When relettering, an atom outside every chain
+  (ligand, ion, water, lipid) keeps its ID unless it is now a chain's
+  letter, and is then blank (Ken, 2026-11-03). Only column 22 changes
+  (ATOM/HETATM and TER), so the trajectories still match. Both files take
+  the rule or neither, and their chains must read back the same. Left as
+  written, with a warning for the submitter: more than 62 chains, more
+  than one MODEL. It runs before the psf step and before md_chain is
+  filled, so `md_chain.chain_label`, the psf segments and the files agree.
+- **The standard .psf's segments:** where a file has chain letters, its
+  blank atoms are segments S1, S2, ... by TER block, so solvent can no
+  longer share segment "A" with chain A. A file blank throughout keeps
+  A, B, ... by TER block.
+- **`mdr-process label-chains PDB [MINIMAL] -o DIR`**: the same rule for
+  one file, or a full/minimal pair, written to DIR; the inputs are not
+  changed. For the MDR-106 backfill.
+
 ## 0.23.1 (unreleased)
 
 - **sha2 0.10 -> 0.11, with the stored hashes unchanged.** sha2 0.11's

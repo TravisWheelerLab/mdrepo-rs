@@ -8,7 +8,7 @@ use mdr_process::{
     types::{Cli, Command, LogLevel},
     validate,
 };
-use std::{env, fs::File, io::BufWriter, path::PathBuf};
+use std::{env, fs, fs::File, io::BufWriter, path::PathBuf};
 use which::which;
 
 // --------------------------------------------------
@@ -170,6 +170,49 @@ fn run(args: Cli) -> Result<()> {
                         c.residues.join(","),
                     );
                 }
+            }
+            Ok(())
+        }
+        Command::LabelChains(args) => {
+            // One tab-separated line: the first input, the result, the
+            // number of chains lettered, and why not when it was not
+            fs::create_dir_all(&args.out_dir)?;
+            let first = args.files[0].display().to_string();
+            match args.files.as_slice() {
+                [pdb] => {
+                    let text = fs::read_to_string(pdb)?;
+                    match sequence::assign_chain_ids(&text)? {
+                        sequence::Labeled::Done { text, chains } => {
+                            let name = pdb
+                                .file_name()
+                                .ok_or_else(|| anyhow!("No file name: {first}"))?;
+                            fs::write(args.out_dir.join(name), text)?;
+                            println!("{first}\tlabeled\t{chains}\t");
+                        }
+                        other => println!("{first}\tleft\t0\t{other:?}"),
+                    }
+                }
+                [full, minimal] => {
+                    let (out_full, out_min) = (
+                        args.out_dir.join("full.pdb"),
+                        args.out_dir.join("minimal.pdb"),
+                    );
+                    fs::copy(full, &out_full)?;
+                    fs::copy(minimal, &out_min)?;
+                    let warnings = process::label_chains(&out_full, &out_min)?;
+                    if fs::read(&out_full)? == fs::read(full)?
+                        && fs::read(&out_min)? == fs::read(minimal)?
+                    {
+                        // Left as they were: remove the copies
+                        fs::remove_file(&out_full)?;
+                        fs::remove_file(&out_min)?;
+                        println!("{first}\tleft\t0\t{}", warnings.join("; "));
+                    } else {
+                        let chains = sequence::chains_from_pdb(&out_full)?.len();
+                        println!("{first}\tlabeled\t{chains}\t");
+                    }
+                }
+                _ => bail!("Give one PDB, or a full.pdb and its minimal.pdb"),
             }
             Ok(())
         }
