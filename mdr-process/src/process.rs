@@ -4,11 +4,11 @@ use crate::{
     ticket::dsn_for,
     types::{
         CheckedLigand, DoiAuthor, DoiPaper, Duration, Export, ExportSimulation,
-        ImportChain, ImportJsonArgs, ImportResult, InferredLigand, MdFile, PdbEntry,
-        PdbResponse, ProcessArgs, ProcessResult, ProcessTrajectoryArgs,
-        ProcessedTarball, ProcessedTrajectory, ProcessedTrajectoryType, PushOutcome,
-        ResolvedLigand, RmsdRmsf, RunImportArgs, Server, UniprotDb, UniprotEntry,
-        UniprotResponse,
+        ImportChain, ImportJsonArgs, ImportResult, InferredLigand,
+        InferredLigandStructure, MdFile, PdbEntry, PdbResponse, ProcessArgs,
+        ProcessResult, ProcessTrajectoryArgs, ProcessedTarball, ProcessedTrajectory,
+        ProcessedTrajectoryType, PushOutcome, ResolvedLigand, RmsdRmsf, RunImportArgs,
+        Server, UniprotDb, UniprotEntry, UniprotResponse,
     },
     validate,
 };
@@ -289,6 +289,35 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
 }
 
 // --------------------------------------------------
+/// InChIKey -> residue name for the ligands mol_id.py finds in `pdb`, by
+/// its structure step only (`smiles-from-structure`: no name lookups, no
+/// network). For the backfill's mmCIF; an import has them from
+/// `get_inferred_ligands`.
+pub fn ligand_resnames(
+    pdb: &Path,
+    script_dir: &Path,
+    uv: &Path,
+) -> Result<HashMap<String, String>> {
+    let mol_id = script_dir.join("mol_id.py");
+    let out = Command::new(uv)
+        .current_dir(script_dir)
+        .args(["run", "-q"])
+        .arg(&mol_id)
+        .arg("smiles-from-structure")
+        .arg(pdb)
+        .arg("-v")
+        .output()?;
+    if !out.status.success() {
+        bail!(
+            "mol_id.py smiles-from-structure failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let found: Vec<InferredLigandStructure> = serde_json::from_slice(&out.stdout)?;
+    Ok(found.into_iter().map(|l| (l.inchikey, l.resname)).collect())
+}
+
+// --------------------------------------------------
 /// `mmcif-input.json` beside import.json: what the mmCIF needs from the
 /// import that the database does not hold: the title, and the residue name
 /// mol_id.py found for each ligand, by InChIKey. The UniProt references and
@@ -328,7 +357,7 @@ pub fn mmcif_input_from_db(
     sim_id: i64,
     title: &str,
     resname_of: &HashMap<String, String>,
-) -> Result<mmcif_writer::MmcifInput> {
+) -> Result<(mmcif_writer::MmcifInput, Vec<String>)> {
     let mut references = vec![];
     for chain in mdr_db::ops::list_chains_for_simulation(conn, sim_id)?
         .into_iter()
@@ -347,26 +376,47 @@ pub fn mmcif_input_from_db(
         }
         references.push(refs);
     }
+    // A ligand is placed on a residue name by its InChIKey, or else by the
+    // key's first block (the connectivity); never by guess, since a wrong
+    // SMILES in the file is worse than none. A small molecule left unplaced
+    // is returned by name for the caller's warning.
+    let by_block: HashMap<&str, &String> = resname_of
+        .iter()
+        .map(|(k, r)| (k.split('-').next().unwrap_or(k.as_str()), r))
+        .collect();
     let (_, stored) =
         mdr_db::ops::list_ligands(conn, None, Some(sim_id), true, None, None)?;
-    let ligands = stored
-        .into_iter()
-        .filter_map(|l| {
-            let resname = resname_of.get(l.inchikey.as_ref()?)?.clone();
-            Some(mmcif_writer::LigandInfo {
-                resname,
+    let mut ligands = vec![];
+    let mut unplaced = vec![];
+    for l in stored {
+        let Some(key) = l.inchikey.clone() else {
+            if l.smiles.is_some() {
+                unplaced.push(l.name);
+            }
+            continue;
+        };
+        let resname = resname_of
+            .get(&key)
+            .or_else(|| by_block.get(key.split('-').next().unwrap_or("")).copied());
+        match resname {
+            Some(resname) => ligands.push(mmcif_writer::LigandInfo {
+                resname: resname.clone(),
                 name: l.name,
                 smiles: l.smiles,
                 inchikey: l.inchikey,
-            })
-        })
-        .collect();
-    Ok(mmcif_writer::MmcifInput {
-        entry_id: format!("MDR{sim_id:08}"),
-        title: title.to_string(),
-        references,
-        ligands,
-    })
+            }),
+            None => unplaced.push(l.name),
+        }
+    }
+    Ok((
+        mmcif_writer::MmcifInput {
+            entry_id: format!("MDR{sim_id:08}"),
+            title: title.to_string(),
+            references,
+            ligands,
+        },
+        unplaced,
+    ))
 }
 
 const MMCIF_INPUT: &str = "mmcif-input.json";
@@ -394,12 +444,15 @@ fn add_import_mmcifs(
     let url = env::var(env_key).map_err(|e| anyhow!("{env_key}: {e}"))?;
     let mut conn =
         mdr_db::connect(&url).map_err(|e| anyhow!("Failed to connect: {e}"))?;
-    let input = mmcif_input_from_db(
+    let (input, unplaced) = mmcif_input_from_db(
         &mut conn,
         i64::from(sim_id),
         &saved.title,
         &saved.resname_of,
     )?;
+    for name in &unplaced {
+        debug!("mmCIF: ligand {name:?} not placed on a residue");
+    }
 
     let dir = Path::new(&example.directory_name);
     let bonds = dir.join("bonds.tsv");
@@ -1159,6 +1212,7 @@ pub fn standardize(
     out_dir: &Path,
     script_dir: &Path,
     uv: &Path,
+    mmcif_from: Option<(&Server, i64)>,
 ) -> Result<serde_json::Value> {
     // The helpers run from script_dir, so every path they get is absolute
     fs::create_dir_all(out_dir)?;
@@ -1200,6 +1254,36 @@ pub fn standardize(
             }
         }
     };
+    // The mmCIF pair (MDR-110), when a simulation is named: its references
+    // and ligands from the database, its links from the psf's bonds
+    let mmcif = match mmcif_from {
+        None => serde_json::json!({"status": "not asked"}),
+        Some((server, sim_id)) => {
+            match standardize_mmcif(
+                server, sim_id, out_dir, &full_pdb, &min_pdb, script_dir, uv,
+            ) {
+                Ok((counts, unplaced, refs)) => {
+                    for name in &unplaced {
+                        warnings.push(format!(
+                            "mmCIF: ligand {name:?} matches no residue by InChIKey; written without its identity"
+                        ));
+                    }
+                    serde_json::json!({
+                        "status": "written",
+                        "entities": counts.num_entities,
+                        "links": counts.num_links,
+                        "references": refs,
+                        "ligands_unplaced": unplaced.len(),
+                    })
+                }
+                Err(e) => {
+                    warn!("No mmCIF: {e}");
+                    serde_json::json!({"status": "failed", "why": e.to_string()})
+                }
+            }
+        }
+    };
+
     // bonds.tsv is rebuilt on any rerun and can be large; bonds.json stays
     let _ = fs::remove_file(out_dir.join("bonds.tsv"));
 
@@ -1231,6 +1315,8 @@ pub fn standardize(
         "minimal.pdb",
         "full.psf",
         "minimal.psf",
+        "full.mmcif",
+        "minimal.mmcif",
         "thumbnail.png",
     ] {
         let path = out_dir.join(name);
@@ -1250,6 +1336,7 @@ pub fn standardize(
         "pdb_changed": {"full": full_changed, "minimal": min_changed},
         "coarse_grained": is_coarse_grained,
         "psf": psf,
+        "mmcif": mmcif,
         "thumbnail": thumb,
         "files": files,
         "warnings": warnings,
@@ -1259,6 +1346,54 @@ pub fn standardize(
         serde_json::to_string_pretty(&report)?,
     )?;
     Ok(report)
+}
+
+// --------------------------------------------------
+/// `standardize`'s mmCIF pair for simulation `sim_id`: the final pdbs in
+/// `out_dir`, its title, references and ligands from the database
+/// (`mmcif_input_from_db`), each ligand's residue name from mol_id.py's
+/// structure step, the links from `out_dir/bonds.tsv`. Returns the full
+/// file's counts, the ligands left unplaced, and the number of UniProt
+/// ranges.
+fn standardize_mmcif(
+    server: &Server,
+    sim_id: i64,
+    out_dir: &Path,
+    full_pdb: &Path,
+    min_pdb: &Path,
+    script_dir: &Path,
+    uv: &Path,
+) -> Result<(mmcif_writer::MmcifCounts, Vec<String>, usize)> {
+    let env_key = dsn_for(server);
+    let url = env::var(env_key).map_err(|e| anyhow!("{env_key}: {e}"))?;
+    let mut conn =
+        mdr_db::connect(&url).map_err(|e| anyhow!("Failed to connect: {e}"))?;
+    let title = mdr_db::ops::get_simulation(&mut conn, sim_id)?.short_description;
+    let (_, stored) =
+        mdr_db::ops::list_ligands(&mut conn, None, Some(sim_id), true, None, None)?;
+    // mol_id.py finding no ligand (MDR00020024's minimal.pdb lacks it,
+    // MDR-109) costs the ligands' identities, not the file
+    let resname_of = if stored.iter().any(|l| l.smiles.is_some()) {
+        ligand_resnames(min_pdb, script_dir, uv).unwrap_or_else(|e| {
+            warn!("mmCIF: no ligand residue names: {e}");
+            HashMap::new()
+        })
+    } else {
+        HashMap::new()
+    };
+    let (input, unplaced) =
+        mmcif_input_from_db(&mut conn, sim_id, &title, &resname_of)?;
+    let refs = input.references.iter().map(Vec::len).sum();
+    let bonds = out_dir.join("bonds.tsv");
+    let (full, _) = mmcif_writer::write_mmcifs(
+        full_pdb,
+        min_pdb,
+        bonds.is_file().then_some(bonds.as_path()),
+        &out_dir.join("full.mmcif"),
+        &out_dir.join("minimal.mmcif"),
+        &input,
+    )?;
+    Ok((full, unplaced, refs))
 }
 
 // --------------------------------------------------

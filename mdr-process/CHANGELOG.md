@@ -11,6 +11,20 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.27.0 (unreleased)
+
+- **`standardize --server S --simulation-id N` also writes the mmCIF pair**
+  (the MDR-108 backfill, MDR-110): the final pdbs, the simulation's title,
+  UniProt references and ligands read from the database (read-only), each
+  ligand's residue name from `mol_id.py smiles-from-structure` (no
+  network), the links from the psf's bonds. report.json gains `mmcif`
+  (entities, links, references, ligands unplaced).
+- **A ligand is placed on a residue only by InChIKey**, exact or its first
+  block (`mmcif_input_from_db`, imports too); otherwise it is written
+  without its identity and named in a warning: a wrong SMILES in the file
+  is worse than none. If mol_id.py finds no ligand at all (MDR00020024's
+  minimal.pdb lacks it, MDR-109), the file is still written.
+
 ## 0.26.0 (unreleased)
 
 - **The standard mmCIF pair, `full.mmcif` and `minimal.mmcif` (MDR-110,

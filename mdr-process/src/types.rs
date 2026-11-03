@@ -274,6 +274,15 @@ pub struct StandardizeArgs {
     /// Script directory (simulation-processing/python); default $SCRIPT_DIR
     #[arg(short('S'), long, value_name = "SCRIPT_DIR")]
     pub script_dir: Option<PathBuf>,
+
+    /// Also write the mmCIF pair for this simulation, its references and
+    /// ligands read (read-only) from --server's database
+    #[arg(long, value_name = "SIM_ID", requires = "server")]
+    pub simulation_id: Option<i64>,
+
+    /// The database to read for --simulation-id
+    #[arg(short, long, value_name = "SERVER")]
+    pub server: Option<Server>,
 }
 
 // --------------------------------------------------
