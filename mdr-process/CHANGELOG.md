@@ -13,24 +13,27 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
 
 ## 0.24.0 (unreleased)
 
-- **Blank chain IDs are lettered (MDR-106, #61).** Where every atom's chain
-  column in `full.pdb` and `minimal.pdb` is blank, each polymer chain the
-  splitter finds gets a letter in file order (A-Z, a-z, 0-9), on its ATOM
-  and HETATM records and on the TER that ends it
-  (`sequence::label_blank_chains`, `process::label_chains`). Atoms outside
-  every chain (ligands, ions, water) stay blank. Only column 22 changes, so
-  the trajectories still match. Both files are lettered or neither, and
-  their chains must read back the same. Left as they are, with a warning
-  for the submitter: more than 62 chains, more than one MODEL. A file with
-  any chain ID is never changed. It runs before the psf step and before
-  md_chain is filled, so `md_chain.chain_label`, the psf segments and the
-  files agree.
+- **One rule for the chain IDs of full.pdb and minimal.pdb (MDR-106,
+  #61), whatever wrote them** (GROMACS, cpptraj for Amber, cpptraj/parmed
+  for NAMD/CHARMM; `sequence::assign_chain_ids`, `process::label_chains`).
+  The chains are the splitter's (md_chain's). Their IDs are kept when each
+  chain already has its own letter (A-Z or a-z, none repeated: DDD's and
+  the PDB's own IDs). Otherwise every chain is relettered A, B, ... in file
+  order (A-Z, a-z, 0-9): a blank column, mdCATH's "0", GPCRmd's "P" on
+  every protein chain. When relettering, an atom outside every chain
+  (ligand, ion, water, lipid) keeps its ID unless it is now a chain's
+  letter, and is then blank (Ken, 2026-11-03). Only column 22 changes
+  (ATOM/HETATM and TER), so the trajectories still match. Both files take
+  the rule or neither, and their chains must read back the same. Left as
+  written, with a warning for the submitter: more than 62 chains, more
+  than one MODEL. It runs before the psf step and before md_chain is
+  filled, so `md_chain.chain_label`, the psf segments and the files agree.
 - **The standard .psf's segments:** where a file has chain letters, its
   blank atoms are segments S1, S2, ... by TER block, so solvent can no
   longer share segment "A" with chain A. A file blank throughout keeps
   A, B, ... by TER block.
-- **`mdr-process label-chains PDB [MINIMAL] -o DIR`**: the same lettering
-  for one file, or a full/minimal pair, written to DIR; the inputs are not
+- **`mdr-process label-chains PDB [MINIMAL] -o DIR`**: the same rule for
+  one file, or a full/minimal pair, written to DIR; the inputs are not
   changed. For the MDR-106 backfill.
 
 ## 0.23.1 (unreleased)

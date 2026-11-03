@@ -181,7 +181,7 @@ fn run(args: Cli) -> Result<()> {
             match args.files.as_slice() {
                 [pdb] => {
                     let text = fs::read_to_string(pdb)?;
-                    match sequence::label_blank_chains(&text)? {
+                    match sequence::assign_chain_ids(&text)? {
                         sequence::Labeled::Done { text, chains } => {
                             let name = pdb
                                 .file_name()
@@ -200,8 +200,9 @@ fn run(args: Cli) -> Result<()> {
                     fs::copy(full, &out_full)?;
                     fs::copy(minimal, &out_min)?;
                     let warnings = process::label_chains(&out_full, &out_min)?;
-                    let before = fs::read(full)?;
-                    if fs::read(&out_full)? == before {
+                    if fs::read(&out_full)? == fs::read(full)?
+                        && fs::read(&out_min)? == fs::read(minimal)?
+                    {
                         // Left as they were: remove the copies
                         fs::remove_file(&out_full)?;
                         fs::remove_file(&out_min)?;

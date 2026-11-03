@@ -99,7 +99,7 @@ pub enum Command {
     /// Print the polymer chains in structure files (read only)
     Sequence(SequenceArgs),
 
-    /// Letter the blank chain column of PDB files (MDR-106), writing the
+    /// Set the chain IDs of PDB files by the MDR-106 rule, writing the
     /// results to another directory; the inputs are not changed
     LabelChains(LabelChainsArgs),
 

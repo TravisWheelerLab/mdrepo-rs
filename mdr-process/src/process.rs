@@ -872,45 +872,47 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
 }
 
 // --------------------------------------------------
-/// MDR-106: where the chain column of `full_pdb` and `min_pdb` is blank
-/// throughout, letter each polymer chain (`sequence::label_blank_chains`).
-/// Both files are written or neither: their chains must read back the same
-/// (minimal.pdb drops solvent and ions, never a chain residue), or the
-/// viewer's chains and md_chain's (read from full.pdb) would differ.
-/// Returns a warning for the submitter when the files are left blank.
+/// MDR-106: give `full_pdb` and `min_pdb` their chain IDs by the one rule,
+/// `sequence::assign_chain_ids`. Both files are written or neither: their
+/// chains must read back the same (minimal.pdb drops solvent and ions,
+/// never a chain residue), or the viewer's chains and md_chain's (read from
+/// full.pdb) would differ. Returns a warning for the submitter when the
+/// files are left as they were written.
 pub fn label_chains(full_pdb: &Path, min_pdb: &Path) -> Result<Vec<String>> {
     use sequence::Labeled;
 
-    let full_text = fs::read_to_string(full_pdb)?;
-    let min_text = fs::read_to_string(min_pdb)?;
     let left = |why: String| {
-        let msg =
-            format!("The chain IDs of full.pdb and minimal.pdb were left blank: {why}");
+        let msg = format!(
+            "The chain IDs of full.pdb and minimal.pdb were left as written: {why}"
+        );
         warn!("{msg}");
         vec![msg]
     };
-
-    let (full_new, chains) = match sequence::label_blank_chains(&full_text)? {
-        Labeled::HasChainIds | Labeled::NoChains => return Ok(vec![]),
-        Labeled::TooManyChains(n) => {
-            return Ok(left(format!(
-                "{n} chains, more than the {} letters available",
+    // The text to write, None to leave the file as it is
+    let decide = |path: &Path| -> Result<Result<(String, Option<String>), String>> {
+        let text = fs::read_to_string(path)?;
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        Ok(match sequence::assign_chain_ids(&text)? {
+            Labeled::Kept | Labeled::NoChains => Ok((text, None)),
+            Labeled::Done { text: new, .. } => Ok((text, Some(new))),
+            Labeled::TooManyChains(n) => Err(format!(
+                "{name} has {n} chains, more than the {} letters available",
                 sequence::CHAIN_LETTERS.len()
-            )));
-        }
-        Labeled::SeveralModels => {
-            return Ok(left("full.pdb has more than one MODEL".to_string()));
-        }
-        Labeled::Done { text, chains } => (text, chains),
+            )),
+            Labeled::SeveralModels => Err(format!("{name} has more than one MODEL")),
+        })
     };
-    let min_new = match sequence::label_blank_chains(&min_text)? {
-        Labeled::Done { text, .. } => text,
-        other => {
-            return Ok(left(format!(
-                "minimal.pdb could not be lettered as full.pdb was ({other:?})"
-            )));
-        }
+    let (full_old, full_new) = match decide(full_pdb)? {
+        Ok(d) => d,
+        Err(why) => return Ok(left(why)),
     };
+    let (min_old, min_new) = match decide(min_pdb)? {
+        Ok(d) => d,
+        Err(why) => return Ok(left(why)),
+    };
+    if full_new.is_none() && min_new.is_none() {
+        return Ok(vec![]);
+    }
 
     let key = |text: &str| -> Result<Vec<(String, Vec<String>)>> {
         Ok(sequence::chains_from_text(text)?
@@ -918,24 +920,29 @@ pub fn label_chains(full_pdb: &Path, min_pdb: &Path) -> Result<Vec<String>> {
             .map(|c| (c.label, c.residues))
             .collect())
     };
-    let (full_chains, min_chains) = (key(&full_new)?, key(&min_new)?);
+    let full_final = full_new.as_deref().unwrap_or(&full_old);
+    let min_final = min_new.as_deref().unwrap_or(&min_old);
+    let (full_chains, min_chains) = (key(full_final)?, key(min_final)?);
     if full_chains != min_chains {
         return Ok(left(format!(
-            "full.pdb has {} chains and minimal.pdb {}, or their residues differ",
+            "full.pdb has {} chains and minimal.pdb {}, or their IDs or residues differ",
             full_chains.len(),
             min_chains.len()
         )));
     }
 
     for (path, text) in [(full_pdb, full_new), (min_pdb, min_new)] {
-        let tmp = path.with_extension("pdb.chains");
-        fs::write(&tmp, text)?;
-        fs::rename(&tmp, path)?;
+        if let Some(text) = text {
+            let tmp = path.with_extension("pdb.chains");
+            fs::write(&tmp, text)?;
+            fs::rename(&tmp, path)?;
+        }
     }
     debug!(
-        r#"Lettered {chains} blank chain(s) in "{}" and "{}""#,
+        r#"Chain IDs of "{}" and "{}" set ({} chains)"#,
         full_pdb.display(),
-        min_pdb.display()
+        min_pdb.display(),
+        full_chains.len()
     );
     Ok(vec![])
 }
@@ -3450,7 +3457,7 @@ mod tests {
         fs::write(&min, &m)?;
         let warnings = label_chains(&full, &min)?;
         assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("left blank"));
+        assert!(warnings[0].contains("left as written"));
         assert_eq!(fs::read_to_string(&full)?, f);
         assert_eq!(fs::read_to_string(&min)?, m);
         Ok(())

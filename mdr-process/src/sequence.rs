@@ -888,16 +888,15 @@ pub fn find_blobs(text: &str, expected: &Formula) -> Result<Vec<Blob>> {
 }
 
 // --------------------------------------------------
-/// The chain IDs given to a file whose chain column is blank, in order
+/// The chain IDs given when a file is relettered, in order
 pub const CHAIN_LETTERS: &str =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
-/// What `label_blank_chains` did with a PDB's text
+/// What `assign_chain_ids` did with a PDB's text
 #[derive(Debug, PartialEq)]
 pub enum Labeled {
-    /// Some atom already has a chain ID: the file is left as it is, so a
-    /// submitter's own IDs are never renamed
-    HasChainIds,
+    /// Every chain already has its own letter: left as it is
+    Kept,
     /// No polymer chain, so nothing to letter
     NoChains,
     /// More chains than `CHAIN_LETTERS`: left as it is
@@ -908,18 +907,26 @@ pub enum Labeled {
     Done { text: String, chains: usize },
 }
 
-/// MDR-106. Where every atom's chain column (22) is blank, write a letter
-/// into it for each polymer chain this module finds, in file order, so that
-/// the file and `md_chain` agree (they are read with the same rules). Atoms
-/// outside every chain (ligands, ions, water, lipids) stay blank (Ken,
-/// 2026-11-03). Only column 22 changes, on ATOM/HETATM records and on a TER
-/// record that follows a lettered atom: atom order and count do not, so the
+/// MDR-106: the one rule for the chain IDs of the PDBs we publish, whatever
+/// wrote them (GROMACS, cpptraj for Amber, cpptraj/parmed for NAMD/CHARMM).
+///
+/// The chains are the ones this module finds, so the file and `md_chain`
+/// agree (they are read with the same rules). Their IDs are kept when each
+/// chain already has its own letter: one ID per chain (the splitter
+/// guarantees that), a letter A-Z or a-z, and no two chains the same (DDD's
+/// and the PDB's own IDs stay). Otherwise every chain is relettered A, B, ...
+/// in file order (Ken, 2026-11-03): a blank column; mdCATH's "0"; GPCRmd's
+/// "P" for every protein chain.
+///
+/// When relettering, an atom outside every chain (ligand, ion, water,
+/// lipid) keeps its ID unless that is now one of the chain letters, and is
+/// then blank (Ken, 2026-11-03): GPCRmd's W, M and I stay beside chains A
+/// and B.
+///
+/// Only column 22 changes, on ATOM/HETATM records and on a TER record (the
+/// ID of the atom before it): atom order and count do not, so the
 /// trajectories still match. Line endings are kept as they are.
-pub fn label_blank_chains(text: &str) -> Result<Labeled> {
-    let atoms = read_atoms(text)?;
-    if atoms.iter().any(|a| !a.chain_id.is_empty()) {
-        return Ok(Labeled::HasChainIds);
-    }
+pub fn assign_chain_ids(text: &str) -> Result<Labeled> {
     if text
         .lines()
         .filter(|l| l.starts_with("MODEL "))
@@ -928,28 +935,47 @@ pub fn label_blank_chains(text: &str) -> Result<Labeled> {
     {
         return Ok(Labeled::SeveralModels);
     }
+    let atoms = read_atoms(text)?;
     let structure = Structure::read(text)?;
     let num_chains = structure.chains.len();
     if num_chains == 0 {
         return Ok(Labeled::NoChains);
     }
+
+    // Is every chain's ID already its own letter?
+    let ids: Vec<&str> = structure.chains.iter().map(|c| c.label.as_str()).collect();
+    let own_letter =
+        |id: &str| id.len() == 1 && id.chars().all(|c| c.is_ascii_alphabetic());
+    let distinct: std::collections::HashSet<&str> = ids.iter().copied().collect();
+    if ids.iter().all(|id| own_letter(id)) && distinct.len() == ids.len() {
+        return Ok(Labeled::Kept);
+    }
+
     let letters: Vec<char> = CHAIN_LETTERS.chars().collect();
     if num_chains > letters.len() {
         return Ok(Labeled::TooManyChains(num_chains));
     }
+    let used = &letters[..num_chains];
 
-    // Each atom's letter, by residue
-    let mut atom_letter: Vec<Option<char>> = vec![None; atoms.len()];
+    // Each atom's ID: its chain's letter, or its own unless that is now a
+    // chain's
+    let mut atom_id: Vec<char> = atoms
+        .iter()
+        .map(|a| match a.chain_id.chars().next() {
+            Some(c) if !used.contains(&c) => c,
+            _ => ' ',
+        })
+        .collect();
     for (res, chain) in structure.residues.iter().zip(&structure.chain_of) {
         if let Some(c) = chain {
-            for slot in &mut atom_letter[res.first_atom..res.first_atom + res.num_atoms]
-            {
-                *slot = Some(letters[*c]);
+            for slot in &mut atom_id[res.first_atom..res.first_atom + res.num_atoms] {
+                *slot = letters[*c];
             }
         }
     }
 
-    let set_column = |line: &str, letter: char| -> Result<String> {
+    // `line` with column 22 set to `id`, unless it is already
+    let set_column = |line: &str, id: char| -> Result<String> {
         let (body, end) = match line.strip_suffix("\r\n") {
             Some(b) => (b, "\r\n"),
             None => match line.strip_suffix('\n') {
@@ -957,6 +983,13 @@ pub fn label_blank_chains(text: &str) -> Result<Labeled> {
                 None => (line, ""),
             },
         };
+        let current = body
+            .get(21..22)
+            .and_then(|c| c.chars().next())
+            .unwrap_or(' ');
+        if current == id {
+            return Ok(line.to_string());
+        }
         if !body.is_char_boundary(21.min(body.len()))
             || !body.is_char_boundary(22.min(body.len()))
         {
@@ -965,10 +998,10 @@ pub fn label_blank_chains(text: &str) -> Result<Labeled> {
         let mut out = String::with_capacity(body.len().max(22) + end.len());
         if body.len() < 22 {
             out.push_str(&format!("{body:<21}"));
-            out.push(letter);
+            out.push(id);
         } else {
             out.push_str(&body[..21]);
-            out.push(letter);
+            out.push(id);
             out.push_str(&body[22..]);
         }
         out.push_str(end);
@@ -984,18 +1017,16 @@ pub fn label_blank_chains(text: &str) -> Result<Labeled> {
             in_model = false;
         }
         if in_model && (line.starts_with("ATOM  ") || line.starts_with("HETATM")) {
-            last = atom_letter[i];
+            let id = atom_id[i];
             i += 1;
-            match last {
-                Some(letter) => out.push_str(&set_column(line, letter)?),
-                None => out.push_str(line),
-            }
+            last = Some(id);
+            out.push_str(&set_column(line, id)?);
         } else if in_model && line.starts_with("TER") {
-            // TER carries the chain ID of the chain it ends, where it has
-            // the column at all (cpptraj writes it; a bare "TER" has none)
+            // TER carries the ID of the chain it ends, where it has the
+            // column at all (cpptraj writes it; a bare "TER" has none)
             match last {
-                Some(letter) if line.trim_end().len() >= 22 => {
-                    out.push_str(&set_column(line, letter)?)
+                Some(id) if line.trim_end().len() >= 22 => {
+                    out.push_str(&set_column(line, id)?)
                 }
                 _ => out.push_str(line),
             }
@@ -1390,7 +1421,7 @@ mod tests {
     #[test]
     fn blank_chains_are_lettered_in_file_order() {
         let text = three_blank_chains().join("\n") + "\n";
-        let Labeled::Done { text: got, chains } = label_blank_chains(&text).unwrap()
+        let Labeled::Done { text: got, chains } = assign_chain_ids(&text).unwrap()
         else {
             panic!("not labeled");
         };
@@ -1420,14 +1451,14 @@ mod tests {
             assert_eq!(b.first_residue, a.first_residue);
         }
         // A second pass leaves the file alone
-        assert_eq!(label_blank_chains(&got).unwrap(), Labeled::HasChainIds);
+        assert_eq!(assign_chain_ids(&got).unwrap(), Labeled::Kept);
     }
 
     #[test]
     fn one_blank_chain_is_a() {
         let mut s = 0;
         let text = chain(&mut s, "MET ALA LYS", " ", 1, 0.0).join("\n");
-        let Labeled::Done { text: got, chains } = label_blank_chains(&text).unwrap()
+        let Labeled::Done { text: got, chains } = assign_chain_ids(&text).unwrap()
         else {
             panic!("not labeled");
         };
@@ -1438,14 +1469,56 @@ mod tests {
     }
 
     #[test]
-    fn existing_chain_ids_are_never_renamed() {
+    fn chains_with_their_own_letters_are_kept() {
+        // DDD's and the PDB's IDs: one letter per chain, none repeated; the
+        // ligand sharing chain X's letter and the blank water do not matter
         let mut s = 0;
         let mut lines = chain(&mut s, "MET ALA LYS", "X", 1, 0.0);
-        lines.extend(chain(&mut s, "GLY SER", " ", 1, 100.0));
-        assert_eq!(
-            label_blank_chains(&lines.join("\n")).unwrap(),
-            Labeled::HasChainIds
-        );
+        lines.extend(chain(&mut s, "GLY SER", "Y", 1, 100.0));
+        s += 1;
+        lines.push(atom(s, "C1", "LIG", "X", 9, [300.0, 0.0, 0.0]));
+        s += 1;
+        lines.push(atom(s, "O", "HOH", " ", 10, [400.0, 0.0, 0.0]));
+        assert_eq!(assign_chain_ids(&lines.join("\n")).unwrap(), Labeled::Kept);
+    }
+
+    #[test]
+    fn a_letter_shared_by_two_chains_is_relettered_and_other_ids_kept() {
+        // GPCRmd's shape: two protein chains both "P", then water "W", ions
+        // "I", and a lipid "A" that collides with the new chain A
+        let mut s = 0;
+        let mut lines = chain(&mut s, "MET ALA LYS", "P", 1, 0.0);
+        lines.extend(chain(&mut s, "GLY SER", "P", 1, 100.0));
+        for (res, id, x) in [
+            ("HOH", "W", 300.0),
+            ("SOD", "I", 400.0),
+            ("LIP", "A", 500.0),
+        ] {
+            s += 1;
+            lines.push(atom(s, "O", res, id, 1, [x, 0.0, 0.0]));
+        }
+        let text = lines.join("\n");
+        let Labeled::Done { text: got, chains } = assign_chain_ids(&text).unwrap()
+        else {
+            panic!("not relettered");
+        };
+        assert_eq!(chains, 2);
+        let col = column_22(&got);
+        assert!(col[..9].iter().all(|&c| c == 'A'));
+        assert!(col[9..15].iter().all(|&c| c == 'B'));
+        assert_eq!(&col[15..], &['W', 'I', ' ']);
+        assert_eq!(assign_chain_ids(&got).unwrap(), Labeled::Kept);
+    }
+
+    #[test]
+    fn a_digit_is_not_a_letter() {
+        // mdCATH writes chain "0": relettered A (Ken, 2026-11-03)
+        let mut s = 0;
+        let text = chain(&mut s, "MET ALA LYS", "0", 1, 0.0).join("\n");
+        let Labeled::Done { text: got, .. } = assign_chain_ids(&text).unwrap() else {
+            panic!("not relettered");
+        };
+        assert!(column_22(&got).iter().all(|&c| c == 'A'));
     }
 
     #[test]
@@ -1456,7 +1529,7 @@ mod tests {
         lines.extend(chain(&mut s, "GLY SER", " ", 1, 100.0));
         lines.push("TER".to_string());
         let text = lines.join("\r\n") + "\r\n";
-        let Labeled::Done { text: got, .. } = label_blank_chains(&text).unwrap() else {
+        let Labeled::Done { text: got, .. } = assign_chain_ids(&text).unwrap() else {
             panic!("not labeled");
         };
         let ters: Vec<&str> =
@@ -1475,20 +1548,20 @@ mod tests {
             lines.extend(chain(&mut s, "ALA", " ", i + 1, 100.0 * i as f64));
         }
         assert_eq!(
-            label_blank_chains(&lines.join("\n")).unwrap(),
+            assign_chain_ids(&lines.join("\n")).unwrap(),
             Labeled::TooManyChains(63)
         );
 
         let mut s = 0;
         let model = chain(&mut s, "MET ALA", " ", 1, 0.0).join("\n");
         let text = format!("MODEL 1\n{model}\nENDMDL\nMODEL 2\n{model}\nENDMDL\n");
-        assert_eq!(label_blank_chains(&text).unwrap(), Labeled::SeveralModels);
+        assert_eq!(assign_chain_ids(&text).unwrap(), Labeled::SeveralModels);
     }
 
     #[test]
     fn no_polymer_no_letters() {
         let text = atom(1, "O", "HOH", " ", 1, [0.0, 0.0, 0.0]);
-        assert_eq!(label_blank_chains(&text).unwrap(), Labeled::NoChains);
+        assert_eq!(assign_chain_ids(&text).unwrap(), Labeled::NoChains);
     }
 
     // ---- Chain boundaries, unchanged from 44a6695 ----
