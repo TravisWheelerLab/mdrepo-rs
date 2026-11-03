@@ -24,12 +24,14 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   for links between residues other than a chain's backbone (from
   extract_bonds.py's bonds). Each file is read back against the pdb.
 - **Written after the import**, which makes the accession the file names
-  (Ken): `make_import_json` saves `mmcif-input.json` (title, UniProt
-  ranges per structure chain, ligands with residue names); after
-  `run_import`, `add_import_mmcifs` writes the pair, records them as
-  "Processed/Minimal mmCIF structure" (needs md-repo-app 0300) and adds
-  them to import.json so the push uploads and verifies them. Not written:
-  a warning, as for the psf.
+  (Ken): `make_import_json` saves `mmcif-input.json` (the title, and each
+  ligand's residue name from mol_id.py by InChIKey); after `run_import`,
+  `add_import_mmcifs` reads the UniProt references and ligands from the
+  database (`mmcif_input_from_db`: a polymer seen before is not looked up
+  again, so only the database has every chain's references), writes the
+  pair, adds them to import.json and then records them as "Processed/
+  Minimal mmCIF structure" (md-repo-app 0300), so the push uploads and
+  verifies them. Not written: a warning, as for the psf.
 - `mdr-process write-mmcif` writes the pair from two pdbs without the
   database, for trying it.
 
