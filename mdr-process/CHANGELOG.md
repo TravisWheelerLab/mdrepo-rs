@@ -11,6 +11,14 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.28.0 (unreleased)
+
+- **The .pdb pair's file types are now "Processed PDB structure" and
+  "Minimal PDB structure"** (were "Processed structure" / "Minimal
+  structure"), like the GRO and mmCIF types. Needs md-repo-app migration
+  0301, which renames the types and retypes the existing rows: deploy the
+  two together, since each side's names fail the other's foreign key.
+
 ## 0.27.0 (unreleased)
 
 - **`standardize --server S --simulation-id N` also writes the mmCIF pair**

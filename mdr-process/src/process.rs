@@ -2609,14 +2609,16 @@ fn collect_processed_files(
     let mut files = vec![];
 
     // A .gro has coordinates and a box but no bonds, so it is a "GRO
-    // structure" (md-repo-app migration 0298). "topology" is the standard
-    // .psf, when it was written (not for coarse-grained systems).
+    // structure" (md-repo-app migration 0298); the .pdb is a "PDB
+    // structure" (migration 0301; was "Processed/Minimal structure").
+    // "topology" is the standard .psf, when it was written (not for
+    // coarse-grained systems).
     let mut outputs: Vec<(&str, &PathBuf)> = vec![
         ("Processed GRO structure", &example_trajectory.full_gro),
-        ("Processed structure", &example_trajectory.full_pdb),
+        ("Processed PDB structure", &example_trajectory.full_pdb),
         ("Processed trajectory", &example_trajectory.full_xtc),
         ("Minimal GRO structure", &example_trajectory.min_gro),
-        ("Minimal structure", &example_trajectory.min_pdb),
+        ("Minimal PDB structure", &example_trajectory.min_pdb),
         ("Minimal trajectory", &example_trajectory.min_xtc),
         (
             "Sampled minimal trajectory",
