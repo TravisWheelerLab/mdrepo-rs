@@ -800,9 +800,19 @@ pub fn expected_peptide_formula(
         *v = u32::try_from(i64::from(*v) + n).unwrap_or(0);
     };
     for code in residues {
-        let atoms = amino_acid_heavy_atoms(code).ok_or_else(|| {
-            anyhow!("no composition known for residue {code}, so it cannot be checked")
-        })?;
+        // The 22 standard amino acids, else the CCD table (decision 4(b),
+        // residue_formulas.rs); a code in neither is refused
+        let atoms: Vec<(&str, u32)> = match amino_acid_heavy_atoms(code) {
+            Some(atoms) => atoms.to_vec(),
+            None => crate::residue_formulas::component_heavy_atoms(code)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "no composition known for residue {code}, so it cannot be checked \
+                         (add it to mdr-process/scripts/residue-codes.txt)"
+                    )
+                })?
+                .to_vec(),
+        };
         for (e, n) in atoms {
             add(e, i64::from(n), &mut formula);
         }
@@ -2147,7 +2157,20 @@ mod tests {
         assert_eq!(capped, formula(&[("C", 9), ("N", 3), ("O", 3)]));
         let amide = expected_peptide_formula(&ala2, None, Some("NH2")).unwrap();
         assert_eq!(amide, formula(&[("C", 6), ("N", 3), ("O", 2)]));
-        assert!(expected_peptide_formula(&codes("SEP ALA"), None, None).is_err());
+        // A code outside the CCD table is still refused
+        assert!(expected_peptide_formula(&codes("ZZQ ALA"), None, None).is_err());
+    }
+
+    #[test]
+    fn non_standard_residues_come_from_the_ccd_table() {
+        // Phosphoserine: C3 N1 O6 P1 free, + Ala C3 N1 O2, minus one O
+        let got = expected_peptide_formula(&codes("SEP ALA"), None, None).unwrap();
+        assert_eq!(got, formula(&[("C", 6), ("N", 2), ("O", 7), ("P", 1)]));
+        // 2ql5's inhibitor (ACE)DMQ(ASJ): the aldehyde Asp at the C-terminus
+        let got =
+            expected_peptide_formula(&codes("ASP MET GLN ASJ"), Some("ACE"), None)
+                .unwrap();
+        assert_eq!(got, formula(&[("C", 20), ("N", 5), ("O", 10), ("S", 1)]));
     }
 
     /// A blob residue: `atoms` as (name, element), all one residue name

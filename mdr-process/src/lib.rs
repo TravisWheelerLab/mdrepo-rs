@@ -8,6 +8,7 @@ pub mod psf_elements;
 pub mod psf_writer;
 pub mod reference;
 pub mod reprocess;
+pub mod residue_formulas;
 pub mod sequence;
 pub mod ticket;
 pub mod types;
