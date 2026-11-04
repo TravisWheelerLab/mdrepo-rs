@@ -800,9 +800,21 @@ pub fn expected_peptide_formula(
         *v = u32::try_from(i64::from(*v) + n).unwrap_or(0);
     };
     for code in residues {
-        let atoms = amino_acid_heavy_atoms(code).ok_or_else(|| {
-            anyhow!("no composition known for residue {code}, so it cannot be checked")
-        })?;
+        // The 22 standard amino acids, else the CCD table (decision 4(b),
+        // residue_formulas.rs); a code in neither is refused
+        let atoms: Vec<(&str, u32)> = match amino_acid_heavy_atoms(code) {
+            Some(atoms) => atoms.to_vec(),
+            None => crate::residue_formulas::component_heavy_atoms(code)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "no composition known for residue {code}, so it cannot be checked \
+                         (add it with `mdr-process ccd-formula {code}`)"
+                    )
+                })?
+                .iter()
+                .map(|(e, n)| (e.as_str(), *n))
+                .collect(),
+        };
         for (e, n) in atoms {
             add(e, i64::from(n), &mut formula);
         }
@@ -2147,7 +2159,232 @@ mod tests {
         assert_eq!(capped, formula(&[("C", 9), ("N", 3), ("O", 3)]));
         let amide = expected_peptide_formula(&ala2, None, Some("NH2")).unwrap();
         assert_eq!(amide, formula(&[("C", 6), ("N", 3), ("O", 2)]));
-        assert!(expected_peptide_formula(&codes("SEP ALA"), None, None).is_err());
+        // A code outside the CCD table is still refused
+        assert!(expected_peptide_formula(&codes("ZZQ ALA"), None, None).is_err());
+    }
+
+    #[test]
+    fn non_standard_residues_come_from_the_ccd_table() {
+        // Phosphoserine: C3 N1 O6 P1 free, + Ala C3 N1 O2, minus one O
+        let got = expected_peptide_formula(&codes("SEP ALA"), None, None).unwrap();
+        assert_eq!(got, formula(&[("C", 6), ("N", 2), ("O", 7), ("P", 1)]));
+        // 2ql5's inhibitor (ACE)DMQ(ASJ): the aldehyde Asp at the C-terminus
+        let got =
+            expected_peptide_formula(&codes("ASP MET GLN ASJ"), Some("ACE"), None)
+                .unwrap();
+        assert_eq!(got, formula(&[("C", 20), ("N", 5), ("O", 10), ("S", 1)]));
+    }
+
+    /// A formula written as DDD's sort wrote it, e.g. `C22N5O9P1`
+    fn lig(text: &str) -> Formula {
+        let mut out = Formula::new();
+        let mut chars = text.chars().peekable();
+        while let Some(c) = chars.next() {
+            let mut element = c.to_string();
+            while chars.peek().is_some_and(|c| c.is_ascii_lowercase()) {
+                element.push(chars.next().unwrap());
+            }
+            let mut count = String::new();
+            while chars.peek().is_some_and(|c| c.is_ascii_digit()) {
+                count.push(chars.next().unwrap());
+            }
+            out.insert(element.to_uppercase(), count.parse().unwrap_or(1));
+        }
+        out
+    }
+
+    /// Real DDD group B bundles (2026-11-04): LIG's heavy atoms, read from
+    /// each tarball's Pro_lig.pdb, against RCSB's sequence for the peptide
+    /// entity. Each is (bundle, LIG, residues, N cap, C cap).
+    const DDD_NON_STANDARD: &[(&str, &str, &str, Option<&str>, Option<&str>)] = &[
+        ("1o9d", "C26N6O13P1", "GLN SER TYR TPO VAL", None, None),
+        ("1a1b", "C26N3O9P1", "PTR GLU DIP", Some("ACE"), None),
+        ("3s8o", "C22N5O9P1", "PTR 02K ASN", Some("ACE"), Some("NH2")),
+        ("3ove", "C23N5O9P1", "ACT PTR 03E ASN", None, Some("NH2")),
+        ("3vb4", "C24N6O6", "BOC ALA VAL LEU 0JU", None, None),
+        (
+            "4dfw",
+            "C36N8O12P1",
+            "0LF LEU HIS SER TPO",
+            Some("ACE"),
+            Some("NH2"),
+        ),
+        (
+            "1fkn",
+            "C41N8O14",
+            "GLU VAL ASN 1OL ALA GLU PHE",
+            None,
+            None,
+        ),
+        (
+            "4x9v",
+            "C48N8O12P1",
+            "4KY LEU 56A SER TPO",
+            None,
+            Some("NH2"),
+        ),
+        (
+            "5fot",
+            "C25N7O6",
+            "PHE HIS THR ABA",
+            Some("ACE"),
+            Some("NH2"),
+        ),
+        ("1b3h", "C21N5O4", "LYS ALC LYS", None, None),
+        (
+            "1jm4",
+            "C60N26O16S1",
+            "SER TYR GLY ARG ALY LYS ARG ARG GLN ARG CYS",
+            None,
+            None,
+        ),
+        ("1f1j", "C20N4O11", "ASP GLU VAL ASJ", Some("ACE"), None),
+        ("1b4h", "C16N6O4", "LYS DAB LYS", None, None),
+        (
+            "3rq7",
+            "C40N8O11P1",
+            "PRO LEU 56A SER TPO",
+            Some("ACE"),
+            Some("NH2"),
+        ),
+        (
+            "1njt",
+            "C23F3N5O8",
+            "VAL DMK DMH ALA CFT",
+            Some("ACE"),
+            None,
+        ),
+        (
+            "3ft2",
+            "C45N11O17",
+            "VAL LEU CIR ASP ASP LEU LEU GLU ALA",
+            None,
+            None,
+        ),
+        ("4whl", "C38N7O10P1", "KAC 56A SER TPO", None, Some("NH2")),
+    ];
+
+    #[test]
+    fn ddd_bundles_with_non_standard_residues_match_their_lig() {
+        for (bundle, want, residues, n_cap, c_cap) in DDD_NON_STANDARD {
+            let got = expected_peptide_formula(&codes(residues), *n_cap, *c_cap)
+                .unwrap_or_else(|e| panic!("{bundle}: {e}"));
+            assert_eq!(got, lig(want), "{bundle}");
+        }
+    }
+
+    #[test]
+    fn ddd_bundles_miss_by_one_residue_dropped() {
+        // The check is exact: drop any one residue and none of them matches
+        for (bundle, want, residues, n_cap, c_cap) in DDD_NON_STANDARD {
+            let all = codes(residues);
+            for skip in 0..all.len() {
+                let fewer: Vec<String> = all
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != skip)
+                    .map(|(_, c)| c.clone())
+                    .collect();
+                if fewer.is_empty() {
+                    continue;
+                }
+                let got = expected_peptide_formula(&fewer, *n_cap, *c_cap).unwrap();
+                assert_ne!(got, lig(want), "{bundle} without residue {skip}");
+            }
+        }
+    }
+
+    #[test]
+    fn ddd_bundles_miss_without_their_caps() {
+        for (bundle, want, residues, n_cap, c_cap) in DDD_NON_STANDARD {
+            if n_cap.is_none() && c_cap.is_none() {
+                continue;
+            }
+            let got = expected_peptide_formula(&codes(residues), None, None).unwrap();
+            assert_ne!(got, lig(want), "{bundle} without caps");
+        }
+    }
+
+    #[test]
+    fn one_non_standard_residue_alone_is_its_own_formula() {
+        // No peptide bond, so no water lost: SEP free is C3 N1 O6 P1
+        let got = expected_peptide_formula(&codes("SEP"), None, None).unwrap();
+        assert_eq!(got, formula(&[("C", 3), ("N", 1), ("O", 6), ("P", 1)]));
+    }
+
+    #[test]
+    fn non_standard_and_standard_residues_mix() {
+        // TPO + GLY: C4 N1 O6 P1 + C2 N1 O2, minus one O
+        let got = expected_peptide_formula(&codes("TPO GLY"), None, None).unwrap();
+        assert_eq!(got, formula(&[("C", 6), ("N", 2), ("O", 7), ("P", 1)]));
+        // Order does not change composition
+        let back = expected_peptide_formula(&codes("GLY TPO"), None, None).unwrap();
+        assert_eq!(got, back);
+    }
+
+    #[test]
+    fn a_non_standard_residue_takes_both_caps() {
+        // (ACE)(SEP)(NH2): SEP C3 N1 O6 P1, ACE +C2 +O1, NH2 +N1 -O1
+        let got =
+            expected_peptide_formula(&codes("SEP"), Some("ACE"), Some("NH2")).unwrap();
+        assert_eq!(got, formula(&[("C", 5), ("N", 2), ("O", 6), ("P", 1)]));
+    }
+
+    #[test]
+    fn fluorine_and_other_elements_come_through_the_table() {
+        // CFT (trifluoromethyl, C H F3) brings F into the formula
+        let got = expected_peptide_formula(&codes("ALA CFT"), None, None).unwrap();
+        assert_eq!(got.get("F"), Some(&3));
+    }
+
+    #[test]
+    fn an_unknown_code_is_refused_and_says_how_to_add_it() {
+        let err = expected_peptide_formula(&codes("ALA ZZQ"), None, None).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("ZZQ"), "{msg}");
+        assert!(msg.contains("mdr-process ccd-formula ZZQ"), "{msg}");
+    }
+
+    #[test]
+    fn an_unknown_code_anywhere_refuses_the_whole_sequence() {
+        for seq in ["ZZQ ALA GLY", "ALA ZZQ GLY", "ALA GLY ZZQ"] {
+            assert!(
+                expected_peptide_formula(&codes(seq), None, None).is_err(),
+                "{seq}"
+            );
+        }
+    }
+
+    #[test]
+    fn standard_residues_still_come_from_sequence_rs_not_the_table() {
+        // ALA is not in the table, and still works
+        assert!(crate::residue_formulas::component_heavy_atoms("ALA").is_none());
+        let got = expected_peptide_formula(&codes("ALA"), None, None).unwrap();
+        assert_eq!(got, formula(&[("C", 3), ("N", 1), ("O", 2)]));
+    }
+
+    #[test]
+    fn a_blob_with_a_non_standard_residue_is_found_by_composition() {
+        // SEP-ALA written as one LIG residue: C6 N2 O7 P1
+        let mut s = 0;
+        let mut lines = chain(&mut s, "MET ALA GLY", "A", 1, 0.0);
+        let mut atoms = vec![];
+        for (el, n) in [("C", 6), ("N", 2), ("O", 7), ("P", 1)] {
+            for i in 0..n {
+                atoms.push((format!("{el}{i}"), el));
+            }
+        }
+        let atoms: Vec<(&str, &str)> =
+            atoms.iter().map(|(a, e)| (a.as_str(), *e)).collect();
+        lines.extend(blob(&mut s, "LIG", 200, &atoms, 40.0));
+        let text = lines.join("\n") + "\nEND\n";
+        let want = expected_peptide_formula(&codes("SEP ALA"), None, None).unwrap();
+        let got = find_blobs(&text, &want).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].name, "LIG");
+        // Threonine's phospho form has one C more: not this blob
+        let other = expected_peptide_formula(&codes("TPO ALA"), None, None).unwrap();
+        assert!(find_blobs(&text, &other).unwrap().is_empty());
     }
 
     /// A blob residue: `atoms` as (name, element), all one residue name

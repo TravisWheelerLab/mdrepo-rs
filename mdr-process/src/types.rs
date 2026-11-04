@@ -124,6 +124,28 @@ pub enum Command {
     /// Check md_simulation_uniprot's links against the simulations' chains,
     /// add those that pass to the polymers, and report those that do not
     BackfillDeclaredUniprot(BackfillDeclaredUniprotArgs),
+
+    /// Add chemical components to the residue-formula table
+    /// (mdr-process/data/residue-formulas.tsv) from the PDB's CCD; rebuild
+    /// afterwards. Codes already in the table are left as they are
+    CcdFormula(CcdFormulaArgs),
+}
+
+// --------------------------------------------------
+#[derive(Debug, Parser)]
+pub struct CcdFormulaArgs {
+    /// Chemical component codes, e.g. TPO SEP ASJ
+    #[arg(value_name = "CODE", required = true)]
+    pub codes: Vec<String>,
+
+    /// The table to update (in a mdrepo-rs checkout)
+    #[arg(
+        short,
+        long,
+        value_name = "TSV",
+        default_value = "mdr-process/data/residue-formulas.tsv"
+    )]
+    pub table: PathBuf,
 }
 
 // --------------------------------------------------
