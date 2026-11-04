@@ -11,6 +11,19 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.30.0 (unreleased)
+
+- **A DNA or RNA ligand written as one residue is matched by composition**,
+  as peptides are (DDD's `LIG`; the TOML's `sequence_type = "dna"|"rna"`).
+  Until now `place_chains` refused it as "not supported yet". The
+  candidates (`sequence::expected_nucleic_formulas`): each nucleotide's CCD
+  heavy atoms (standard DA..DT, A, C, G, U; others from the residue-formula
+  table), minus one O per phosphodiester bond; then the same without the 5'
+  phosphate (P1 O3 fewer), which PDB entries often leave off. Checked on
+  DDD group B's six: 3bbb, 4nku, 6kdi without it, 4i67, 5o58, 6p7q with it,
+  as RCSB's own names for them say (`5'-D(*AP*G)` vs `5'-R(P*AP*G)`). When
+  nothing matches, the message lists both formulas.
+
 ## 0.29.0 (unreleased)
 
 - **Ligands declared by sequence can use non-standard residues** (Travis
