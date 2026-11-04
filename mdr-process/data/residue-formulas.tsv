@@ -1,0 +1,217 @@
+code	type	formula
+00S	non-polymer	C8 H11 N3
+01W	L-peptide linking	C10 H12 N4 O6
+02J	peptide-like	C5 H5 N O3
+02K	peptide linking	C7 H13 N O2
+03E	peptide linking	C8 H15 N O2
+08M	L-peptide linking	C10 H14 N4 O3
+0DQ	non-polymer	C8 H7 N3 S
+0JU	non-polymer	C5 H11 N3 O
+0LF	L-peptide linking	C15 H21 N O3
+0OB	non-polymer	C11 H10 O2 S
+0QE	non-polymer	C H3 Cl
+0UO	peptide-like	C12 H14 N2 O3
+0W5	non-polymer	C13 H22 O2
+0W6	L-peptide linking	C5 H11 N O2
+0XL	peptide linking	C6 H13 N O2
+0XM	non-polymer	C13 H13 N
+0XN	non-polymer	C13 H11 F2 N
+0Y8	L-peptide linking	C14 H13 Br N2 O3
+0Y9	peptide linking	C6 H9 N O2
+0YA	non-polymer	C3 H7 N O2 S
+1AC	peptide linking	C4 H7 N O2
+1HB	peptide-like	C7 H16 N2 O2
+1MH	L-peptide linking	C8 H10 N2 O2
+1OL	peptide-like	C10 H21 N O3
+1U8	L-peptide linking	C14 H17 N O5
+1XY	non-polymer	C9 H11 N O
+200	L-peptide linking	C9 H10 Cl N O2
+22G	L-peptide linking	C18 H22 N2 O3
+24M	peptide-like	C12 H23 N O3
+24O	peptide-like	C12 H21 N O4
+2KY	L-peptide linking	C7 H13 N O2
+2MR	L-peptide linking	C8 H18 N4 O2
+2OP	non-polymer	C3 H6 O3
+2SO	L-peptide linking	C24 H38 N3 O4
+2UE	non-polymer	C10 H13 N3 O
+3A0	non-polymer	C7 H13 N O2
+3ZH	L-peptide linking	C31 H51 N3 O4
+4KY	peptide linking	C15 H25 N O4
+4L0	L-peptide linking	C13 H23 N O4
+4PH	L-peptide linking	C10 H13 N O2
+4WQ	L-peptide linking	C10 H21 N O2
+56A	L-peptide linking	C20 H29 N3 O2
+5JP	non-polymer	C4 H9 N O3
+5OM	L-peptide linking	C10 H19 N O5
+5PY	DNA linking	C10 H15 N2 O7 P
+5XU	L-peptide linking	C3 H7 N O
+64T	DNA linking	C10 H17 N2 O9 P
+69P	non-polymer	C9 H12 N6
+73N	L-peptide linking	C7 H14 N4 O4
+73O	L-peptide linking	C10 H13 N O3
+73P	L-peptide linking	C7 H14 N2 O4
+7BB	peptide-like	C15 H24 N2 O6 S
+7XC	D-peptide linking	C10 H14 N4 O2
+9DK	non-polymer	C10 H15 N3 O3
+9DQ	non-polymer	C4 H7 N5 O2
+9DT	L-peptide linking	C10 H12 F N O2
+9DW	non-polymer	C18 H21 N O3
+9DZ	non-polymer	C13 H20 N2 O
+ABA	L-peptide linking	C4 H9 N O2
+AC5	peptide linking	C6 H11 N O2
+ACE	non-polymer	C2 H4 O
+ACT	non-polymer	C2 H3 O2
+AG2	non-polymer	C5 H14 N4
+AKZ	peptide-like	C4 H9 N O4
+ALC	L-peptide linking	C9 H17 N O2
+ALN	L-peptide linking	C13 H13 N O2
+ALQ	non-polymer	C4 H8 O2
+ALY	L-peptide linking	C8 H16 N2 O3
+AME	L-peptide NH3 amino terminus	C7 H13 N O3 S
+AR7	peptide-like	C6 H17 N4 O2
+ASA	L-peptide linking	C4 H7 N O3
+ASJ	peptide-like	C4 H9 N O3
+B3A	L-peptide linking	C4 H9 N O2
+B3L	L-peptide linking	C7 H15 N O2
+B3Q	L-peptide linking	C6 H12 N2 O3
+BAL	peptide-like	C3 H7 N O2
+BB6	peptide linking	C4 H7 N O2 S
+BB7	peptide linking	C5 H9 N O3 S
+BB8	L-peptide linking	C9 H11 N O3
+BB9	peptide linking	C3 H5 N O2 S
+BEZ	non-polymer	C7 H6 O2
+BOC	non-polymer	C5 H10 O3
+BSE	L-peptide linking	C4 H9 N O3
+BTK	L-peptide linking	C10 H20 N2 O3
+CFT	non-polymer	C H F3
+CHG	L-peptide linking	C8 H15 N O2
+CHS	peptide-like	C11 H21 N O3
+CIR	L-peptide linking	C6 H13 N3 O3
+CKC	non-polymer	C7 H16 N2 O
+CME	L-peptide linking	C5 H11 N O3 S2
+CPI	D-peptide linking	C6 H11 N O2
+CSI	non-polymer	C7 H12 N4 O4
+CSO	L-peptide linking	C3 H7 N O3 S
+CZS	peptide linking	C10 H9 Cl N2 O2 S
+D11	D-peptide linking	C4 H10 N O6 P
+DA2	L-peptide linking	C8 H18 N4 O2
+DAB	L-peptide linking	C4 H10 N2 O2
+DAL	D-peptide linking	C3 H7 N O2
+DAR	D-peptide linking	C6 H15 N4 O2
+DAS	D-peptide linking	C4 H7 N O4
+DBB	D-peptide linking	C4 H9 N O2
+DFI	L-peptide linking	C8 H15 F2 N O3
+DFO	L-peptide linking	C8 H15 F2 N O4
+DGL	D-peptide linking	C5 H9 N O4
+DHA	peptide linking	C3 H5 N O2
+DHL	L-peptide linking	C2 H7 N S
+DIP	non-polymer	C10 H23 N
+DIX	non-polymer	C9 H19 N
+DIY	non-polymer	C9 H19 N
+DLE	D-peptide linking	C6 H13 N O2
+DLY	D-peptide linking	C6 H14 N2 O2
+DMG	non-polymer	C4 H9 N O2
+DMH	L-peptide linking	C6 H12 N2 O3
+DMK	L-peptide linking	C6 H11 N O4
+DPN	D-peptide linking	C9 H11 N O2
+DPP	L-peptide linking	C3 H8 N2 O2
+DPR	D-peptide linking	C5 H9 N O2
+DSG	D-peptide linking	C4 H8 N2 O3
+DSN	D-peptide linking	C3 H7 N O3
+DTY	D-peptide linking	C9 H11 N O3
+DVA	D-peptide linking	C5 H11 N O2
+ECC	L-peptide linking	C5 H12 N2 O2
+EOE	L-peptide linking	C6 H11 N O2
+FC0	L-peptide COOH carboxy terminus	C10 H11 N O4
+FDL	L-peptide linking	C18 H23 N3 O4
+FE3	non-polymer	C9 H10 Cl N O2
+FME	L-peptide linking	C6 H11 N O3 S
+FPR	L-peptide linking	C13 H17 N O3
+FQA	L-peptide linking	C13 H20 N2 O2
+FTY	L-peptide linking	C10 H12 F2 N O5 P
+FUM	non-polymer	C4 H4 O4
+GNC	L-peptide linking	C6 H12 N2 O3
+HCI	non-polymer	C9 H10 O2
+HLX	L-peptide linking	C7 H15 N O2
+HMR	L-peptide linking	C7 H16 N4 O2
+HPE	L-peptide linking	C10 H13 N O2
+HSV	L-peptide linking	C6 H10 N3 O
+HYP	L-peptide linking	C5 H9 N O3
+IAS	L-beta-peptide, C-gamma linking	C4 H7 N O4
+IBU	non-polymer	C5 H10 O3
+IIL	L-peptide linking	C6 H13 N O2
+IVA	non-polymer	C5 H10 O2
+KAC	peptide-like	C11 H13 N O3
+KCR	L-peptide linking	C10 H18 N2 O3
+L2O	peptide-like	C7 H15 N O3
+LHE	peptide-like	C12 H26 N2 O3
+LLP	L-peptide linking	C14 H22 N3 O7 P
+LYJ	non-polymer	C6 H16 N2 O
+LYK	peptide-like	C6 H16 N2 O2
+LYO	L-peptide linking	C6 H14 N2 O3
+LYT	non-polymer	C4 H11 N
+M3L	L-peptide linking	C9 H21 N2 O2
+MAA	L-peptide linking	C4 H9 N O2
+MAZ	non-polymer	C8 H9 N O3
+MCM	non-polymer	C10 H9 N O2
+MEN	L-peptide linking	C5 H10 N2 O3
+MH6	peptide linking	C3 H5 N O3
+MLE	L-peptide linking	C7 H15 N O2
+MLY	L-peptide linking	C8 H18 N2 O2
+MLZ	L-peptide linking	C7 H16 N2 O2
+MSE	L-peptide linking	C5 H11 N O2 Se
+NAL	L-peptide linking	C13 H13 N O2
+NH2	non-polymer	H2 N
+NLE	L-peptide linking	C6 H13 N O2
+NME	non-polymer	C H5 N
+NVA	L-peptide linking	C5 H11 N O2
+OAR	peptide-like	C6 H16 N4 O
+OBF	L-peptide linking	C4 H7 F2 N O2
+OCE	non-polymer	C8 H14 O4
+OIC	L-peptide linking	C9 H15 N O2
+ORN	L-peptide linking	C5 H12 N2 O2
+P4E	L-peptide linking	C11 H13 N O2
+PBF	L-peptide linking	C16 H15 N O3
+PCA	L-peptide linking	C5 H7 N O3
+PFF	L-peptide linking	C9 H10 F N O2
+PHA	L-peptide linking	C9 H11 N O
+PHL	L-peptide linking	C9 H13 N O
+PHQ	non-polymer	C8 H7 Cl O2
+PJJ	peptide-like	C19 H23 N O3
+PLJ	L-peptide linking	C6 H11 N O2
+PPI	non-polymer	C3 H6 O2
+PPN	L-peptide linking	C9 H10 N2 O4
+PSA	peptide-like	C11 H15 N O3
+PTH	L-peptide linking	C10 H14 N O7 P
+PTM	L-peptide linking	C10 H14 N O6 P
+PTR	L-peptide linking	C9 H12 N O6 P
+PUK	peptide-like	C18 H22 N2 O2
+QSC	non-polymer	C8 H11 N
+RGL	L-peptide linking	C6 H15 N4 O
+RPC	RNA linking	C9 H15 N3 O11 P2
+SAR	peptide linking	C3 H7 N O2
+SEP	L-peptide linking	C3 H8 N O6 P
+SET	L-peptide linking	C3 H8 N2 O2
+SLL	L-peptide linking	C10 H18 N2 O5
+SNN	L-peptide linking	C4 H6 N2 O2
+STA	peptide-like	C8 H17 N O3
+SUI	L-peptide linking	C6 H8 N2 O4
+TBG	L-peptide linking	C6 H13 N O2
+TIH	L-peptide linking	C7 H9 N O2 S
+TPO	L-peptide linking	C4 H10 N O6 P
+TVA	peptide-like	C13 H22 N2 O3 S
+TYE	L-peptide linking	C9 H13 N O2
+TYS	L-peptide linking	C9 H11 N O6 S
+UNK	L-peptide linking	C4 H9 N O2
+URE	non-polymer	C H4 N2 O
+USC	non-polymer	C9 H9 N O6 S
+VME	peptide-like	C6 H13 N O2
+WFP	L-peptide linking	C9 H9 F2 N O2
+XSN	L-peptide linking	C4 H8 N2 O3
+XYC	L-peptide linking	C8 H15 N O2
+YCM	L-peptide linking	C5 H10 N2 O3 S
+YCP	L-peptide linking	C6 H11 N O2
+ZAE	D-peptide linking	C10 H13 N O2
+ZCL	L-peptide linking	C9 H9 Cl2 N O2
+ZSC	non-polymer	C10 H11 N O6 S
+ZYJ	L-peptide linking	C14 H18 N2 O5

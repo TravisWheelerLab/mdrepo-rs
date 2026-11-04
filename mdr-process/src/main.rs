@@ -3,8 +3,8 @@ use clap::Parser;
 use libmdrepo::metadata::{Meta, MetaCheckOptions};
 use log::info;
 use mdr_process::{
-    backfill, backfill_declared, backfill_uniprot, process, reprocess, sequence,
-    ticket,
+    backfill, backfill_declared, backfill_uniprot, process, reprocess,
+    residue_formulas, sequence, ticket,
     types::{Cli, Command, LogLevel},
     validate,
 };
@@ -225,6 +225,14 @@ fn run(args: Cli) -> Result<()> {
                 report["psf"]["status"].as_str().unwrap_or(""),
                 report["mmcif"]["status"].as_str().unwrap_or(""),
                 report["thumbnail"].as_str().unwrap_or(""),
+            );
+            Ok(())
+        }
+        Command::CcdFormula(args) => {
+            let added = residue_formulas::add_to_table(&args.table, &args.codes)?;
+            info!(
+                "{added} added to {}; rebuild to use them",
+                args.table.display()
             );
             Ok(())
         }
