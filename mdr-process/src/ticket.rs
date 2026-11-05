@@ -527,6 +527,7 @@ fn process_landing(
             reprocess_simulation_id: None,
             // The TOML will have already been validated, so allow missing IDs
             no_id: true,
+            agent_imported: false,
             force: args.force,
             dry_run: args.dry_run,
             replace_original_files: false,

@@ -122,9 +122,9 @@ pub fn generate(args: &GenArgs) -> Result<Meta> {
 
     meta.topology_file_name = topology;
 
-    meta.software_name = args.software.clone();
+    meta.software_name = Some(args.software.clone());
 
-    meta.software_version = "<software_version> (required)".to_string();
+    meta.software_version = Some("<software_version> (required)".to_string());
 
     meta.creators = Some(vec![Creator {
         name: "<Your Name>".to_string(),
@@ -329,7 +329,7 @@ mod tests {
 
         let args = gen_args("GROMACS", Some(dir.path()));
         let meta = generate(&args).unwrap();
-        assert_eq!(meta.software_name, "GROMACS");
+        assert_eq!(meta.software_name.as_deref(), Some("GROMACS"));
         assert_eq!(meta.structure_file_name, "sim.gro");
         assert_eq!(meta.topology_file_name, "sim.top");
         assert_eq!(meta.trajectory_file_names, vec!["sim.xtc".to_string()]);

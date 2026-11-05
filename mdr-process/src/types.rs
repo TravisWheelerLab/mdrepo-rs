@@ -366,6 +366,15 @@ pub struct ProcessArgs {
     #[arg(short, long)]
     pub no_id: bool,
 
+    /// The submission was assembled by an AI agent (mdrepo-agent): mark the
+    /// simulation is_agent_imported, file it under mdrepo_admin, and accept
+    /// metadata without a lead contributor ORCID, temperature or software,
+    /// and with formats that do not fit the declared engine where processing
+    /// can still read them (warnings). A reprocess with it sets the flag; one
+    /// without it leaves the flag as it is.
+    #[arg(long)]
+    pub agent_imported: bool,
+
     /// Force removal of any existing "processed" directory
     #[arg(short, long)]
     pub force: bool,
@@ -518,6 +527,18 @@ pub struct MetaCheckArgs {
     /// Allow missing PDB/Uniprot IDs in metadata
     #[arg(short, long)]
     pub no_id: bool,
+
+    /// Check by the rules for an AI agent's submission (see `process
+    /// --agent-imported`)
+    #[arg(long)]
+    pub agent_imported: bool,
+
+    /// Print the findings as one JSON object, {"ok", "errors", "warnings"},
+    /// each finding with its level, field, code and message, for programs
+    /// (mdrepo-agent). Without it: the error messages, one per line, as
+    /// before; warnings go to the log. Exits 0 either way.
+    #[arg(long)]
+    pub json: bool,
 }
 
 // --------------------------------------------------
@@ -836,9 +857,14 @@ pub struct ExportSimulation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 
-    pub software_name: String,
+    /// None only for an agent import that found no software (stored as no
+    /// md_software row; the site shows "Unknown"). Name and version come as
+    /// a pair (Meta::findings).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub software_name: Option<String>,
 
-    pub software_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub software_version: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_commands: Option<String>,
@@ -879,7 +905,9 @@ pub struct ExportSimulation {
 
     pub integration_timestep_fs: f64,
 
-    pub temperature_kelvin: u32,
+    /// None only for an agent import that found no temperature
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature_kelvin: Option<u32>,
 
     pub num_replicates: u32,
 
@@ -922,6 +950,12 @@ pub struct ExportSimulation {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_coarse_grained: Option<bool>,
+
+    /// `mdr-process --agent-imported`: sets md_simulation.is_agent_imported.
+    /// Absent (None) from payloads written before it and from every person's
+    /// upload. A reprocess never clears the column, only sets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_agent_imported: Option<bool>,
 }
 
 // --------------------------------------------------
@@ -1401,6 +1435,8 @@ pub struct ImportJsonArgs<'a> {
     pub replicates: &'a [String],
     pub replace_original_files: bool,
     pub blast_num_threads: usize,
+    /// `process --agent-imported`
+    pub agent_imported: bool,
 }
 
 // --------------------------------------------------

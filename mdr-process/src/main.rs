@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow, bail};
 use clap::Parser;
-use libmdrepo::metadata::{Meta, MetaCheckOptions};
+use libmdrepo::metadata::MetaCheckOptions;
 use log::info;
 use mdr_process::{
     backfill, backfill_declared, backfill_uniprot, process, reprocess,
@@ -31,6 +31,11 @@ fn run(args: Cli) -> Result<()> {
             Some(ref filename) => env_logger::Target::Pipe(Box::new(BufWriter::new(
                 File::create(filename)?,
             ))),
+            // `meta-check --json` owns stdout: a program parses it as one
+            // JSON object, so the log goes to stderr there
+            _ if matches!(&args.command, Command::MetaCheck(a) if a.json) => {
+                env_logger::Target::Stderr
+            }
             _ => env_logger::Target::Stdout,
         })
         .init();
@@ -86,26 +91,17 @@ fn run(args: Cli) -> Result<()> {
             Ok(())
         }
         Command::MetaCheck(args) => {
-            let messages = match Meta::from_file(&args.filename) {
-                Ok(meta) => {
-                    let opts = if args.no_id {
-                        Some(MetaCheckOptions {
-                            allow_no_pdb_uniprot: true,
-                        })
-                    } else {
-                        None
-                    };
-                    meta.check(opts)
-                }
-                Err(e) => {
-                    vec![format!("Unable to parse {}: {e}", args.filename.display())]
-                }
-            };
-
-            if !messages.is_empty() {
-                println!("{}", messages.join("\n"));
+            let out = validate::meta_check_output(
+                &args.filename,
+                MetaCheckOptions {
+                    allow_no_pdb_uniprot: args.no_id,
+                    agent_imported: args.agent_imported,
+                },
+                args.json,
+            );
+            if !out.is_empty() {
+                println!("{out}");
             }
-
             Ok(())
         }
         Command::Ticket(args) => {
@@ -296,6 +292,7 @@ fn run(args: Cli) -> Result<()> {
 
                 let opts = args.no_id.then_some(MetaCheckOptions {
                     allow_no_pdb_uniprot: true,
+                    ..Default::default()
                 });
 
                 // Check the upload against its manifest when there is one; a

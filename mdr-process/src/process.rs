@@ -91,8 +91,9 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
     let meta = validate::load_canonical_meta(&meta_path, &script_dir, &uv)?;
 
     // Validate
-    let meta_check_opts = args.no_id.then_some(MetaCheckOptions {
-        allow_no_pdb_uniprot: true,
+    let meta_check_opts = Some(MetaCheckOptions {
+        allow_no_pdb_uniprot: args.no_id,
+        agent_imported: args.agent_imported,
     });
 
     // Check input files
@@ -194,6 +195,7 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
             replicates: &replicates,
             replace_original_files: args.replace_original_files,
             blast_num_threads: args.blast_num_threads,
+            agent_imported: args.agent_imported,
         })?;
     warnings.extend(import_warnings);
 
@@ -2315,9 +2317,21 @@ pub fn make_import_json(
         _ => (None, None),
     };
 
+    // An agent import is filed under mdrepo_admin whatever its TOML says
+    // (Ken, 2026-11-05); anyone else's needs the ORCID, which Meta::findings
+    // has already required
+    let lead_contributor_orcid = if args.agent_imported {
+        crate::import::ADMIN_ORCID.to_string()
+    } else {
+        args.meta
+            .lead_contributor_orcid
+            .clone()
+            .ok_or_else(|| anyhow!("lead_contributor_orcid: required"))?
+    };
+
     let simulation = ExportSimulation {
         simulation_id: args.reprocess_simulation_id,
-        lead_contributor_orcid: args.meta.lead_contributor_orcid,
+        lead_contributor_orcid,
         unique_file_hash_string,
         legacy_unique_file_hash_string: Some(legacy_unique_file_hash_string),
         alias: args.meta.alias,
@@ -2340,6 +2354,7 @@ pub fn make_import_json(
         rmsf_values: rmsd_rmsf.rmsf,
         temperature_kelvin: args.meta.temperature_kelvin,
         num_replicates: args.meta.trajectory_file_names.len() as u32,
+        is_agent_imported: args.agent_imported.then_some(true),
         water_type,
         water_density,
         structure_hash,
