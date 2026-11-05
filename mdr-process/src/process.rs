@@ -220,6 +220,8 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
             example_trajectory,
             &processed_dir,
             import_json,
+            &script_dir,
+            &uv,
         )?);
 
         let import_result = ImportResult {
@@ -299,7 +301,7 @@ pub fn ligand_resnames(
     pdb: &Path,
     script_dir: &Path,
     uv: &Path,
-) -> Result<HashMap<String, String>> {
+) -> Result<LigandResidues> {
     let mol_id = script_dir.join("mol_id.py");
     let out = Command::new(uv)
         .current_dir(script_dir)
@@ -316,7 +318,33 @@ pub fn ligand_resnames(
         );
     }
     let found: Vec<InferredLigandStructure> = serde_json::from_slice(&out.stdout)?;
-    Ok(found.into_iter().map(|l| (l.inchikey, l.resname)).collect())
+    Ok(LigandResidues::from_found(&found))
+}
+
+// --------------------------------------------------
+/// The ligand residues `mol_id.py` found in a structure, by InChIKey: each
+/// one's residue name, and its SMILES as perceived from the coordinates. The
+/// SMILES is what a ligand whose InChIKey matches none of them is compared
+/// with by connectivity (`place_ligands`); `smiles_of` is absent from an
+/// `mmcif-input.json` written before it, and then only the keys can place.
+#[derive(Debug, Default, Clone, Deserialize, Serialize, PartialEq)]
+pub struct LigandResidues {
+    pub resname_of: HashMap<String, String>,
+    #[serde(default)]
+    pub smiles_of: HashMap<String, String>,
+}
+
+impl LigandResidues {
+    pub fn from_found<'a>(
+        found: impl IntoIterator<Item = &'a InferredLigandStructure>,
+    ) -> Self {
+        let mut out = Self::default();
+        for l in found {
+            out.resname_of.insert(l.inchikey.clone(), l.resname.clone());
+            out.smiles_of.insert(l.inchikey.clone(), l.smiles.clone());
+        }
+        out
+    }
 }
 
 // --------------------------------------------------
@@ -329,17 +357,18 @@ pub fn ligand_resnames(
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct MmcifImportInput {
     pub title: String,
-    pub resname_of: HashMap<String, String>,
+    #[serde(flatten)]
+    pub residues: LigandResidues,
 }
 
 fn save_mmcif_input(
     processed_dir: &Path,
     title: &str,
-    resname_of: &HashMap<String, String>,
+    residues: &LigandResidues,
 ) -> Result<()> {
     let input = MmcifImportInput {
         title: title.to_string(),
-        resname_of: resname_of.clone(),
+        residues: residues.clone(),
     };
     fs::write(
         processed_dir.join(MMCIF_INPUT),
@@ -352,14 +381,17 @@ fn save_mmcif_input(
 /// The mmCIF's input for simulation `sim_id` from the database: UniProt
 /// ranges per structure chain (md_chain -> md_polymer_uniprot ->
 /// md_uniprot, in chain order, as the splitter numbers the chains), and
-/// its ligands that `resname_of` (InChIKey -> residue name) places. For an
-/// import, after it; for the backfill (`standardize`), as stored.
+/// its ligands, placed on the residues `residues` describes (`place_ligands`).
+/// For an import, after it; for the backfill (`standardize`), as stored.
+/// Returns the input, the ligands left unplaced, and those placed by
+/// connectivity (name, residue).
 pub fn mmcif_input_from_db(
     conn: &mut diesel::PgConnection,
     sim_id: i64,
     title: &str,
-    resname_of: &HashMap<String, String>,
-) -> Result<(mmcif_writer::MmcifInput, Vec<String>)> {
+    residues: &LigandResidues,
+    same_bonds: &mut dyn FnMut(&str, &str) -> Result<bool>,
+) -> Result<(mmcif_writer::MmcifInput, Vec<String>, PlacedByConnectivity)> {
     let mut references = vec![];
     for chain in mdr_db::ops::list_chains_for_simulation(conn, sim_id)?
         .into_iter()
@@ -378,49 +410,144 @@ pub fn mmcif_input_from_db(
         }
         references.push(refs);
     }
-    // A ligand is placed on a residue name by its InChIKey, or else by the
-    // key's first block (the connectivity); never by guess, since a wrong
-    // SMILES in the file is worse than none. A small molecule left unplaced
-    // is returned by name for the caller's warning.
-    let by_block: HashMap<&str, &String> = resname_of
-        .iter()
-        .map(|(k, r)| (k.split('-').next().unwrap_or(k.as_str()), r))
-        .collect();
     let (_, stored) =
         mdr_db::ops::list_ligands(conn, None, Some(sim_id), true, None, None)?;
-    let mut ligands = vec![];
-    let mut unplaced = vec![];
-    for l in stored {
-        let Some(key) = l.inchikey.clone() else {
-            if l.smiles.is_some() {
-                unplaced.push(l.name);
-            }
-            continue;
-        };
-        let resname = resname_of
-            .get(&key)
-            .or_else(|| by_block.get(key.split('-').next().unwrap_or("")).copied());
-        match resname {
-            Some(resname) => ligands.push(mmcif_writer::LigandInfo {
-                resname: resname.clone(),
-                name: l.name,
-                smiles: l.smiles,
-                inchikey: l.inchikey,
-            }),
-            None => unplaced.push(l.name),
-        }
-    }
+    let stored = stored
+        .into_iter()
+        .map(|l| StoredLigand {
+            name: l.name,
+            smiles: l.smiles,
+            inchikey: l.inchikey,
+        })
+        .collect();
+    let placed = place_ligands(stored, residues, same_bonds);
     Ok((
         mmcif_writer::MmcifInput {
             entry_id: format!("MDR{sim_id:08}"),
             title: title.to_string(),
             references,
-            ligands,
+            ligands: placed.ligands,
         },
-        unplaced,
+        placed.unplaced,
+        placed.by_connectivity,
     ))
 }
 
+// --------------------------------------------------
+/// (ligand name, residue name) for each ligand `place_ligands` placed by
+/// connectivity
+pub type PlacedByConnectivity = Vec<(String, String)>;
+
+/// A stored ligand, as `place_ligands` needs it
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredLigand {
+    pub name: String,
+    pub smiles: Option<String>,
+    pub inchikey: Option<String>,
+}
+
+/// What `place_ligands` decided
+#[derive(Debug, Default, PartialEq)]
+pub struct Placement {
+    pub ligands: Vec<mmcif_writer::LigandInfo>,
+    /// Small molecules left without a residue, by name, for the warning
+    pub unplaced: Vec<String>,
+    pub by_connectivity: PlacedByConnectivity,
+}
+
+// --------------------------------------------------
+/// Put each stored ligand on a residue name, never by guess, since a wrong
+/// SMILES in the file is worse than none:
+///
+/// 1. by its InChIKey;
+/// 2. else by the key's first block;
+/// 3. else by InChI connectivity (`same_bonds`, the /c layer: the same
+///    heavy atoms joined by the same bonds), against the SMILES of each
+///    residue found, when exactly one residue name matches. Hydrogens and
+///    charge are ignored there, and the first block of an InChIKey includes
+///    the hydrogen count: NADP and ATP stored neutral but simulated
+///    protonated (14 of the 52 unplaced on staging, 2026-11-05) differ in it.
+///    Travis's rule for "the same ligand" (10-02, `same_connectivity`;
+///    applied here by Ken's decision of 2026-11-05).
+///
+/// The ligand keeps its own stored SMILES and InChIKey; placing decides
+/// only which residue it is. A ligand with no InChIKey is not compared (its
+/// SMILES could not be read: a data fix, not a placement); one with neither
+/// key nor SMILES is not a small molecule and is skipped. A comparison that
+/// fails counts as no match.
+pub fn place_ligands(
+    stored: Vec<StoredLigand>,
+    residues: &LigandResidues,
+    same_bonds: &mut dyn FnMut(&str, &str) -> Result<bool>,
+) -> Placement {
+    let by_block: HashMap<&str, &String> = residues
+        .resname_of
+        .iter()
+        .map(|(k, r)| (k.split('-').next().unwrap_or(k.as_str()), r))
+        .collect();
+    // Sorted, so the same input always compares in the same order
+    let mut found_smiles: Vec<(&String, &String)> = residues.smiles_of.iter().collect();
+    found_smiles.sort();
+
+    let mut out = Placement::default();
+    for l in stored {
+        let Some(key) = l.inchikey.clone() else {
+            if l.smiles.is_some() {
+                out.unplaced.push(l.name);
+            }
+            continue;
+        };
+        let mut resname = residues
+            .resname_of
+            .get(&key)
+            .or_else(|| by_block.get(key.split('-').next().unwrap_or("")).copied())
+            .cloned();
+
+        if resname.is_none()
+            && let Some(smiles) = &l.smiles
+        {
+            let mut names = std::collections::BTreeSet::new();
+            for (found_key, found_smiles) in &found_smiles {
+                match same_bonds(smiles, found_smiles) {
+                    Ok(true) => {
+                        if let Some(name) = residues.resname_of.get(*found_key) {
+                            names.insert(name.clone());
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(e) => warn!(
+                        "mmCIF: comparing ligand {:?} with residue {found_key}: {e}",
+                        l.name
+                    ),
+                }
+            }
+            if names.len() == 1 {
+                let name = names.into_iter().next().unwrap_or_default();
+                out.by_connectivity.push((l.name.clone(), name.clone()));
+                resname = Some(name);
+            } else if names.len() > 1 {
+                debug!(
+                    "mmCIF: ligand {:?} has the connectivity of residues {names:?}; \
+                     not placed",
+                    l.name
+                );
+            }
+        }
+
+        match resname {
+            Some(resname) => out.ligands.push(mmcif_writer::LigandInfo {
+                resname,
+                name: l.name,
+                smiles: l.smiles,
+                inchikey: l.inchikey,
+            }),
+            None => out.unplaced.push(l.name),
+        }
+    }
+    out
+}
+
+// --------------------------------------------------
 const MMCIF_INPUT: &str = "mmcif-input.json";
 
 // --------------------------------------------------
@@ -436,6 +563,8 @@ fn add_import_mmcifs(
     example: &ProcessedTrajectory,
     processed_dir: &Path,
     import_json: &Path,
+    script_dir: &Path,
+    uv: &Path,
 ) -> Result<Vec<String>> {
     let saved: MmcifImportInput =
         match fs::read_to_string(processed_dir.join(MMCIF_INPUT)) {
@@ -446,14 +575,18 @@ fn add_import_mmcifs(
     let url = env::var(env_key).map_err(|e| anyhow!("{env_key}: {e}"))?;
     let mut conn =
         mdr_db::connect(&url).map_err(|e| anyhow!("Failed to connect: {e}"))?;
-    let (input, unplaced) = mmcif_input_from_db(
+    let (input, unplaced, by_connectivity) = mmcif_input_from_db(
         &mut conn,
         i64::from(sim_id),
         &saved.title,
-        &saved.resname_of,
+        &saved.residues,
+        &mut |a, b| same_connectivity(a, b, script_dir, uv),
     )?;
     for name in &unplaced {
         debug!("mmCIF: ligand {name:?} not placed on a residue");
+    }
+    for (name, resname) in &by_connectivity {
+        debug!("mmCIF: ligand {name:?} placed on {resname} by connectivity");
     }
 
     let dir = Path::new(&example.directory_name);
@@ -1264,10 +1397,10 @@ pub fn standardize(
             match standardize_mmcif(
                 server, sim_id, out_dir, &full_pdb, &min_pdb, script_dir, uv,
             ) {
-                Ok((counts, unplaced, refs)) => {
+                Ok((counts, unplaced, by_connectivity, refs)) => {
                     for name in &unplaced {
                         warnings.push(format!(
-                            "mmCIF: ligand {name:?} matches no residue by InChIKey; written without its identity"
+                            "mmCIF: ligand {name:?} matches no residue by InChIKey or connectivity; written without its identity"
                         ));
                     }
                     serde_json::json!({
@@ -1276,6 +1409,10 @@ pub fn standardize(
                         "links": counts.num_links,
                         "references": refs,
                         "ligands_unplaced": unplaced.len(),
+                        "ligands_by_connectivity": by_connectivity
+                            .iter()
+                            .map(|(name, resname)| serde_json::json!({"ligand": name, "residue": resname}))
+                            .collect::<Vec<_>>(),
                     })
                 }
                 Err(e) => {
@@ -1355,8 +1492,8 @@ pub fn standardize(
 /// `out_dir`, its title, references and ligands from the database
 /// (`mmcif_input_from_db`), each ligand's residue name from mol_id.py's
 /// structure step, the links from `out_dir/bonds.tsv`. Returns the full
-/// file's counts, the ligands left unplaced, and the number of UniProt
-/// ranges.
+/// file's counts, the ligands left unplaced, those placed by connectivity
+/// (name, residue), and the number of UniProt ranges.
 fn standardize_mmcif(
     server: &Server,
     sim_id: i64,
@@ -1365,7 +1502,12 @@ fn standardize_mmcif(
     min_pdb: &Path,
     script_dir: &Path,
     uv: &Path,
-) -> Result<(mmcif_writer::MmcifCounts, Vec<String>, usize)> {
+) -> Result<(
+    mmcif_writer::MmcifCounts,
+    Vec<String>,
+    PlacedByConnectivity,
+    usize,
+)> {
     let env_key = dsn_for(server);
     let url = env::var(env_key).map_err(|e| anyhow!("{env_key}: {e}"))?;
     let mut conn =
@@ -1375,16 +1517,18 @@ fn standardize_mmcif(
         mdr_db::ops::list_ligands(&mut conn, None, Some(sim_id), true, None, None)?;
     // mol_id.py finding no ligand (MDR00020024's minimal.pdb lacks it,
     // MDR-109) costs the ligands' identities, not the file
-    let resname_of = if stored.iter().any(|l| l.smiles.is_some()) {
+    let residues = if stored.iter().any(|l| l.smiles.is_some()) {
         ligand_resnames(min_pdb, script_dir, uv).unwrap_or_else(|e| {
             warn!("mmCIF: no ligand residue names: {e}");
-            HashMap::new()
+            LigandResidues::default()
         })
     } else {
-        HashMap::new()
+        LigandResidues::default()
     };
-    let (input, unplaced) =
-        mmcif_input_from_db(&mut conn, sim_id, &title, &resname_of)?;
+    let (input, unplaced, by_connectivity) =
+        mmcif_input_from_db(&mut conn, sim_id, &title, &residues, &mut |a, b| {
+            same_connectivity(a, b, script_dir, uv)
+        })?;
     let refs = input.references.iter().map(Vec::len).sum();
     let bonds = out_dir.join("bonds.tsv");
     let (full, _) = mmcif_writer::write_mmcifs(
@@ -1395,7 +1539,7 @@ fn standardize_mmcif(
         &out_dir.join("minimal.mmcif"),
         &input,
     )?;
-    Ok((full, unplaced, refs))
+    Ok((full, unplaced, by_connectivity, refs))
 }
 
 // --------------------------------------------------
@@ -2250,10 +2394,8 @@ pub fn make_import_json(
 
     // For the mmCIF (written after the import, MDR-110): which residue name
     // each inferred ligand is, by InChIKey
-    let resname_of: HashMap<String, String> = inferred_ligands
-        .iter()
-        .map(|l| (l.structure.inchikey.clone(), l.structure.resname.clone()))
-        .collect();
+    let residues =
+        LigandResidues::from_found(inferred_ligands.iter().map(|l| &l.structure));
 
     let (ligands, ligand_warnings) = resolve_ligands(
         args.meta.ligands.as_ref(),
@@ -2296,11 +2438,7 @@ pub fn make_import_json(
         args.trajectory_tarballs,
     )?;
 
-    save_mmcif_input(
-        args.processed_dir,
-        &args.meta.short_description,
-        &resname_of,
-    )?;
+    save_mmcif_input(args.processed_dir, &args.meta.short_description, &residues)?;
 
     let mut papers: Vec<metadata::Paper> = args.meta.papers.unwrap_or_default();
     if let Some(dois) = &args.meta.dois {
@@ -2720,13 +2858,25 @@ pub fn check_ligand(
         )
     })?;
 
+    compare_smiles(smiles, &inferred_ligand.structure.smiles, script_dir, uv)
+}
+
+// --------------------------------------------------
+/// `compare_smiles.py` on two SMILES: exact match, same connectivity, same
+/// InChI, and so on (`CheckedLigand`)
+pub fn compare_smiles(
+    smiles1: &str,
+    smiles2: &str,
+    script_dir: &Path,
+    uv: &Path,
+) -> Result<CheckedLigand> {
     let script = script_dir.join("compare_smiles.py");
     let mut cmd = Command::new(uv);
     cmd.current_dir(script_dir).args([
         "run",
         script.to_string_lossy().as_ref(),
-        smiles,
-        &inferred_ligand.structure.smiles,
+        smiles1,
+        smiles2,
     ]);
     debug!("Running {cmd:?}");
 
@@ -2742,6 +2892,19 @@ pub fn check_ligand(
     let stdout = str::from_utf8(&output.stdout)?;
     let checked = serde_json::from_str(stdout)?;
     Ok(checked)
+}
+
+// --------------------------------------------------
+/// Whether two SMILES have the same InChI connectivity (the /c layer: the
+/// same heavy atoms joined by the same bonds, hydrogens and charge aside),
+/// by `compare_smiles.py`, the same test `resolve_ligands` uses
+pub fn same_connectivity(
+    smiles1: &str,
+    smiles2: &str,
+    script_dir: &Path,
+    uv: &Path,
+) -> Result<bool> {
+    Ok(compare_smiles(smiles1, smiles2, script_dir, uv)?.same_connectivity)
 }
 
 // --------------------------------------------------
@@ -5958,5 +6121,320 @@ mol_id: No ligand-like residue found in minimal.pdb
             sha256_of_file(&file).unwrap(),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+}
+
+// --------------------------------------------------
+/// `place_ligands`: InChIKey, first block, then InChI connectivity
+/// (Ken's decision of 2026-11-05 on the 52 unplaced staging ligands)
+#[cfg(test)]
+mod place_ligands_tests {
+    use super::{
+        InferredLigandStructure, LigandResidues, MmcifImportInput, Placement,
+        StoredLigand, place_ligands, same_connectivity,
+    };
+    use anyhow::{Result, bail};
+    use std::{cell::RefCell, collections::HashMap, path::PathBuf};
+
+    const NADP_KEY: &str = "XJLXINKUBYWONI-NNYOXOHSSA-N";
+    const NAP_KEY: &str = "SNZSFAQYVLPEBZ-GUKBWVDBSA-N";
+
+    fn stored(name: &str, smiles: Option<&str>, key: Option<&str>) -> StoredLigand {
+        StoredLigand {
+            name: name.to_string(),
+            smiles: smiles.map(String::from),
+            inchikey: key.map(String::from),
+        }
+    }
+
+    fn residues(found: &[(&str, &str, &str)]) -> LigandResidues {
+        let mut r = LigandResidues::default();
+        for (key, resname, smiles) in found {
+            r.resname_of.insert(key.to_string(), resname.to_string());
+            r.smiles_of.insert(key.to_string(), smiles.to_string());
+        }
+        r
+    }
+
+    /// A comparator that answers from a fixed list and records its calls
+    struct Stub {
+        same: Vec<(&'static str, &'static str)>,
+        calls: RefCell<Vec<(String, String)>>,
+    }
+
+    impl Stub {
+        fn new(same: &[(&'static str, &'static str)]) -> Self {
+            Self {
+                same: same.to_vec(),
+                calls: RefCell::new(vec![]),
+            }
+        }
+        fn call(&self, a: &str, b: &str) -> Result<bool> {
+            self.calls.borrow_mut().push((a.to_string(), b.to_string()));
+            Ok(self.same.iter().any(|(x, y)| *x == a && *y == b))
+        }
+    }
+
+    fn place(stored: Vec<StoredLigand>, r: &LigandResidues, stub: &Stub) -> Placement {
+        place_ligands(stored, r, &mut |a, b| stub.call(a, b))
+    }
+
+    #[test]
+    fn the_whole_key_places_without_comparing() {
+        let r = residues(&[(NAP_KEY, "NAP", "nap-smiles")]);
+        let stub = Stub::new(&[]);
+        let out = place(vec![stored("NADP", Some("s"), Some(NAP_KEY))], &r, &stub);
+        assert_eq!(out.ligands.len(), 1);
+        assert_eq!(out.ligands[0].resname, "NAP");
+        assert!(out.unplaced.is_empty() && out.by_connectivity.is_empty());
+        assert!(stub.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn the_first_block_places_without_comparing() {
+        let r = residues(&[("SNZSFAQYVLPEBZ-XXXXXXXXXX-N", "NAP", "nap")]);
+        let stub = Stub::new(&[]);
+        let out = place(vec![stored("NADP", Some("s"), Some(NAP_KEY))], &r, &stub);
+        assert_eq!(out.ligands[0].resname, "NAP");
+        assert!(stub.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn connectivity_places_what_the_keys_miss() {
+        let r = residues(&[(NAP_KEY, "NAP", "nap-protonated")]);
+        let stub = Stub::new(&[("nadp-neutral", "nap-protonated")]);
+        let out = place(
+            vec![stored("NADP", Some("nadp-neutral"), Some(NADP_KEY))],
+            &r,
+            &stub,
+        );
+        assert_eq!(out.ligands.len(), 1);
+        assert_eq!(out.ligands[0].resname, "NAP");
+        assert_eq!(
+            out.by_connectivity,
+            vec![("NADP".to_string(), "NAP".to_string())]
+        );
+        assert!(out.unplaced.is_empty());
+    }
+
+    #[test]
+    fn a_placed_ligand_keeps_its_own_smiles_and_key() {
+        let r = residues(&[(NAP_KEY, "NAP", "nap-protonated")]);
+        let stub = Stub::new(&[("nadp-neutral", "nap-protonated")]);
+        let out = place(
+            vec![stored("NADP", Some("nadp-neutral"), Some(NADP_KEY))],
+            &r,
+            &stub,
+        );
+        assert_eq!(out.ligands[0].smiles.as_deref(), Some("nadp-neutral"));
+        assert_eq!(out.ligands[0].inchikey.as_deref(), Some(NADP_KEY));
+        assert_eq!(out.ligands[0].name, "NADP");
+    }
+
+    #[test]
+    fn no_match_is_unplaced() {
+        let r = residues(&[(NAP_KEY, "NAP", "nap")]);
+        let stub = Stub::new(&[]);
+        let out = place(vec![stored("X", Some("x"), Some(NADP_KEY))], &r, &stub);
+        assert!(out.ligands.is_empty());
+        assert_eq!(out.unplaced, vec!["X"]);
+        assert_eq!(stub.calls.borrow().len(), 1);
+    }
+
+    #[test]
+    fn two_residue_names_matching_is_ambiguous_and_unplaced() {
+        let r = residues(&[
+            ("AAAAAAAAAAAAAA-A-N", "LIG", "a"),
+            ("BBBBBBBBBBBBBB-B-N", "UNK", "b"),
+        ]);
+        let stub = Stub::new(&[("x", "a"), ("x", "b")]);
+        let out = place(vec![stored("X", Some("x"), Some(NADP_KEY))], &r, &stub);
+        assert!(out.ligands.is_empty());
+        assert_eq!(out.unplaced, vec!["X"]);
+        assert!(out.by_connectivity.is_empty());
+    }
+
+    #[test]
+    fn two_matches_with_one_residue_name_place() {
+        // two copies of one cofactor, perceived with different protonation
+        let r = residues(&[
+            ("AAAAAAAAAAAAAA-A-N", "NAP", "a"),
+            ("BBBBBBBBBBBBBB-B-N", "NAP", "b"),
+        ]);
+        let stub = Stub::new(&[("x", "a"), ("x", "b")]);
+        let out = place(vec![stored("X", Some("x"), Some(NADP_KEY))], &r, &stub);
+        assert_eq!(out.ligands[0].resname, "NAP");
+    }
+
+    #[test]
+    fn a_ligand_without_a_key_is_not_compared() {
+        // its SMILES could not be read: a data fix, not a placement
+        let r = residues(&[(NAP_KEY, "NAP", "nap")]);
+        let stub = Stub::new(&[("bad", "nap")]);
+        let out = place(vec![stored("unknown", Some("bad"), None)], &r, &stub);
+        assert_eq!(out.unplaced, vec!["unknown"]);
+        assert!(stub.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_ligand_with_neither_key_nor_smiles_is_skipped() {
+        let stub = Stub::new(&[]);
+        let out = place(
+            vec![stored("peptide", None, None)],
+            &LigandResidues::default(),
+            &stub,
+        );
+        assert_eq!(out, Placement::default());
+    }
+
+    #[test]
+    fn a_key_without_smiles_cannot_be_compared() {
+        let r = residues(&[(NAP_KEY, "NAP", "nap")]);
+        let stub = Stub::new(&[]);
+        let out = place(vec![stored("X", None, Some(NADP_KEY))], &r, &stub);
+        assert_eq!(out.unplaced, vec!["X"]);
+        assert!(stub.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_failed_comparison_counts_as_no_match() {
+        let r = residues(&[(NAP_KEY, "NAP", "nap")]);
+        let out = place_ligands(
+            vec![stored("X", Some("x"), Some(NADP_KEY))],
+            &r,
+            &mut |_, _| bail!("compare_smiles.py crashed"),
+        );
+        assert_eq!(out.unplaced, vec!["X"]);
+    }
+
+    #[test]
+    fn residues_are_compared_in_key_order() {
+        let r = residues(&[
+            ("CCCCCCCCCCCCCC-C-N", "C", "c"),
+            ("AAAAAAAAAAAAAA-A-N", "A", "a"),
+        ]);
+        let stub = Stub::new(&[]);
+        place(vec![stored("X", Some("x"), Some(NADP_KEY))], &r, &stub);
+        let seen: Vec<String> =
+            stub.calls.borrow().iter().map(|(_, b)| b.clone()).collect();
+        assert_eq!(seen, vec!["a", "c"]);
+    }
+
+    #[test]
+    fn old_residue_maps_without_smiles_place_by_key_only() {
+        let mut r = LigandResidues::default();
+        r.resname_of.insert(NAP_KEY.into(), "NAP".into());
+        let stub = Stub::new(&[]);
+        let out = place(
+            vec![
+                stored("NADP", Some("s"), Some(NAP_KEY)),
+                stored("Y", Some("y"), Some(NADP_KEY)),
+            ],
+            &r,
+            &stub,
+        );
+        assert_eq!(out.ligands.len(), 1);
+        assert_eq!(out.unplaced, vec!["Y"]);
+        assert!(stub.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn several_ligands_keep_their_order() {
+        let r = residues(&[
+            (NAP_KEY, "NAP", "nap"),
+            ("ZZZZZZZZZZZZZZ-Z-N", "ATP", "atp"),
+        ]);
+        let stub = Stub::new(&[("atp-stored", "atp")]);
+        let out = place(
+            vec![
+                stored("NADP", Some("s"), Some(NAP_KEY)),
+                stored("lost", Some("l"), Some("LLLLLLLLLLLLLL-L-N")),
+                stored("ATP", Some("atp-stored"), Some("YYYYYYYYYYYYYY-Y-N")),
+            ],
+            &r,
+            &stub,
+        );
+        let names: Vec<&str> = out.ligands.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, vec!["NADP", "ATP"]);
+        assert_eq!(out.unplaced, vec!["lost"]);
+        assert_eq!(
+            out.by_connectivity,
+            vec![("ATP".to_string(), "ATP".to_string())]
+        );
+    }
+
+    // --- the residue maps and mmcif-input.json ---
+
+    fn found(key: &str, resname: &str, smiles: &str) -> InferredLigandStructure {
+        InferredLigandStructure {
+            smiles: smiles.into(),
+            formula: String::new(),
+            num_atoms: 0,
+            num_heavy_atoms: 0,
+            charge: 0,
+            inchikey: key.into(),
+            resname: resname.into(),
+        }
+    }
+
+    #[test]
+    fn residues_from_found_keep_name_and_smiles() {
+        let list = [found("K1", "LIG", "C"), found("K2", "NAP", "CC")];
+        let r = LigandResidues::from_found(&list);
+        assert_eq!(
+            r.resname_of,
+            HashMap::from([("K1".into(), "LIG".into()), ("K2".into(), "NAP".into())])
+        );
+        assert_eq!(
+            r.smiles_of,
+            HashMap::from([("K1".into(), "C".into()), ("K2".into(), "CC".into())])
+        );
+    }
+
+    #[test]
+    fn mmcif_input_written_before_smiles_still_loads() {
+        let old = r#"{"title": "t", "resname_of": {"K1": "LIG"}}"#;
+        let input: MmcifImportInput = serde_json::from_str(old).unwrap();
+        assert_eq!(input.residues.resname_of["K1"], "LIG");
+        assert!(input.residues.smiles_of.is_empty());
+    }
+
+    #[test]
+    fn mmcif_input_keeps_its_flat_keys() {
+        let input = MmcifImportInput {
+            title: "t".into(),
+            residues: LigandResidues::from_found(&[found("K1", "LIG", "C")]),
+        };
+        let value = serde_json::to_value(&input).unwrap();
+        assert_eq!(value["resname_of"]["K1"], "LIG");
+        assert_eq!(value["smiles_of"]["K1"], "C");
+        assert!(value.get("residues").is_none());
+    }
+
+    // --- the real comparison on the staging cases ---
+
+    /// The 21 staging cases (tests/inputs/mmcif/connectivity-pairs.tsv)
+    /// through simulation-processing's compare_smiles.py. Needs SCRIPT_DIR
+    /// (simulation-processing/python) and uv:
+    /// SCRIPT_DIR=... cargo test -p mdr-process -- --ignored connectivity
+    #[test]
+    #[ignore = "needs compare_smiles.py: SCRIPT_DIR=... cargo test -p mdr-process -- --ignored connectivity"]
+    fn connectivity_of_the_staging_cases() {
+        let script_dir =
+            PathBuf::from(std::env::var("SCRIPT_DIR").expect("SCRIPT_DIR"));
+        let uv = which::which("uv").expect("uv");
+        let text = std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/inputs/mmcif/connectivity-pairs.tsv"),
+        )
+        .unwrap();
+        let mut checked = 0;
+        for line in text.lines().filter(|l| !l.starts_with('#')).skip(1) {
+            let f: Vec<&str> = line.split('\t').collect();
+            let got = same_connectivity(f[2], f[4], &script_dir, &uv).unwrap();
+            assert_eq!(got, f[5] == "true", "sim {} {} vs {}", f[0], f[1], f[3]);
+            checked += 1;
+        }
+        assert_eq!(checked, 21);
     }
 }
