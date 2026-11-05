@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow, bail};
 use libmdrepo::metadata::{self, Meta, MetaCheckOptions};
-use log::debug;
-use serde::Deserialize;
+use log::{debug, warn};
+use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::Write,
@@ -183,6 +183,61 @@ fn canonicalize_smiles(
 }
 
 // --------------------------------------------------
+/// What `mdr-process meta-check --json` prints (Danny's point 5,
+/// mdrepo-rs#46): whether the file passes, and its findings split by level.
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub struct MetaCheckReport {
+    pub ok: bool,
+    pub errors: Vec<metadata::Finding>,
+    pub warnings: Vec<metadata::Finding>,
+}
+
+impl MetaCheckReport {
+    pub fn from_findings(findings: Vec<metadata::Finding>) -> Self {
+        let (errors, warnings): (Vec<_>, Vec<_>) = findings
+            .into_iter()
+            .partition(|f| f.level == metadata::Level::Error);
+        Self {
+            ok: errors.is_empty(),
+            errors,
+            warnings,
+        }
+    }
+}
+
+// --------------------------------------------------
+/// The `meta-check` command's output for `path`. As JSON, a
+/// [`MetaCheckReport`]; a file that will not parse is one error with code
+/// `parse`. As text, the error messages one per line exactly as before (empty
+/// when there are none), with warnings logged rather than printed, so a
+/// program reading the text sees no new lines.
+pub fn meta_check_output(path: &Path, opts: MetaCheckOptions, json: bool) -> String {
+    let findings = match Meta::from_file(path) {
+        Ok(meta) => meta.findings(Some(opts)),
+        Err(e) => vec![metadata::Finding::error(
+            None,
+            "parse",
+            format!("Unable to parse {}: {e}", path.display()),
+        )],
+    };
+    if json {
+        let report = MetaCheckReport::from_findings(findings);
+        return serde_json::to_string_pretty(&report)
+            .unwrap_or_else(|e| format!(r#"{{"ok": false, "error": "{e}"}}"#));
+    }
+    let mut lines = vec![];
+    for f in findings {
+        match f.level {
+            metadata::Level::Error => lines.push(f.message),
+            metadata::Level::Warning => {
+                warn!("Metadata warning ({}): {}", f.code, f.message)
+            }
+        }
+    }
+    lines.join("\n")
+}
+
+// --------------------------------------------------
 /// Check that a directory holds a processable simulation for the given (already
 /// loaded) metadata: the metadata passes its own checks, and the files it
 /// references are present and not all empty. This says nothing about how the
@@ -213,7 +268,20 @@ pub fn validate_meta(
         bail!(r#""{}" is empty!"#, dir.display());
     }
 
-    let mut errors = meta.check(meta_check_opts);
+    // Warnings (an agent import's mismatched formats) do not stop the
+    // import; they are logged so the run's log says what was let through
+    let findings = meta.findings(meta_check_opts);
+    for f in findings
+        .iter()
+        .filter(|f| f.level == metadata::Level::Warning)
+    {
+        warn!("Metadata warning ({}): {}", f.code, f.message);
+    }
+    let mut errors: Vec<String> = findings
+        .into_iter()
+        .filter(|f| f.level == metadata::Level::Error)
+        .map(|f| f.message)
+        .collect();
 
     // Cross-check the metadata's claims against the directory: every file it
     // references must exist. A missing file is reported like any other error
@@ -237,6 +305,82 @@ pub fn validate_meta(
 
 #[cfg(test)]
 mod tests {
+    // --- meta-check's report (mdrepo-rs#46) ---
+
+    fn finding(level: metadata::Level, code: &str) -> metadata::Finding {
+        metadata::Finding {
+            level,
+            field: None,
+            code: code.to_string(),
+            message: code.to_string(),
+        }
+    }
+
+    #[test]
+    fn report_splits_findings_by_level_and_keeps_their_order() {
+        use metadata::Level::{Error, Warning};
+        let report = MetaCheckReport::from_findings(vec![
+            finding(Warning, "w1"),
+            finding(Error, "e1"),
+            finding(Warning, "w2"),
+            finding(Error, "e2"),
+        ]);
+        assert!(!report.ok);
+        let codes = |v: &[metadata::Finding]| {
+            v.iter().map(|f| f.code.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(codes(&report.errors), vec!["e1", "e2"]);
+        assert_eq!(codes(&report.warnings), vec!["w1", "w2"]);
+    }
+
+    #[test]
+    fn report_with_only_warnings_is_ok() {
+        let report = MetaCheckReport::from_findings(vec![finding(
+            metadata::Level::Warning,
+            "w",
+        )]);
+        assert!(report.ok);
+        assert!(report.errors.is_empty());
+    }
+
+    #[test]
+    fn report_with_nothing_is_ok() {
+        let report = MetaCheckReport::from_findings(vec![]);
+        assert_eq!(
+            serde_json::to_value(&report).unwrap(),
+            serde_json::json!({"ok": true, "errors": [], "warnings": []})
+        );
+    }
+
+    /// MINIMAL_TOML made clean: a .gro to go with its .top
+    fn clean_toml() -> String {
+        MINIMAL_TOML.replace(r#""sim.pdb""#, r#""sim.gro""#)
+    }
+
+    #[test]
+    fn meta_check_output_text_and_json_agree() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("m.toml");
+        fs::write(&path, clean_toml().replace(r#"pdb_id = "1ABC""#, "")).unwrap();
+        let opts = MetaCheckOptions::default();
+        let text = meta_check_output(&path, opts, false);
+        let report: MetaCheckReport =
+            serde_json::from_str(&meta_check_output(&path, opts, true)).unwrap();
+        let messages: Vec<String> =
+            report.errors.into_iter().map(|f| f.message).collect();
+        assert_eq!(text, messages.join("\n"));
+        assert!(text.contains("Missing PDB and Uniprot IDs"), "{text}");
+    }
+
+    #[test]
+    fn meta_check_output_text_is_empty_for_a_clean_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("m.toml");
+        fs::write(&path, clean_toml()).unwrap();
+        let opts = MetaCheckOptions::default();
+        assert_eq!(meta_check_output(&path, opts, false), "");
+    }
+
     use super::*;
     use std::fs;
     use tempfile::tempdir;

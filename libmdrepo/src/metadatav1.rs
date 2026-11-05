@@ -303,11 +303,11 @@ impl MetaV1 {
 
         Ok(Meta {
             mdrepo_id: None,
-            lead_contributor_orcid: self.initial.lead_contributor_orcid.clone(),
+            lead_contributor_orcid: Some(self.initial.lead_contributor_orcid.clone()),
             trajectory_file_names: vec![reqd.trajectory_file_name.clone()],
             structure_file_name: reqd.structure_file_name.clone(),
             topology_file_name: reqd.topology_file_name.clone(),
-            temperature_kelvin,
+            temperature_kelvin: Some(temperature_kelvin),
             integration_timestep_fs,
             // v1 had no notion of output frequency: `timestep_information`
             // carries only the integration timestep, so there is nothing to
@@ -320,13 +320,10 @@ impl MetaV1 {
                 .unwrap_or("")
                 .to_string(),
             description: self.initial.description.clone(),
-            software_name: self.software.name.clone(),
-            software_version: self
-                .software
-                .version
-                .as_deref()
-                .unwrap_or("NA")
-                .to_string(),
+            software_name: Some(self.software.name.clone()),
+            software_version: Some(
+                self.software.version.as_deref().unwrap_or("NA").to_string(),
+            ),
             toml_version: Some(2),
             alias: None,
             external_links,
@@ -594,10 +591,10 @@ mod metav1_tests {
         let meta_v1 = MetaV1::from_file(&Path::new(INPUT1))?;
         let meta_v2 = meta_v1.to_v2()?;
 
-        assert_eq!(meta_v2.temperature_kelvin, 300);
+        assert_eq!(meta_v2.temperature_kelvin, Some(300));
         assert_eq!(meta_v2.integration_timestep_fs, 2.);
-        assert_eq!(meta_v2.software_name, "AMBER");
-        assert_eq!(meta_v2.software_version, "20");
+        assert_eq!(meta_v2.software_name.as_deref(), Some("AMBER"));
+        assert_eq!(meta_v2.software_version.as_deref(), Some("20"));
         assert_eq!(meta_v2.structure_file_name, "5aom_cleaned.pdb");
         assert_eq!(meta_v2.topology_file_name, "5aom_gromacs_cleaned.top");
         assert_eq!(meta_v2.trajectory_file_names, vec!["5aom.xtc"]);

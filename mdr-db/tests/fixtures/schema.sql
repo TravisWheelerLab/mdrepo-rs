@@ -36,6 +36,10 @@
 -- query_start), so a polymer can carry several declared entries over the
 -- same residues.
 --
+-- Since then (2026-11-05, by hand): md-repo-app 0302
+-- (md_simulation.is_agent_imported boolean DEFAULT false NOT NULL; its
+-- index is left out, as no test depends on it).
+--
 --
 -- PostgreSQL database dump
 --
@@ -1623,7 +1627,8 @@ CREATE TABLE public.md_simulation (
     is_coarse_grained boolean NOT NULL,
     irods_ticket character varying(255),
     superseding_simulation_id integer,
-    sampling_frequency_ps double precision
+    sampling_frequency_ps double precision,
+    is_agent_imported boolean DEFAULT false NOT NULL
 );
 
 

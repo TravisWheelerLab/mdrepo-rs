@@ -130,6 +130,7 @@ fn seed_sim_with_flags(
             irods_ticket: None,
             superseding_simulation_id: None,
             md_repo_ticket_id: None,
+            is_agent_imported: false,
         },
     )
     .expect("insert simulation")

@@ -686,6 +686,9 @@ pub struct Simulation {
     pub num_replicates: Option<i32>,
     pub irods_ticket: Option<String>,
     pub superseding_simulation_id: Option<i32>,
+    /// Imported or prepared by an AI agent (`mdr-process --agent-imported`);
+    /// Django migration 0302.
+    pub is_agent_imported: bool,
 }
 
 #[derive(Debug, Insertable, Deserialize)]
@@ -721,6 +724,7 @@ pub struct NewSimulation {
     pub irods_ticket: Option<String>,
     pub superseding_simulation_id: Option<i32>,
     pub md_repo_ticket_id: Option<i64>,
+    pub is_agent_imported: bool,
 }
 
 #[derive(Debug, AsChangeset, Default, Deserialize)]
@@ -755,6 +759,7 @@ pub struct SimulationUpdate {
     pub irods_ticket: Option<Option<String>>,
     pub superseding_simulation_id: Option<Option<i32>>,
     pub md_repo_ticket_id: Option<Option<i64>>,
+    pub is_agent_imported: Option<bool>,
 }
 
 // ── md_simulation_pub ─────────────────────────────────────────────────────────

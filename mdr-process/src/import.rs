@@ -46,7 +46,7 @@ use std::{
 
 /// Uploads made under this ORCID are attributed to the fixed `mdrepo_admin`
 /// account rather than a specific contributor.
-const ADMIN_ORCID: &str = "0000-0000-0000-0000";
+pub const ADMIN_ORCID: &str = "0000-0000-0000-0000";
 const ADMIN_USERNAME: &str = "mdrepo_admin";
 
 /// Solute names the frontend expects in their ionic form. Chloride is an anion:
@@ -431,7 +431,7 @@ fn upsert_simulation(
     conn: &mut PgConnection,
     sim: &ExportSimulation,
     opts: &ImportOpts,
-    software_id: i64,
+    software_id: Option<i64>,
 ) -> Result<i64> {
     let user_id = lead_contributor_id(conn, &sim.lead_contributor_orcid)?;
 
@@ -500,7 +500,7 @@ fn upsert_simulation(
             conn,
             sim_id,
             SimulationUpdate {
-                software_id: Some(Some(software_id)),
+                software_id: Some(software_id),
                 contributor_id: Some(user_id),
                 unique_file_hash_string: Some(Some(
                     sim.unique_file_hash_string.clone(),
@@ -520,7 +520,7 @@ fn upsert_simulation(
                 forcefield: Some(sim.forcefield.clone()),
                 forcefield_comments: Some(sim.forcefield_comments.clone()),
                 num_replicates: Some(Some(sim.num_replicates as i32)),
-                temperature: Some(Some(sim.temperature_kelvin as i32)),
+                temperature: Some(sim.temperature_kelvin.map(|t| t as i32)),
                 protonation_method: Some(sim.protonation_method.clone()),
                 is_placeholder: Some(is_placeholder),
                 is_deprecated: Some(is_deprecated),
@@ -528,6 +528,10 @@ fn upsert_simulation(
                 // site owns it (admin toggle, My Simulations release), and
                 // the TOML would undo those changes (MDR-100).
                 is_coarse_grained: Some(sim.is_coarse_grained.unwrap_or(false)),
+                // Set, never cleared: a reprocess without --agent-imported
+                // (the ticket flow, `reprocess`, a person's fix) leaves an
+                // agent import marked as one (Ken, 2026-11-05)
+                is_agent_imported: sim.is_agent_imported.filter(|&b| b),
                 // Only overwrite the ticket link when this run has one; a
                 // ticket-less reprocess leaves the existing value untouched.
                 md_repo_ticket_id: opts.ticket_id.map(Some),
@@ -541,7 +545,7 @@ fn upsert_simulation(
     let created = ops::insert_simulation(
         conn,
         NewSimulation {
-            software_id: Some(software_id),
+            software_id,
             contributor_id: user_id,
             unique_file_hash_string: Some(sim.unique_file_hash_string.clone()),
             alias: sim.alias.clone(),
@@ -559,7 +563,7 @@ fn upsert_simulation(
             forcefield: sim.forcefield.clone(),
             forcefield_comments: sim.forcefield_comments.clone(),
             num_replicates: Some(sim.num_replicates as i32),
-            temperature: Some(sim.temperature_kelvin as i32),
+            temperature: sim.temperature_kelvin.map(|t| t as i32),
             protonation_method: sim.protonation_method.clone(),
             is_placeholder,
             is_deprecated,
@@ -571,6 +575,7 @@ fn upsert_simulation(
             irods_ticket: None,
             superseding_simulation_id: None,
             md_repo_ticket_id: opts.ticket_id,
+            is_agent_imported: sim.is_agent_imported.unwrap_or(false),
         },
     )?;
 
@@ -605,24 +610,32 @@ fn lead_contributor_id(conn: &mut PgConnection, orcid: &str) -> Result<Option<i6
 }
 
 // --------------------------------------------------
+/// The md_software row for the payload's software, or None when it names
+/// none (an agent import that found no software; stored NULL, shown
+/// "Unknown").
 fn find_or_create_software(
     conn: &mut PgConnection,
     sim: &ExportSimulation,
-) -> Result<i64> {
-    let version = Some(sim.software_version.as_str());
+) -> Result<Option<i64>> {
+    let Some(name) = &sim.software_name else {
+        return Ok(None);
+    };
+    let version = sim.software_version.as_deref();
 
     // One statement, not find-then-insert -- see ops::upsert_software. This is
     // the race that had already fired: with no unique constraint on
     // md_software the loser used to insert a duplicate silently. The
     // constraint arrived in Django migration 0258, which this depends on.
-    Ok(ops::upsert_software(
-        conn,
-        NewSoftware {
-            name: sim.software_name.clone(),
-            version: version.map(String::from),
-        },
-    )?
-    .id)
+    Ok(Some(
+        ops::upsert_software(
+            conn,
+            NewSoftware {
+                name: name.clone(),
+                version: version.map(String::from),
+            },
+        )?
+        .id,
+    ))
 }
 
 // --------------------------------------------------

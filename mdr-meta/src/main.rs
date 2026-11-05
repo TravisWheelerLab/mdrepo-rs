@@ -45,6 +45,7 @@ fn run(args: Cli) -> Result<bool> {
 
                 let opts = args.no_id.then_some(MetaCheckOptions {
                     allow_no_pdb_uniprot: true,
+                    ..Default::default()
                 });
 
                 // A file that will not parse is invalid metadata, so it

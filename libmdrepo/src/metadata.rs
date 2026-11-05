@@ -5,16 +5,87 @@ use serde::{Deserialize, Serialize};
 use std::{borrow::Cow::Borrowed, collections::HashMap, ffi::OsStr, path::Path};
 use validator::{Validate, ValidationError, ValidationErrorsKind};
 
-#[derive(Debug, Deserialize, Serialize, Validate)]
+#[derive(Debug, Default, Clone, Copy, Deserialize, Serialize, Validate)]
 pub struct MetaCheckOptions {
     pub allow_no_pdb_uniprot: bool,
+
+    /// The submission was assembled by an AI agent (mdrepo-agent), checked for
+    /// `mdr-process --agent-imported` (mdrepo-rs#46; Ken, 2026-10-29 and
+    /// 2026-11-05). Such a file may leave out `lead_contributor_orcid` (the
+    /// import uses `mdrepo_admin`), `temperature_kelvin`, and the software
+    /// (both name and version, or neither), and a file-format combination that
+    /// does not match the declared engine is a warning rather than an error
+    /// as long as processing can read each file. `integration_timestep_fs`
+    /// stays required.
+    #[serde(default)]
+    pub agent_imported: bool,
 }
+
+/// How serious a [`Finding`] is: an error refuses the submission, a warning is
+/// reported and the import goes on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Level {
+    Error,
+    Warning,
+}
+
+/// One thing [`Meta::findings`] says about a metadata file, in a form a
+/// program can act on (Danny's point 5 on mdrepo-rs#46: mdrepo-agent copied
+/// these rules into Go because the only output was text). `meta-check --json`
+/// prints them.
+///
+/// `message` is exactly the line [`Meta::check`] has always returned, so text
+/// callers see no change. `field` is the TOML field the finding is about, when
+/// it is about one. `code` is a short name for the rule that stays the same
+/// when the wording changes, e.g. `required`, `range`, `format_mismatch`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Finding {
+    pub level: Level,
+    pub field: Option<String>,
+    pub code: String,
+    pub message: String,
+}
+
+impl Finding {
+    pub fn error(field: Option<&str>, code: &str, message: impl Into<String>) -> Self {
+        Self {
+            level: Level::Error,
+            field: field.map(String::from),
+            code: code.to_string(),
+            message: message.into(),
+        }
+    }
+
+    pub fn warning(
+        field: Option<&str>,
+        code: &str,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            level: Level::Warning,
+            ..Self::error(field, code, message)
+        }
+    }
+}
+
+/// Topology extensions the trajectory step can process
+/// (simulation-processing `cpptraj_gmx_traj_manipulation.py`, `detect_format`:
+/// prmtop/parm7 -> AMBER, psf -> NAMD, rtf/prm -> CHARMM, top/tpr/gro ->
+/// GROMACS). An agent import whose topology is none of these is refused even
+/// where a mismatched combination would only be a warning: it would fail in
+/// processing.
+pub const PROCESSABLE_TOPOLOGY_EXTS: &[&str] =
+    &["prmtop", "parm7", "psf", "rtf", "prm", "top", "tpr", "gro"];
 
 #[derive(Debug, Deserialize, Serialize, Validate)]
 #[serde(deny_unknown_fields)]
 pub struct Meta {
+    /// Required, except for an agent import (`MetaCheckOptions::agent_imported`),
+    /// which is filed under `mdrepo_admin`.
     #[validate(regex(path = *constants::ORCID_REGEX))]
-    pub lead_contributor_orcid: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lead_contributor_orcid: Option<String>,
 
     #[validate(length(min = 1))]
     pub trajectory_file_names: Vec<String>,
@@ -23,8 +94,10 @@ pub struct Meta {
 
     pub topology_file_name: String,
 
+    /// Required, except for an agent import.
     #[validate(range(min = constants::TEMP_K_MIN, max = constants::TEMP_K_MAX))]
-    pub temperature_kelvin: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature_kelvin: Option<u32>,
 
     #[validate(
         range(min = constants::TIMESTEP_FS_MIN, max = constants::TIMESTEP_FS_MAX)
@@ -59,11 +132,15 @@ pub struct Meta {
     #[validate(length(max = 300), regex(path = *constants::NOT_WHITESPACE_REGEX))]
     pub short_description: String,
 
+    /// Required with `software_version`, except for an agent import, which
+    /// may give both or neither (stored as no software, shown as "Unknown").
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
-    pub software_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub software_name: Option<String>,
 
     #[validate(regex(path = *constants::NOT_WHITESPACE_REGEX))]
-    pub software_version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub software_version: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mdrepo_id: Option<String>,
@@ -196,33 +273,109 @@ impl Meta {
     }
 
     // --------------------------------------------------
+    /// The error messages for this file, as they have always been returned:
+    /// [`Meta::findings`] at level [`Level::Error`], message only, in the same
+    /// order. Warnings are left out.
     pub fn check(&self, options: Option<MetaCheckOptions>) -> Vec<String> {
-        let mut messages = vec![];
+        self.findings(options)
+            .into_iter()
+            .filter(|f| f.level == Level::Error)
+            .map(|f| f.message)
+            .collect()
+    }
+
+    // --------------------------------------------------
+    /// Everything there is to say about this file: errors, which refuse it, and
+    /// warnings, which do not. See [`Finding`].
+    pub fn findings(&self, options: Option<MetaCheckOptions>) -> Vec<Finding> {
+        let opts = options.unwrap_or_default();
+        let agent = opts.agent_imported;
+        let mut found: Vec<Finding> = vec![];
         if let Err(e) = self.validate() {
             for (field, val) in e.errors() {
-                messages.extend(handle_validation_error_kind(field, val));
+                found.extend(validation_findings(field, val));
             }
         }
 
-        let software_name = self.software_name.as_str();
-        if let Some(valid_versions) = constants::VALID_SOFTWARE.get(software_name) {
-            if !valid_versions.iter().any(|&v| v == self.software_version) {
-                messages.push(format!(
-                    r#"software_version: "{}" invalid for "{software_name}", choose from {}"#,
-                    &self.software_version,
-                    valid_versions.join(", ")
-                ))
+        // Fields a person's TOML must have and an agent import may leave out
+        // (MetaCheckOptions::agent_imported). serde accepts them missing so
+        // that this can decide, and say which field, rather than failing the
+        // parse.
+        if !agent {
+            for (field, missing) in [
+                (
+                    "lead_contributor_orcid",
+                    self.lead_contributor_orcid.is_none(),
+                ),
+                ("temperature_kelvin", self.temperature_kelvin.is_none()),
+            ] {
+                if missing {
+                    found.push(Finding::error(
+                        Some(field),
+                        "required",
+                        format!("{field}: required"),
+                    ));
+                }
             }
-        } else {
-            let valid_software_names: Vec<String> = constants::VALID_SOFTWARE
-                .keys()
-                .map(|val| val.to_string())
-                .collect();
-            messages.push(format!(
-                r#"software_name: "{}" invalid, choose from {}"#,
-                self.software_name,
-                valid_software_names.join(", "),
-            ))
+        }
+
+        match (&self.software_name, &self.software_version) {
+            (Some(name), Some(version)) => {
+                let software_name = name.as_str();
+                if let Some(valid_versions) =
+                    constants::VALID_SOFTWARE.get(software_name)
+                {
+                    if !valid_versions.iter().any(|v| v == version) {
+                        found.push(Finding::error(
+                            Some("software_version"),
+                            "invalid_software_version",
+                            format!(
+                                r#"software_version: "{}" invalid for "{software_name}", choose from {}"#,
+                                version,
+                                valid_versions.join(", ")
+                            ),
+                        ))
+                    }
+                } else {
+                    let valid_software_names: Vec<String> = constants::VALID_SOFTWARE
+                        .keys()
+                        .map(|val| val.to_string())
+                        .collect();
+                    found.push(Finding::error(
+                        Some("software_name"),
+                        "invalid_software",
+                        format!(
+                            r#"software_name: "{}" invalid, choose from {}"#,
+                            name,
+                            valid_software_names.join(", "),
+                        ),
+                    ))
+                }
+            }
+            // An agent import may name no software at all; never half of it,
+            // since a version means nothing without its program
+            (None, None) if agent => {}
+            (name, version) => {
+                for (field, missing) in [
+                    ("software_name", name.is_none()),
+                    ("software_version", version.is_none()),
+                ] {
+                    if missing {
+                        found.push(Finding::error(
+                            Some(field),
+                            "required",
+                            if agent {
+                                format!(
+                                    "{field}: required when the other of \
+                                    software_name and software_version is given"
+                                )
+                            } else {
+                                format!("{field}: required")
+                            },
+                        ));
+                    }
+                }
+            }
         }
 
         // A frame cannot be saved more often than the integrator steps, so a
@@ -246,11 +399,15 @@ impl Meta {
         {
             let timestep_ps = self.integration_timestep_fs / 1000.;
             if sampling_ps < timestep_ps {
-                messages.push(format!(
-                    "sampling_frequency_ps: {sampling_ps} ps is shorter than \
-                    the {} fs integration timestep -- a frame cannot be saved \
-                    more often than every step",
-                    self.integration_timestep_fs
+                found.push(Finding::error(
+                    Some("sampling_frequency_ps"),
+                    "sampling_shorter_than_timestep",
+                    format!(
+                        "sampling_frequency_ps: {sampling_ps} ps is shorter than \
+                        the {} fs integration timestep -- a frame cannot be saved \
+                        more often than every step",
+                        self.integration_timestep_fs
+                    ),
                 ));
             }
         }
@@ -264,40 +421,24 @@ impl Meta {
         // how ticket 1997 slipped through: individually "valid" extensions
         // that no single engine actually produces together.
         let name_checks = [
-            ("structure_file_name", &self.structure_file_name),
-            ("topology_file_name", &self.topology_file_name),
+            ("structure_file_name".to_string(), &self.structure_file_name),
+            ("topology_file_name".to_string(), &self.topology_file_name),
         ];
+        let trajectory_checks = self
+            .trajectory_file_names
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (format!("trajectory_file_names[{}]", i + 1), f));
 
         // Ensure that each filename is present only once
         let mut file_count: HashMap<String, usize> = HashMap::new();
-        for (fieldname, filename) in name_checks {
-            if let Some(msg) = Self::check_has_extension(fieldname, filename) {
-                messages.push(msg);
+        for (fieldname, filename) in name_checks.into_iter().chain(trajectory_checks) {
+            if let Some(msg) = Self::check_has_extension(&fieldname, filename) {
+                found.push(Finding::error(Some(&fieldname), "no_extension", msg));
             }
 
-            if let Some(msg) = Self::check_no_wildcard(fieldname, filename) {
-                messages.push(msg);
-            }
-
-            file_count
-                .entry(filename.to_string())
-                .and_modify(|count| *count += 1)
-                .or_insert(1);
-        }
-
-        for (i, filename) in self.trajectory_file_names.iter().enumerate() {
-            if let Some(msg) = Self::check_has_extension(
-                &format!("trajectory_file_names[{}]", i + 1),
-                filename,
-            ) {
-                messages.push(msg);
-            }
-
-            if let Some(msg) = Self::check_no_wildcard(
-                &format!("trajectory_file_names[{}]", i + 1),
-                filename,
-            ) {
-                messages.push(msg);
+            if let Some(msg) = Self::check_no_wildcard(&fieldname, filename) {
+                found.push(Finding::error(Some(&fieldname), "wildcard", msg));
             }
 
             file_count
@@ -308,15 +449,14 @@ impl Meta {
 
         // All the messages up to this point start with "field_name: ",
         // so sort to put all the field errors together.
-        messages.sort();
+        found.sort_by(|a, b| a.message.cmp(&b.message));
 
         if let Some(addl_files) = &self.additional_files {
             for (i, file) in addl_files.iter().enumerate() {
-                if let Some(msg) = Self::check_no_wildcard(
-                    &format!("additional_files[{}].file_name", i + 1),
-                    &file.file_name,
-                ) {
-                    messages.push(msg);
+                let fieldname = format!("additional_files[{}].file_name", i + 1);
+                if let Some(msg) = Self::check_no_wildcard(&fieldname, &file.file_name)
+                {
+                    found.push(Finding::error(Some(&fieldname), "wildcard", msg));
                 }
 
                 file_count
@@ -328,8 +468,10 @@ impl Meta {
 
         for (filename, count) in file_count {
             if count > 1 {
-                messages.push(format!(
-                    r#"Filename "{filename}" is duplicated {count} times"#
+                found.push(Finding::error(
+                    None,
+                    "duplicate_filename",
+                    format!(r#"Filename "{filename}" is duplicated {count} times"#),
                 ));
             }
         }
@@ -345,8 +487,16 @@ impl Meta {
         // npt_dry.pdb and mdrepo-metadata.toml as additional, so it was
         // refused for lacking the very file it declares. That refusal is
         // also why it could never be reprocessed.
-        let is_gromacs = self.software_name.to_lowercase().contains("gromacs");
-        if is_gromacs
+        //
+        // For an agent import it applies whatever the software says, since
+        // the ".top" alone sends processing down the GROMACS path
+        // (detect_format), named engine or not: Zenodo 3975394,
+        // mdrepo-agent#70.
+        let is_gromacs = self
+            .software_name
+            .as_deref()
+            .is_some_and(|name| name.to_lowercase().contains("gromacs"));
+        if (is_gromacs || agent)
             && Path::new(&self.topology_file_name).extension()
                 == Some(OsStr::new("top"))
         {
@@ -365,11 +515,12 @@ impl Meta {
             });
 
             if !has_coords.any(|e| matches!(e.as_str(), "tpr" | "gro")) {
-                messages.push(
+                found.push(Finding::error(
+                    Some("topology_file_name"),
+                    "gromacs_top_needs_coordinates",
                     "topology_file_name: GROMACS topology \".top\" file requires \
-                    a \".tpr\" or \".gro\" among the declared files"
-                        .to_string(),
-                );
+                    a \".tpr\" or \".gro\" among the declared files",
+                ));
             }
         }
 
@@ -380,40 +531,123 @@ impl Meta {
         // the combination matches no engine at all (incompatible mixing),
         // or it matches some *other* engine but not the declared one
         // (software_name does not describe what was actually submitted).
-        if self.software_name != "CUSTOM"
+        //
+        // For an agent import both are warnings, when processing can read
+        // every file (formats_processable): the agent keeps the real engine
+        // name instead of declaring CUSTOM to get past this (Ken, 2026-11-05;
+        // mdrepo-agent#88, and Zenodo 8420199's GROMACS run with a generated
+        // .psf, mdrepo-agent#70). One it cannot read is still an error.
+        let software_name = self.software_name.as_deref();
+        if software_name != Some("CUSTOM")
             && let Some(combo) = self.format_combination()
         {
+            let unreadable = if agent {
+                self.formats_processable(&combo)
+            } else {
+                vec![]
+            };
+            found.extend(unreadable.iter().cloned());
+            let mismatch = |field: Option<&str>, code: &str, message: String| {
+                if agent && unreadable.is_empty() {
+                    Finding::warning(field, code, message)
+                } else {
+                    Finding::error(field, code, message)
+                }
+            };
             if combo.matched_engines.is_empty() {
-                messages.push(format!(
-                    "File formats are incompatible: structure \".{}\", \
-                    topology \".{}\", trajectory {} match no supported \
-                    engine's convention",
-                    combo.structure_ext,
-                    combo.topology_ext,
-                    combo.trajectory_display(),
+                found.push(mismatch(
+                    None,
+                    "format_incompatible",
+                    format!(
+                        "File formats are incompatible: structure \".{}\", \
+                        topology \".{}\", trajectory {} match no supported \
+                        engine's convention",
+                        combo.structure_ext,
+                        combo.topology_ext,
+                        combo.trajectory_display(),
+                    ),
                 ));
-            } else if !combo.matched_engines.contains(&self.software_name.as_str()) {
-                messages.push(format!(
-                    "software_name is \"{}\" but structure/topology/\
-                    trajectory extensions (.{}, .{}, {}) match {} instead",
-                    self.software_name,
-                    combo.structure_ext,
-                    combo.topology_ext,
-                    combo.trajectory_display(),
-                    combo.matched_engines.join(" or "),
+            } else if let Some(name) = software_name
+                && !combo.matched_engines.contains(&name)
+            {
+                found.push(mismatch(
+                    Some("software_name"),
+                    "format_mismatch",
+                    format!(
+                        "software_name is \"{}\" but structure/topology/\
+                        trajectory extensions (.{}, .{}, {}) match {} instead",
+                        name,
+                        combo.structure_ext,
+                        combo.topology_ext,
+                        combo.trajectory_display(),
+                        combo.matched_engines.join(" or "),
+                    ),
                 ));
             }
         }
 
         if self.pdb_id.is_none()
             && self.uniprot_ids.is_none()
-            && !options.is_some_and(|val| val.allow_no_pdb_uniprot)
+            && !opts.allow_no_pdb_uniprot
         {
-            messages
-                .push("Missing PDB and Uniprot IDs (skip with --no-id)".to_string());
+            found.push(Finding::error(
+                None,
+                "missing_ids",
+                "Missing PDB and Uniprot IDs (skip with --no-id)",
+            ));
         }
 
-        messages
+        found
+    }
+
+    /// For an agent import whose formats do not fit the declared engine: an
+    /// error for each declared file processing could not read, so that only a
+    /// mismatch processing can live with becomes a warning. The structure and
+    /// trajectories must be formats some engine uses; the topology must be one
+    /// the trajectory step knows (`PROCESSABLE_TOPOLOGY_EXTS`).
+    fn formats_processable(&self, combo: &FormatCombination) -> Vec<Finding> {
+        let mut out = vec![];
+        let topology = combo.topology_ext.to_lowercase();
+        if !PROCESSABLE_TOPOLOGY_EXTS.contains(&topology.as_str()) {
+            out.push(Finding::error(
+                Some("topology_file_name"),
+                "unprocessable_format",
+                format!(
+                    "topology_file_name: \".{}\" is not a topology format \
+                    processing can read ({})",
+                    combo.topology_ext,
+                    PROCESSABLE_TOPOLOGY_EXTS.join(", ")
+                ),
+            ));
+        }
+        let structure = combo.structure_ext.to_lowercase();
+        if !constants::STRUCTURE_FILE_EXTS.contains(&structure.as_str()) {
+            out.push(Finding::error(
+                Some("structure_file_name"),
+                "unprocessable_format",
+                format!(
+                    "structure_file_name: \".{}\" is not a structure format \
+                    processing can read ({})",
+                    combo.structure_ext,
+                    constants::STRUCTURE_FILE_EXTS.join(", ")
+                ),
+            ));
+        }
+        for (i, ext) in combo.trajectory_exts.iter().enumerate() {
+            if !constants::TRAJECTORY_FILE_EXTS.contains(&ext.to_lowercase().as_str()) {
+                let field = format!("trajectory_file_names[{}]", i + 1);
+                out.push(Finding::error(
+                    Some(&field),
+                    "unprocessable_format",
+                    format!(
+                        "{field}: \".{ext}\" is not a trajectory format \
+                        processing can read ({})",
+                        constants::TRAJECTORY_FILE_EXTS.join(", ")
+                    ),
+                ));
+            }
+        }
+        out
     }
 
     /// Extracts the declared structure/topology/trajectory extensions and
@@ -534,17 +768,17 @@ impl Meta {
     pub fn example() -> Self {
         Meta {
             mdrepo_id: None,
-            lead_contributor_orcid: "0000-0000-0000-0000".to_string(),
+            lead_contributor_orcid: Some("0000-0000-0000-0000".to_string()),
             trajectory_file_names: vec!["traj.xtc".to_string()],
             structure_file_name: "struct.pdb".to_string(),
             topology_file_name: "topology.tpr".to_string(),
-            temperature_kelvin: 300,
+            temperature_kelvin: Some(300),
             integration_timestep_fs: 2.,
             sampling_frequency_ps: Some(10.),
             short_description: "<short_description> (required)".to_string(),
             description: Some("<longer description>".to_string()),
-            software_name: "GROMACS".to_string(),
-            software_version: "2024.4".to_string(),
+            software_name: Some("GROMACS".to_string()),
+            software_version: Some("2024.4".to_string()),
             toml_version: Some(2),
             alias: Some("ABC123".to_string()),
             external_links: Some(vec![ExternalLink {
@@ -604,17 +838,17 @@ impl Meta {
     pub fn example_minimal() -> Self {
         Meta {
             mdrepo_id: None,
-            lead_contributor_orcid: "0000-0000-0000-0000".to_string(),
+            lead_contributor_orcid: Some("0000-0000-0000-0000".to_string()),
             trajectory_file_names: vec!["traj.xtc".to_string()],
             structure_file_name: "struct.pdb".to_string(),
             topology_file_name: "topology.tpr".to_string(),
-            temperature_kelvin: 300,
+            temperature_kelvin: Some(300),
             integration_timestep_fs: 2.,
             sampling_frequency_ps: None,
             short_description: "<short_description> (required)".to_string(),
             description: None,
-            software_name: "GROMACS".to_string(),
-            software_version: "2024.4".to_string(),
+            software_name: Some("GROMACS".to_string()),
+            software_version: Some("2024.4".to_string()),
             toml_version: None,
             alias: None,
             external_links: None,
@@ -663,6 +897,11 @@ pub struct Summary {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub superseding_simulation_id: Option<i32>,
+
+    /// Imported or prepared by an AI agent (md_simulation.is_agent_imported).
+    /// A database-only fact like the two flags above: never a TOML field, so
+    /// it lives here and not on `Meta`.
+    pub is_agent_imported: bool,
 
     #[serde(flatten)]
     pub meta: Meta,
@@ -1100,11 +1339,8 @@ fn validate_collections(names: &[String]) -> Result<(), ValidationError> {
     Ok(())
 }
 
-fn handle_validation_error_kind(
-    field: &str,
-    err_kind: &ValidationErrorsKind,
-) -> Vec<String> {
-    let mut messages = vec![];
+fn validation_findings(field: &str, err_kind: &ValidationErrorsKind) -> Vec<Finding> {
+    let mut found = vec![];
     match err_kind {
         // Field(Vec<ValidationError>)
         ValidationErrorsKind::Field(errs) => {
@@ -1113,14 +1349,23 @@ fn handle_validation_error_kind(
                 .map(format_validation_error)
                 .collect::<Vec<_>>()
                 .join("; ");
-            messages.push(format!("{field}: {message}"));
+            let code = errs
+                .iter()
+                .map(|e| e.code.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            found.push(Finding::error(
+                Some(field),
+                &code,
+                format!("{field}: {message}"),
+            ));
         }
         // List(BTreeMap<usize, Box<ValidationErrors>>)
         ValidationErrorsKind::List(tree) => {
             for (num, validation_errors) in tree {
                 for (sub_fld, err_kind) in validation_errors.errors() {
                     let fld = join_field(&format!("{field}[{}]", num + 1), sub_fld);
-                    messages.extend(handle_validation_error_kind(&fld, err_kind));
+                    found.extend(validation_findings(&fld, err_kind));
                 }
             }
         }
@@ -1128,11 +1373,11 @@ fn handle_validation_error_kind(
         ValidationErrorsKind::Struct(validation_errors) => {
             for (sub_fld, err_kind) in validation_errors.errors() {
                 let fld = join_field(field, sub_fld);
-                messages.extend(handle_validation_error_kind(&fld, err_kind));
+                found.extend(validation_findings(&fld, err_kind));
             }
         }
     };
-    messages
+    found
 }
 
 // --------------------------------------------------
@@ -1390,7 +1635,7 @@ mod proptest_tests {
         #[test]
         fn valid_temperature_no_error(temp in 275u32..=700u32) {
             let mut meta = base_meta();
-            meta.temperature_kelvin = temp;
+            meta.temperature_kelvin = Some(temp);
             let errors = meta.check(None);
             let has_error = errors.iter().any(|e| e.starts_with("temperature_kelvin:"));
             prop_assert!(!has_error, "Unexpected temperature error for {temp}: {errors:?}");
@@ -1402,7 +1647,7 @@ mod proptest_tests {
             701u32..=u32::MAX,
         ]) {
             let mut meta = base_meta();
-            meta.temperature_kelvin = temp;
+            meta.temperature_kelvin = Some(temp);
             let errors = meta.check(None);
             let has_error = errors.iter().any(|e| e.starts_with("temperature_kelvin:"));
             prop_assert!(has_error, "Expected temperature error for temp={temp}");
@@ -1641,11 +1886,11 @@ mod proptest_tests {
             timestep in (10u32..=200u32).prop_map(|t| f64::from(t) / 10.),
         ) {
             let mut meta = base_meta();
-            meta.temperature_kelvin = temp;
+            meta.temperature_kelvin = Some(temp);
             meta.integration_timestep_fs = timestep;
             let toml_str = meta.to_toml().expect("serialization failed");
             let meta2 = Meta::from_toml(&toml_str).expect("deserialization failed");
-            prop_assert_eq!(meta2.temperature_kelvin, temp);
+            prop_assert_eq!(meta2.temperature_kelvin, Some(temp));
             prop_assert_eq!(meta2.integration_timestep_fs, timestep);
         }
 
@@ -1657,11 +1902,11 @@ mod proptest_tests {
             timestep in (10u32..=200u32).prop_map(|t| f64::from(t) / 10.),
         ) {
             let mut meta = base_meta();
-            meta.temperature_kelvin = temp;
+            meta.temperature_kelvin = Some(temp);
             meta.integration_timestep_fs = timestep;
             let json_str = meta.to_json().expect("serialization failed");
             let meta2 = Meta::from_json(&json_str).expect("deserialization failed");
-            prop_assert_eq!(meta2.temperature_kelvin, temp);
+            prop_assert_eq!(meta2.temperature_kelvin, Some(temp));
             prop_assert_eq!(meta2.integration_timestep_fs, timestep);
         }
 
@@ -1688,7 +1933,7 @@ mod proptest_tests {
     #[test]
     fn gromacs_top_without_tpr_or_gro_fails() {
         let mut meta = base_meta();
-        meta.software_name = "GROMACS".to_string();
+        meta.software_name = Some("GROMACS".to_string());
         meta.topology_file_name = "topol.top".to_string();
         meta.additional_files = None;
         let errors = meta.check(None);
@@ -1707,7 +1952,7 @@ mod proptest_tests {
         // checking additional_files alone refused it for lacking the file it
         // declares, which is also why it could never be reprocessed.
         let mut meta = base_meta();
-        meta.software_name = "GROMACS".to_string();
+        meta.software_name = Some("GROMACS".to_string());
         meta.topology_file_name = "topol.top".to_string();
         meta.structure_file_name = "npt_dry.gro".to_string();
         meta.additional_files = None;
@@ -1721,7 +1966,7 @@ mod proptest_tests {
     #[test]
     fn gromacs_top_with_tpr_passes_gromacs_check() {
         let mut meta = base_meta();
-        meta.software_name = "GROMACS".to_string();
+        meta.software_name = Some("GROMACS".to_string());
         meta.topology_file_name = "topol.top".to_string();
         meta.additional_files = Some(vec![AdditionalFile {
             file_name: "run.tpr".to_string(),
@@ -1738,7 +1983,7 @@ mod proptest_tests {
     #[test]
     fn gromacs_top_with_gro_passes_gromacs_check() {
         let mut meta = base_meta();
-        meta.software_name = "GROMACS".to_string();
+        meta.software_name = Some("GROMACS".to_string());
         meta.topology_file_name = "topol.top".to_string();
         meta.additional_files = Some(vec![AdditionalFile {
             file_name: "struct.gro".to_string(),
@@ -1901,13 +2146,16 @@ mod tests {
 
     fn meta_ok(filename: &str) -> Result<()> {
         let meta = Meta::from_file(&PathBuf::from(filename))?;
-        assert_eq!(meta.lead_contributor_orcid, "0000-0001-9961-144X");
+        assert_eq!(
+            meta.lead_contributor_orcid.as_deref(),
+            Some("0000-0001-9961-144X")
+        );
         assert_eq!(meta.trajectory_file_names, vec!["5aom.xtc"]);
         assert_eq!(meta.structure_file_name, "5aom_cleaned.pdb");
         assert_eq!(meta.topology_file_name, "5aom_gromacs_cleaned.top");
-        assert_eq!(meta.temperature_kelvin, 300);
+        assert_eq!(meta.temperature_kelvin, Some(300));
         assert_eq!(meta.integration_timestep_fs, 2.);
-        assert_eq!(meta.software_name, "AMBER");
+        assert_eq!(meta.software_name.as_deref(), Some("AMBER"));
         assert_eq!(
             meta.uniprot_ids,
             Some(vec!["P04637".to_string(), "Q9Y5S2".to_string()])
@@ -2157,6 +2405,7 @@ mod tests {
         let meta = Meta::example_minimal();
         let errors = meta.check(Some(MetaCheckOptions {
             allow_no_pdb_uniprot: true,
+            ..Default::default()
         }));
         assert!(
             !errors
@@ -2397,6 +2646,7 @@ mod tests {
         .expect("inchi-only ligand should parse");
         let messages = meta.check(Some(MetaCheckOptions {
             allow_no_pdb_uniprot: true,
+            ..Default::default()
         }));
         let ligands = meta.ligands.expect("ligands");
         assert_eq!(
@@ -2720,8 +2970,8 @@ mod tests {
     #[test]
     fn meta_check_invalid_software_version() {
         let mut meta = Meta::example_minimal();
-        meta.software_name = "AMBER".to_string();
-        meta.software_version = "99.99".to_string();
+        meta.software_name = Some("AMBER".to_string());
+        meta.software_version = Some("99.99".to_string());
         let errors = meta.check(None);
         assert!(
             errors
@@ -2746,8 +2996,8 @@ mod tests {
         let bare_year_valid = |version: &str| {
             let mut meta = Meta::example_minimal();
             meta.pdb_id = Some("5aom".to_string());
-            meta.software_name = "GROMACS".to_string();
-            meta.software_version = version.to_string();
+            meta.software_name = Some("GROMACS".to_string());
+            meta.software_version = Some(version.to_string());
             !meta
                 .check(None)
                 .iter()
@@ -2770,8 +3020,8 @@ mod tests {
     fn meta_check_valid_software_version() {
         let mut meta = Meta::example_minimal();
         meta.pdb_id = Some("5aom".to_string());
-        meta.software_name = "AMBER".to_string();
-        meta.software_version = "2020".to_string();
+        meta.software_name = Some("AMBER".to_string());
+        meta.software_version = Some("2020".to_string());
         // example_minimal()'s default topology_file_name is GROMACS-shaped
         // (.tpr); swap in an AMBER-native one so this test isn't also
         // exercising the format-combination check.
@@ -2853,14 +3103,15 @@ mod tests {
     fn no_id_opts() -> Option<MetaCheckOptions> {
         Some(MetaCheckOptions {
             allow_no_pdb_uniprot: true,
+            ..Default::default()
         })
     }
 
     #[test]
     fn meta_combination_matching_declared_engine_is_clean() {
         let mut meta = Meta::example_minimal();
-        meta.software_name = "GROMACS".to_string();
-        meta.software_version = "2024.4".to_string();
+        meta.software_name = Some("GROMACS".to_string());
+        meta.software_version = Some("2024.4".to_string());
         meta.structure_file_name = "struct.gro".to_string();
         meta.topology_file_name = "topology.top".to_string();
         meta.trajectory_file_names = vec!["traj.xtc".to_string()];
@@ -2882,8 +3133,8 @@ mod tests {
         // constants::ENGINE_FILE_FORMATS), so this is not a mismatch --
         // see item 23 in utils/TODO.md.
         let mut meta = Meta::example_minimal();
-        meta.software_name = "AMBER".to_string();
-        meta.software_version = "2020".to_string();
+        meta.software_name = Some("AMBER".to_string());
+        meta.software_version = Some("2020".to_string());
         meta.structure_file_name = "struct.pdb".to_string();
         meta.topology_file_name = "topology.top".to_string();
         meta.trajectory_file_names = vec!["traj.xtc".to_string()];
@@ -2898,8 +3149,8 @@ mod tests {
         // COMMON_TRAJECTORY_EXTS (see the AMBER/xtc case above), .trr isn't
         // shared, so this is a genuine declared-vs-actual mismatch.
         let mut meta = Meta::example_minimal();
-        meta.software_name = "ACEMD".to_string();
-        meta.software_version = "3.7.3".to_string();
+        meta.software_name = Some("ACEMD".to_string());
+        meta.software_version = Some("3.7.3".to_string());
         meta.structure_file_name = "struct.gro".to_string();
         meta.topology_file_name = "topology.top".to_string();
         meta.trajectory_file_names = vec!["traj.trr".to_string()];
@@ -2915,8 +3166,8 @@ mod tests {
     #[test]
     fn meta_combination_matching_no_engine_is_fatal() {
         let mut meta = Meta::example_minimal();
-        meta.software_name = "GROMACS".to_string();
-        meta.software_version = "2024.4".to_string();
+        meta.software_name = Some("GROMACS".to_string());
+        meta.software_version = Some("2024.4".to_string());
         // .gro is GROMACS-only for structure; .psf is CHARMM/NAMD/ACEMD-only
         // for topology. No engine accepts both at once.
         meta.structure_file_name = "struct.gro".to_string();
@@ -2932,8 +3183,8 @@ mod tests {
     #[test]
     fn meta_combination_custom_software_is_exempt() {
         let mut meta = Meta::example_minimal();
-        meta.software_name = "CUSTOM".to_string();
-        meta.software_version = "NA".to_string();
+        meta.software_name = Some("CUSTOM".to_string());
+        meta.software_version = Some("NA".to_string());
         meta.structure_file_name = "struct.pdb".to_string();
         meta.topology_file_name = "topology.psf".to_string();
         meta.trajectory_file_names = vec!["traj.nc".to_string()];
@@ -2999,6 +3250,7 @@ mod tests {
                 .expect("valid rfc3339 timestamp")
                 .with_timezone(&Utc),
             superseding_simulation_id: None,
+            is_agent_imported: false,
             meta: Meta::example_minimal(),
         };
 
@@ -3037,5 +3289,532 @@ mod tests {
         }
 
         Ok(())
+    }
+}
+
+// --------------------------------------------------
+/// `Meta::findings` and agent imports (`MetaCheckOptions::agent_imported`,
+/// mdrepo-rs#46; Ken's decisions of 2026-10-29 and 2026-11-05).
+#[cfg(test)]
+mod agent_import_tests {
+    use super::{Finding, Level, Meta, MetaCheckOptions};
+
+    const PERSON: Option<MetaCheckOptions> = None;
+    const AGENT: Option<MetaCheckOptions> = Some(MetaCheckOptions {
+        allow_no_pdb_uniprot: false,
+        agent_imported: true,
+    });
+
+    /// A file that passes as a person's: GROMACS .pdb/.tpr/.xtc with a PDB ID
+    fn meta() -> Meta {
+        let mut meta = Meta::example_minimal();
+        meta.pdb_id = Some("1abc".to_string());
+        meta
+    }
+
+    fn with_files(structure: &str, topology: &str, trajectory: &str) -> Meta {
+        let mut meta = meta();
+        meta.structure_file_name = structure.to_string();
+        meta.topology_file_name = topology.to_string();
+        meta.trajectory_file_names = vec![trajectory.to_string()];
+        meta
+    }
+
+    fn with_software(mut meta: Meta, software: Option<(&str, &str)>) -> Meta {
+        meta.software_name = software.map(|(n, _)| n.to_string());
+        meta.software_version = software.map(|(_, v)| v.to_string());
+        meta
+    }
+
+    fn of_level(found: &[Finding], level: Level) -> Vec<&Finding> {
+        found.iter().filter(|f| f.level == level).collect()
+    }
+
+    fn codes(found: &[Finding], level: Level) -> Vec<&str> {
+        of_level(found, level)
+            .iter()
+            .map(|f| f.code.as_str())
+            .collect()
+    }
+
+    // --- the baseline ---
+
+    #[test]
+    fn the_baseline_file_passes_both_ways() {
+        assert!(
+            meta().findings(PERSON).is_empty(),
+            "{:?}",
+            meta().findings(PERSON)
+        );
+        assert!(
+            meta().findings(AGENT).is_empty(),
+            "{:?}",
+            meta().findings(AGENT)
+        );
+    }
+
+    // --- fields a person must give and an agent may leave out ---
+
+    #[test]
+    fn a_person_must_give_the_temperature() {
+        let mut meta = meta();
+        meta.temperature_kelvin = None;
+        let found = meta.findings(PERSON);
+        assert_eq!(
+            found,
+            vec![Finding::error(
+                Some("temperature_kelvin"),
+                "required",
+                "temperature_kelvin: required"
+            )]
+        );
+        assert_eq!(meta.check(PERSON), vec!["temperature_kelvin: required"]);
+    }
+
+    #[test]
+    fn an_agent_may_leave_out_the_temperature() {
+        let mut meta = meta();
+        meta.temperature_kelvin = None;
+        assert!(
+            meta.findings(AGENT).is_empty(),
+            "{:?}",
+            meta.findings(AGENT)
+        );
+    }
+
+    #[test]
+    fn a_person_must_give_the_lead_contributor_orcid() {
+        let mut meta = meta();
+        meta.lead_contributor_orcid = None;
+        assert_eq!(meta.check(PERSON), vec!["lead_contributor_orcid: required"]);
+        assert_eq!(
+            codes(&meta.findings(PERSON), Level::Error),
+            vec!["required"]
+        );
+    }
+
+    #[test]
+    fn an_agent_may_leave_out_the_lead_contributor_orcid() {
+        let mut meta = meta();
+        meta.lead_contributor_orcid = None;
+        assert!(meta.check(AGENT).is_empty());
+    }
+
+    #[test]
+    fn a_bad_orcid_is_still_an_error_for_an_agent() {
+        let mut meta = meta();
+        meta.lead_contributor_orcid = Some("not-an-orcid".to_string());
+        let found = meta.findings(AGENT);
+        assert_eq!(codes(&found, Level::Error), vec!["regex"]);
+        assert_eq!(found[0].field.as_deref(), Some("lead_contributor_orcid"));
+    }
+
+    #[test]
+    fn a_person_must_give_the_software() {
+        let meta = with_software(meta(), None);
+        assert_eq!(
+            meta.check(PERSON),
+            vec!["software_name: required", "software_version: required"]
+        );
+    }
+
+    #[test]
+    fn a_person_must_give_both_halves_of_the_software() {
+        let mut meta = meta();
+        meta.software_version = None;
+        assert_eq!(meta.check(PERSON), vec!["software_version: required"]);
+        let mut meta = self::meta();
+        meta.software_name = None;
+        assert_eq!(meta.check(PERSON), vec!["software_name: required"]);
+    }
+
+    #[test]
+    fn an_agent_may_name_no_software() {
+        let meta = with_software(meta(), None);
+        assert!(
+            meta.findings(AGENT).is_empty(),
+            "{:?}",
+            meta.findings(AGENT)
+        );
+    }
+
+    #[test]
+    fn an_agent_may_not_give_half_the_software() {
+        let mut meta = meta();
+        meta.software_version = None;
+        let found = meta.findings(AGENT);
+        assert_eq!(codes(&found, Level::Error), vec!["required"]);
+        assert_eq!(found[0].field.as_deref(), Some("software_version"));
+        assert!(
+            found[0].message.contains("required when the other"),
+            "{found:?}"
+        );
+
+        let mut meta = self::meta();
+        meta.software_name = None;
+        let found = meta.findings(AGENT);
+        assert_eq!(found[0].field.as_deref(), Some("software_name"));
+    }
+
+    #[test]
+    fn an_agent_naming_software_is_held_to_its_versions() {
+        let meta = with_software(meta(), Some(("GROMACS", "1999")));
+        assert_eq!(
+            codes(&meta.findings(AGENT), Level::Error),
+            vec!["invalid_software_version"]
+        );
+        let meta = with_software(self::meta(), Some(("GROMAX", "2024.4")));
+        assert_eq!(
+            codes(&meta.findings(AGENT), Level::Error),
+            vec!["invalid_software"]
+        );
+    }
+
+    #[test]
+    fn a_temperature_out_of_range_is_an_error_both_ways() {
+        let mut meta = meta();
+        meta.temperature_kelvin = Some(5);
+        for opts in [PERSON, AGENT] {
+            let found = meta.findings(opts);
+            assert_eq!(codes(&found, Level::Error), vec!["range"], "{found:?}");
+            assert_eq!(found[0].field.as_deref(), Some("temperature_kelvin"));
+            assert!(found[0].message.starts_with("temperature_kelvin: "));
+        }
+    }
+
+    #[test]
+    fn the_timestep_stays_required_for_an_agent() {
+        // integration_timestep_fs is not an Option: a file without it does
+        // not parse, with or without the flag
+        let toml = std::fs::read_to_string("tests/inputs/metadata/minimal.toml")
+            .unwrap()
+            .replace("integration_timestep_fs = 2\n", "");
+        let err = Meta::from_toml(&toml).unwrap_err().to_string();
+        assert!(err.contains("integration_timestep_fs"), "{err}");
+    }
+
+    #[test]
+    fn a_toml_without_temperature_or_software_parses_and_check_decides() {
+        let toml = std::fs::read_to_string("tests/inputs/metadata/minimal.toml")
+            .unwrap()
+            .replace("temperature_kelvin = 300\n", "")
+            .replace("software_name = \"AMBER\"\n", "")
+            .replace("software_version = \"1\"\n", "")
+            .replace("lead_contributor_orcid = \"0000-0001-9961-144X\"\n", "")
+            // minimal.toml's .top has no .tpr/.gro, which an agent import may
+            // not have whatever the software (Zenodo 3975394)
+            .replace("5aom_gromacs_cleaned.top", "5aom_gromacs_cleaned.tpr");
+        let meta = Meta::from_toml(&toml).expect("parses without the four fields");
+        assert_eq!(meta.temperature_kelvin, None);
+        assert_eq!(meta.software_name, None);
+        let person = meta.check(Some(MetaCheckOptions {
+            allow_no_pdb_uniprot: true,
+            agent_imported: false,
+        }));
+        for field in [
+            "lead_contributor_orcid",
+            "temperature_kelvin",
+            "software_name",
+            "software_version",
+        ] {
+            assert!(person.contains(&format!("{field}: required")), "{person:?}");
+        }
+        let agent = meta.check(Some(MetaCheckOptions {
+            allow_no_pdb_uniprot: true,
+            agent_imported: true,
+        }));
+        assert!(agent.is_empty(), "{agent:?}");
+    }
+
+    #[test]
+    fn a_missing_field_is_left_out_when_written_back() {
+        let meta = with_software(meta(), None);
+        let mut meta = meta;
+        meta.temperature_kelvin = None;
+        meta.lead_contributor_orcid = None;
+        let toml = toml::to_string(&meta).unwrap();
+        for key in [
+            "temperature_kelvin",
+            "software_name",
+            "software_version",
+            "lead_contributor_orcid",
+        ] {
+            assert!(!toml.contains(key), "{key} in {toml}");
+        }
+        let back = Meta::from_toml(&toml).unwrap();
+        assert_eq!(back.temperature_kelvin, None);
+        assert_eq!(back.software_name, None);
+    }
+
+    // --- file formats ---
+
+    /// Zenodo 8420199 (mdrepo-agent#70): a GROMACS run whose water-stripped
+    /// trajectory came with a .psf the staging step generated
+    fn gromacs_with_psf() -> Meta {
+        with_files("noW_0ns.pdb", "noW_0ns.psf", "noW_prod.xtc")
+    }
+
+    #[test]
+    fn a_mismatch_refuses_a_persons_file() {
+        let found = gromacs_with_psf().findings(PERSON);
+        assert_eq!(codes(&found, Level::Error), vec!["format_mismatch"]);
+        assert_eq!(found[0].field.as_deref(), Some("software_name"));
+        assert_eq!(
+            found[0].message,
+            "software_name is \"GROMACS\" but structure/topology/trajectory \
+            extensions (.pdb, .psf, .xtc) match ACEMD or CHARMM or NAMD instead"
+        );
+    }
+
+    #[test]
+    fn a_processable_mismatch_only_warns_for_an_agent() {
+        let meta = gromacs_with_psf();
+        let found = meta.findings(AGENT);
+        assert!(of_level(&found, Level::Error).is_empty(), "{found:?}");
+        assert_eq!(codes(&found, Level::Warning), vec!["format_mismatch"]);
+        // the same words as the person's error
+        assert_eq!(
+            found[0].message,
+            gromacs_with_psf().findings(PERSON)[0].message
+        );
+        assert!(meta.check(AGENT).is_empty(), "check() leaves warnings out");
+    }
+
+    #[test]
+    fn formats_matching_no_engine_only_warn_for_an_agent() {
+        // AMBER topology, GROMACS structure, CHARMM trajectory
+        let meta = with_files("a.gro", "a.prmtop", "a.dcd");
+        assert_eq!(
+            codes(&meta.findings(PERSON), Level::Error),
+            vec!["format_incompatible"]
+        );
+        let found = meta.findings(AGENT);
+        assert_eq!(codes(&found, Level::Warning), vec!["format_incompatible"]);
+        assert!(of_level(&found, Level::Error).is_empty());
+        assert_eq!(found[0].field, None);
+    }
+
+    #[test]
+    fn an_agent_naming_no_software_gets_no_mismatch() {
+        let meta = with_software(gromacs_with_psf(), None);
+        assert!(
+            meta.findings(AGENT).is_empty(),
+            "{:?}",
+            meta.findings(AGENT)
+        );
+    }
+
+    #[test]
+    fn an_agent_naming_no_software_still_hears_of_an_incompatible_set() {
+        let meta = with_software(with_files("a.gro", "a.prmtop", "a.dcd"), None);
+        assert_eq!(
+            codes(&meta.findings(AGENT), Level::Warning),
+            vec!["format_incompatible"]
+        );
+    }
+
+    #[test]
+    fn a_topology_processing_cannot_read_refuses_an_agent_import() {
+        // .itp is a GROMACS topology, so the set matches GROMACS, but the
+        // trajectory step has no path for it (detect_format)
+        let meta = with_files("a.gro", "a.itp", "a.xtc");
+        assert!(
+            meta.findings(PERSON).is_empty(),
+            "a person's file is unchanged"
+        );
+        let found = meta.findings(AGENT);
+        assert_eq!(codes(&found, Level::Error), vec!["unprocessable_format"]);
+        assert_eq!(found[0].field.as_deref(), Some("topology_file_name"));
+    }
+
+    #[test]
+    fn an_unreadable_file_turns_the_mismatch_back_into_an_error() {
+        // .str is a CHARMM topology the trajectory step cannot read; declared
+        // GROMACS, so also a mismatch, which may not be waved through
+        let meta = with_files("a.pdb", "a.str", "a.dcd");
+        let found = meta.findings(AGENT);
+        assert_eq!(
+            codes(&found, Level::Error),
+            vec!["unprocessable_format", "format_mismatch"]
+        );
+        assert!(of_level(&found, Level::Warning).is_empty());
+    }
+
+    #[test]
+    fn an_mmcif_structure_is_not_yet_processable_for_an_agent() {
+        // No engine lists cif/mmcif (2026-11-05 test: ParmEd needs auth_*
+        // columns); this pins the refusal until mmCIF structures are added
+        let meta = with_files("a.cif", "a.psf", "a.xtc");
+        let found = meta.findings(AGENT);
+        assert!(
+            found.iter().any(|f| f.level == Level::Error
+                && f.code == "unprocessable_format"
+                && f.field.as_deref() == Some("structure_file_name")),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_trajectory_names_its_index() {
+        let mut meta = with_files("a.pdb", "a.psf", "a.xtc");
+        meta.trajectory_file_names = vec!["a.xtc".into(), "b.h5".into()];
+        let found = meta.findings(AGENT);
+        // the unreadable .h5, and (because a file is unreadable) the set
+        // matching no engine as an error, not a warning
+        assert_eq!(
+            codes(&found, Level::Error),
+            vec!["unprocessable_format", "format_incompatible"]
+        );
+        assert_eq!(found[0].field.as_deref(), Some("trajectory_file_names[2]"));
+    }
+
+    #[test]
+    fn extensions_are_compared_without_case() {
+        let meta = with_files("A.PDB", "A.PSF", "A.XTC");
+        assert!(of_level(&meta.findings(AGENT), Level::Error).is_empty());
+    }
+
+    #[test]
+    fn custom_is_exempt_both_ways() {
+        let meta =
+            with_software(with_files("a.cif", "a.xyz", "a.h5"), Some(("CUSTOM", "NA")));
+        assert!(
+            meta.findings(PERSON).is_empty(),
+            "{:?}",
+            meta.findings(PERSON)
+        );
+        assert!(
+            meta.findings(AGENT).is_empty(),
+            "{:?}",
+            meta.findings(AGENT)
+        );
+    }
+
+    // --- GROMACS .top without coordinates (Zenodo 3975394) ---
+
+    #[test]
+    fn a_top_without_tpr_or_gro_refuses_an_agent_import() {
+        let meta = with_files("conf_protein.pdb", "topol_protein.top", "traj.xtc");
+        for opts in [PERSON, AGENT] {
+            let found = meta.findings(opts);
+            assert_eq!(
+                codes(&found, Level::Error),
+                vec!["gromacs_top_needs_coordinates"],
+                "{found:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_top_rule_holds_for_an_agent_naming_no_software() {
+        let meta = with_software(
+            with_files("conf_protein.pdb", "topol_protein.top", "traj.xtc"),
+            None,
+        );
+        assert_eq!(
+            codes(&meta.findings(AGENT), Level::Error),
+            vec!["gromacs_top_needs_coordinates"]
+        );
+    }
+
+    #[test]
+    fn the_top_rule_holds_for_an_agent_naming_another_engine() {
+        let meta = with_software(
+            with_files("conf_protein.pdb", "topol_protein.top", "traj.xtc"),
+            Some(("AMBER", "2024")),
+        );
+        let found = meta.findings(AGENT);
+        assert!(codes(&found, Level::Error).contains(&"gromacs_top_needs_coordinates"));
+        // a person's AMBER file with a .top (AMBER's own topology) is unchanged
+        assert!(
+            !codes(&meta.findings(PERSON), Level::Error)
+                .contains(&"gromacs_top_needs_coordinates")
+        );
+    }
+
+    #[test]
+    fn a_top_with_a_gro_passes_for_an_agent() {
+        let meta = with_files("conf.gro", "topol.top", "traj.xtc");
+        assert!(
+            meta.findings(AGENT).is_empty(),
+            "{:?}",
+            meta.findings(AGENT)
+        );
+    }
+
+    // --- codes and fields on the other rules ---
+
+    #[test]
+    fn every_other_rule_has_a_code() {
+        let mut meta = meta();
+        meta.structure_file_name = "noext".to_string();
+        meta.trajectory_file_names = vec!["Pro_lig*.mdc".into(), "Pro_lig*.mdc".into()];
+        meta.pdb_id = None;
+        let found = meta.findings(PERSON);
+        let all: Vec<&str> = found.iter().map(|f| f.code.as_str()).collect();
+        for code in [
+            "no_extension",
+            "wildcard",
+            "duplicate_filename",
+            "missing_ids",
+        ] {
+            assert!(all.contains(&code), "{code} not in {all:?}");
+        }
+        let ids = found.iter().find(|f| f.code == "missing_ids").unwrap();
+        assert_eq!(ids.field, None);
+        let wild = found.iter().find(|f| f.code == "wildcard").unwrap();
+        assert_eq!(wild.field.as_deref(), Some("trajectory_file_names[1]"));
+    }
+
+    #[test]
+    fn check_is_the_error_messages_of_findings_in_order() {
+        let mut meta = with_files("noext", "a.psf", "a*.xtc");
+        meta.temperature_kelvin = Some(5);
+        meta.pdb_id = None;
+        let messages: Vec<String> = meta
+            .findings(PERSON)
+            .into_iter()
+            .filter(|f| f.level == Level::Error)
+            .map(|f| f.message)
+            .collect();
+        assert!(messages.len() >= 4, "{messages:?}");
+        assert_eq!(meta.check(PERSON), messages);
+    }
+
+    // --- serialization ---
+
+    #[test]
+    fn a_finding_serializes_with_lowercase_level_and_null_field() {
+        let f = Finding::warning(Some("software_name"), "format_mismatch", "m");
+        assert_eq!(
+            serde_json::to_value(&f).unwrap(),
+            serde_json::json!({
+                "level": "warning", "field": "software_name",
+                "code": "format_mismatch", "message": "m"
+            })
+        );
+        let f = Finding::error(None, "missing_ids", "m");
+        assert_eq!(
+            serde_json::to_value(&f).unwrap()["field"],
+            serde_json::Value::Null
+        );
+        assert_eq!(serde_json::to_value(&f).unwrap()["level"], "error");
+    }
+
+    #[test]
+    fn options_without_agent_imported_deserialize_as_false() {
+        let opts: MetaCheckOptions =
+            serde_json::from_str(r#"{"allow_no_pdb_uniprot": true}"#).unwrap();
+        assert!(opts.allow_no_pdb_uniprot && !opts.agent_imported);
+        assert!(!MetaCheckOptions::default().agent_imported);
+    }
+
+    #[test]
+    fn none_and_default_options_agree() {
+        let meta = gromacs_with_psf();
+        assert_eq!(
+            meta.findings(None),
+            meta.findings(Some(MetaCheckOptions::default()))
+        );
     }
 }

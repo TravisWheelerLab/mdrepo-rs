@@ -4,6 +4,25 @@ Notable user-facing changes to `mdr-meta`. Each entry here becomes the
 GitHub release note for that version (see `.github/workflows/release.yml`)
 -- write it before tagging, not after.
 
+## Unreleased
+
+Rename this heading to the version when tagging.
+
+### A missing temperature, software or ORCID names the field
+
+A TOML without `temperature_kelvin`, `software_name`, `software_version` or
+`lead_contributor_orcid` used to fail as a TOML parse error ("missing field").
+It now reads like any other check, one line per field:
+
+```
+temperature_kelvin: required
+```
+
+All four are still required; only the wording changes. (Behind it, the four
+became optional in the file format so that `mdr-process --agent-imported`,
+for submissions an AI agent assembles, can accept a file without them.
+`mdr-meta` has no such option.)
+
 ## 0.3.27
 
 ### A peptide, DNA or RNA ligand can be declared by its sequence

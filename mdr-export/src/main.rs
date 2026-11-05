@@ -145,11 +145,13 @@ fn empty_to_none(val: Option<String>) -> Option<String> {
 // --------------------------------------------------
 fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
     let sim = ops::get_simulation(conn, sim_id)?;
-    let software = ops::get_software(
-        conn,
-        sim.software_id
-            .ok_or_else(|| anyhow!("simulation has no software_id"))?,
-    )?;
+    // An agent import may have no software (stored NULL, shown "Unknown";
+    // mdrepo-rs#46): exported with no software_name/software_version, as it
+    // came in.
+    let software = sim
+        .software_id
+        .map(|id| ops::get_software(conn, id))
+        .transpose()?;
     let pdb = sim
         .pdb_id
         .map(|pdb_pk| ops::get_pdb(conn, pdb_pk))
@@ -366,17 +368,16 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
     }
 
     let meta = metadata::Meta {
-        lead_contributor_orcid: lead_contributor_orcid
-            .unwrap_or(DEFAULT_ORCID.to_string()),
+        lead_contributor_orcid: Some(
+            lead_contributor_orcid.unwrap_or(DEFAULT_ORCID.to_string()),
+        ),
         trajectory_file_names: replicates,
         structure_file_name: structure_file_name
             .ok_or_else(|| anyhow!("simulation has no structure file"))?,
         topology_file_name: topology_file_name
             .ok_or_else(|| anyhow!("simulation has no topology file"))?,
-        temperature_kelvin: sim
-            .temperature
-            .ok_or_else(|| anyhow!("simulation has no temperature"))?
-            as u32,
+        // May be missing on an agent import, like the software
+        temperature_kelvin: sim.temperature.map(|t| t as u32),
         integration_timestep_fs: sim
             .integration_timestep_fs
             .ok_or_else(|| anyhow!("simulation has no integration timestep"))?,
@@ -390,8 +391,10 @@ fn get_sim(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Meta> {
         // a trajectory carrying its own time axis needs no declaration.
         sampling_frequency_ps: sim.sampling_frequency_ps,
         short_description: sim.short_description,
-        software_name: software.name,
-        software_version: software.version.unwrap_or_default(),
+        software_version: software
+            .as_ref()
+            .map(|s| s.version.clone().unwrap_or_default()),
+        software_name: software.map(|s| s.name),
         mdrepo_id: Some(format!("MDR{sim_id:08}")),
         // Every one of these carries NOT_WHITESPACE_REGEX on Meta, where
         // Some("") FAILS validation and None is skipped entirely. The columns
@@ -461,6 +464,7 @@ fn get_sim_summary(conn: &mut PgConnection, sim_id: i64) -> Result<metadata::Sum
         is_placeholder: sim.is_placeholder,
         creation_date: sim.creation_date,
         superseding_simulation_id: sim.superseding_simulation_id,
+        is_agent_imported: sim.is_agent_imported,
         meta,
     })
 }

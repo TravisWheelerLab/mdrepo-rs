@@ -109,8 +109,8 @@ fn base_sim(key: &str, orcid: &str) -> ExportSimulation {
         alias: Some(format!("alias-{key}")),
         short_description: format!("test simulation {key}"),
         description: None,
-        software_name: format!("TESTSOFT-{key}"),
-        software_version: "1.0".to_string(),
+        software_name: Some(format!("TESTSOFT-{key}")),
+        software_version: Some("1.0".to_string()),
         run_commands: None,
         pdb: None,
         external_links: vec![],
@@ -124,7 +124,7 @@ fn base_sim(key: &str, orcid: &str) -> ExportSimulation {
         sampling_frequency: 0.1,
         sampling_frequency_ps: None,
         integration_timestep_fs: 2.,
-        temperature_kelvin: 300,
+        temperature_kelvin: Some(300),
         num_replicates: 1,
         water_type: None,
         water_density: None,
@@ -139,6 +139,7 @@ fn base_sim(key: &str, orcid: &str) -> ExportSimulation {
         papers: vec![],
         is_embargoed: None,
         is_coarse_grained: None,
+        is_agent_imported: None,
     }
 }
 
@@ -1345,4 +1346,264 @@ fn reprocess_keeps_release_made_on_the_site() {
         !ops::get_simulation(&mut c, sim_id).unwrap().is_embargoed,
         "a reprocess must not re-embargo a simulation released on the site"
     );
+}
+
+// --------------------------------------------------
+// Agent imports (mdrepo-rs#46): md_simulation.is_agent_imported, filed under
+// mdrepo_admin, with no software or temperature when the agent found none.
+
+/// The fixed admin account an agent import is filed under (import.rs
+/// ADMIN_ORCID resolves to it by username)
+fn seed_admin(c: &mut PgConnection) -> i64 {
+    ops::insert_user(
+        c,
+        NewUser {
+            password: "!".into(),
+            is_superuser: true,
+            username: "mdrepo_admin".into(),
+            is_staff: true,
+            date_joined: chrono::Utc::now(),
+            first_name: "MDRepo".into(),
+            last_name: "Admin".into(),
+            registered: true,
+            email: "admin-agent-test@example.org".into(),
+            institution: None,
+            is_active: true,
+            can_contribute: true,
+        },
+    )
+    .expect("insert admin user")
+    .id
+}
+
+/// What `make_import_json` writes for `--agent-imported`: the admin ORCID,
+/// the flag, and here no software or temperature
+fn agent_sim(key: &str) -> ExportSimulation {
+    ExportSimulation {
+        software_name: None,
+        software_version: None,
+        temperature_kelvin: None,
+        is_agent_imported: Some(true),
+        ..base_sim(key, import::ADMIN_ORCID)
+    }
+}
+
+#[test]
+fn agent_import_is_flagged_filed_under_admin_with_no_software_or_temperature() {
+    let mut c = conn_or_skip!();
+    let admin = seed_admin(&mut c);
+    let sim_id =
+        import::import_simulation(&mut c, &agent_sim("agent1"), &ImportOpts::default())
+            .expect("agent import");
+    let row = ops::get_simulation(&mut c, sim_id).unwrap();
+    assert!(row.is_agent_imported);
+    assert_eq!(row.contributor_id, Some(admin));
+    assert_eq!(row.software_id, None, "no software is NULL, not CUSTOM");
+    assert_eq!(row.temperature, None);
+    assert!(
+        !row.is_public,
+        "an agent import starts hidden like any other"
+    );
+}
+
+#[test]
+fn agent_import_that_names_software_links_it() {
+    let mut c = conn_or_skip!();
+    seed_admin(&mut c);
+    let sim = ExportSimulation {
+        software_name: Some("GROMACS".into()),
+        software_version: Some("2023".into()),
+        temperature_kelvin: Some(310),
+        ..agent_sim("agent2")
+    };
+    let sim_id =
+        import::import_simulation(&mut c, &sim, &ImportOpts::default()).unwrap();
+    let row = ops::get_simulation(&mut c, sim_id).unwrap();
+    assert!(row.is_agent_imported);
+    assert_eq!(row.temperature, Some(310));
+    let software =
+        ops::get_software(&mut c, row.software_id.expect("software linked")).unwrap();
+    assert_eq!(software.name, "GROMACS");
+    assert_eq!(software.version.as_deref(), Some("2023"));
+}
+
+#[test]
+fn a_persons_import_is_not_agent_imported() {
+    let mut c = conn_or_skip!();
+    let orcid = "0000-0001-import-person";
+    seed_user_with_orcid(&mut c, "person", orcid);
+    let sim_id = import::import_simulation(
+        &mut c,
+        &base_sim("person", orcid),
+        &ImportOpts::default(),
+    )
+    .unwrap();
+    let row = ops::get_simulation(&mut c, sim_id).unwrap();
+    assert!(!row.is_agent_imported);
+    assert!(row.software_id.is_some());
+    assert_eq!(row.temperature, Some(300));
+}
+
+#[test]
+fn a_reprocess_without_the_flag_keeps_an_agent_import_marked() {
+    let mut c = conn_or_skip!();
+    seed_admin(&mut c);
+    let sim_id =
+        import::import_simulation(&mut c, &agent_sim("agent3"), &ImportOpts::default())
+            .unwrap();
+    // The ticket flow or `reprocess` (no --agent-imported): no flag in the payload
+    let again = ExportSimulation {
+        is_agent_imported: None,
+        ..agent_sim("agent3")
+    };
+    let opts = ImportOpts {
+        reprocess_simulation_id: Some(sim_id as u64),
+        ..ImportOpts::default()
+    };
+    import::import_simulation(&mut c, &again, &opts).unwrap();
+    assert!(
+        ops::get_simulation(&mut c, sim_id)
+            .unwrap()
+            .is_agent_imported
+    );
+
+    // an explicit false does not clear it either
+    let again = ExportSimulation {
+        is_agent_imported: Some(false),
+        ..agent_sim("agent3")
+    };
+    import::import_simulation(&mut c, &again, &opts).unwrap();
+    assert!(
+        ops::get_simulation(&mut c, sim_id)
+            .unwrap()
+            .is_agent_imported
+    );
+}
+
+#[test]
+fn a_reprocess_with_the_flag_marks_a_persons_simulation() {
+    let mut c = conn_or_skip!();
+    let orcid = "0000-0001-import-mark";
+    seed_user_with_orcid(&mut c, "mark", orcid);
+    let sim_id = import::import_simulation(
+        &mut c,
+        &base_sim("mark", orcid),
+        &ImportOpts::default(),
+    )
+    .unwrap();
+    let again = ExportSimulation {
+        is_agent_imported: Some(true),
+        ..base_sim("mark", orcid)
+    };
+    let opts = ImportOpts {
+        reprocess_simulation_id: Some(sim_id as u64),
+        ..ImportOpts::default()
+    };
+    import::import_simulation(&mut c, &again, &opts).unwrap();
+    assert!(
+        ops::get_simulation(&mut c, sim_id)
+            .unwrap()
+            .is_agent_imported
+    );
+}
+
+#[test]
+fn a_reprocess_that_loses_the_software_clears_it() {
+    // An agent's reprocess that found no software after all stores NULL, as
+    // a fresh agent import would; the software row itself is left alone
+    let mut c = conn_or_skip!();
+    seed_admin(&mut c);
+    let first = ExportSimulation {
+        software_name: Some("NAMD".into()),
+        software_version: Some("2.14".into()),
+        ..agent_sim("agent4")
+    };
+    let sim_id =
+        import::import_simulation(&mut c, &first, &ImportOpts::default()).unwrap();
+    assert!(
+        ops::get_simulation(&mut c, sim_id)
+            .unwrap()
+            .software_id
+            .is_some()
+    );
+    let opts = ImportOpts {
+        reprocess_simulation_id: Some(sim_id as u64),
+        ..ImportOpts::default()
+    };
+    import::import_simulation(&mut c, &agent_sim("agent4"), &opts).unwrap();
+    let row = ops::get_simulation(&mut c, sim_id).unwrap();
+    assert_eq!(row.software_id, None);
+    assert_eq!(row.temperature, None);
+}
+
+#[test]
+fn agent_import_without_the_admin_account_fails_clearly() {
+    let mut c = conn_or_skip!();
+    let err =
+        import::import_simulation(&mut c, &agent_sim("agent5"), &ImportOpts::default())
+            .expect_err("no mdrepo_admin user in this database");
+    assert!(err.to_string().contains("mdrepo_admin"), "{err}");
+}
+
+// --------------------------------------------------
+// The payload format: older import.json files have none of the new keys
+
+/// Read a payload back. Serialization leaves out empty lists
+/// (skip_serializing_if = "Vec::is_empty") that reading requires, an old
+/// asymmetry that does not matter in use, since nothing reads import.json back;
+/// put them back as [] so these tests see only the keys they are about.
+fn read_back(mut value: serde_json::Value) -> ExportSimulation {
+    loop {
+        match serde_json::from_value::<ExportSimulation>(value.clone()) {
+            Ok(sim) => return sim,
+            Err(e) => {
+                let msg = e.to_string();
+                let key = msg
+                    .strip_prefix("missing field `")
+                    .and_then(|rest| rest.split('`').next())
+                    .unwrap_or_else(|| panic!("{msg}"))
+                    .to_string();
+                value[key] = serde_json::json!([]);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_payload_without_the_new_keys_still_loads() {
+    let mut value =
+        serde_json::to_value(base_sim("old", "0000-0001-0000-0000")).unwrap();
+    let obj = value.as_object_mut().unwrap();
+    obj.remove("is_agent_imported");
+    assert!(
+        !obj.contains_key("is_agent_imported"),
+        "None is not serialized"
+    );
+    let back = read_back(value);
+    assert_eq!(back.is_agent_imported, None);
+    assert_eq!(back.software_name.as_deref(), Some("TESTSOFT-old"));
+}
+
+#[test]
+fn a_payload_without_software_or_temperature_loads_as_none() {
+    let mut value =
+        serde_json::to_value(base_sim("none", "0000-0001-0000-0000")).unwrap();
+    let obj = value.as_object_mut().unwrap();
+    for key in ["software_name", "software_version", "temperature_kelvin"] {
+        obj.remove(key);
+    }
+    let back = read_back(value);
+    assert_eq!(back.software_name, None);
+    assert_eq!(back.software_version, None);
+    assert_eq!(back.temperature_kelvin, None);
+}
+
+#[test]
+fn an_agent_payload_serializes_the_flag_and_omits_missing_fields() {
+    let value = serde_json::to_value(agent_sim("ser")).unwrap();
+    assert_eq!(value["is_agent_imported"], true);
+    assert_eq!(value["lead_contributor_orcid"], import::ADMIN_ORCID);
+    for key in ["software_name", "software_version", "temperature_kelvin"] {
+        assert!(value.get(key).is_none(), "{key} serialized: {value}");
+    }
 }
