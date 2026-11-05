@@ -1918,38 +1918,49 @@ pub fn place_chains(
             continue;
         }
 
-        // 2. A blob residue of the right composition
-        if seq_type != metadata::SequenceType::Protein {
-            bail!(
-                r#"ligands[{}] "{}": no chain in the structure has the sequence {seq}, and matching a {seq_type} written as one residue is not supported yet"#,
-                num + 1,
-                ligand.name
-            );
+        // 2. A blob residue of the right composition: one formula for a
+        // peptide; for DNA/RNA, with and without the 5' phosphate
+        let candidates = if seq_type == metadata::SequenceType::Protein {
+            sequence::expected_peptide_formula(
+                &declared.residues,
+                declared.n_terminal_cap.as_deref(),
+                declared.c_terminal_cap.as_deref(),
+            )
+            .map(|f| vec![f])
+        } else {
+            sequence::expected_nucleic_formulas(&declared.residues)
         }
-        let expected = sequence::expected_peptide_formula(
-            &declared.residues,
-            declared.n_terminal_cap.as_deref(),
-            declared.c_terminal_cap.as_deref(),
-        )
         .map_err(|e| anyhow!(r#"ligands[{}] "{}": {e}"#, num + 1, ligand.name))?;
         if pdb_text.is_none() {
             pdb_text = Some(read_file(full_pdb)?);
         }
-        let blobs = sequence::find_blobs(pdb_text.as_deref().unwrap_or(""), &expected)?;
-        let Some(blob) = blobs.iter().find(|b| !used_blobs.contains(&b.first_atom))
-        else {
+        let mut found = None;
+        for expected in &candidates {
+            let blobs =
+                sequence::find_blobs(pdb_text.as_deref().unwrap_or(""), expected)?;
+            if let Some(blob) =
+                blobs.iter().find(|b| !used_blobs.contains(&b.first_atom))
+            {
+                found = Some((blob.clone(), expected.clone(), blobs.len()));
+                break;
+            }
+        }
+        let Some((blob, expected, n_blobs)) = found else {
             bail!(
                 r#"ligands[{}] "{}": no chain in the structure has the sequence {seq}, and no other molecule has its heavy atoms ({})"#,
                 num + 1,
                 ligand.name,
-                sequence::formula_text(&expected)
+                candidates
+                    .iter()
+                    .map(sequence::formula_text)
+                    .collect::<Vec<_>>()
+                    .join(" or ")
             );
         };
-        if blobs.len() > 1 {
+        if n_blobs > 1 {
             debug!(
-                r#"Ligand "{}": {} molecules match; using the first unused"#,
-                ligand.name,
-                blobs.len()
+                r#"Ligand "{}": {n_blobs} molecules match; using the first unused"#,
+                ligand.name
             );
         }
         debug!(
@@ -5679,6 +5690,182 @@ mol_id: No ligand-like residue found in minimal.pdb
             .unwrap_err()
             .to_string();
         assert!(err.contains("C5 N2 O3"), "{err}");
+    }
+
+    fn nucleic_ligand(seq: &str, kind: metadata::SequenceType) -> metadata::Ligand {
+        metadata::Ligand {
+            name: "strand".to_string(),
+            smiles: None,
+            inchi: None,
+            sequence: Some(seq.to_string()),
+            sequence_type: Some(kind),
+        }
+    }
+
+    /// LIG lines of `formula` (element, count), as DDD writes a ligand.
+    /// Consecutive lines of one residue name read as one molecule
+    /// (`find_blobs`), so a second molecule beside it needs another name
+    fn blob_lines(formula: &[(&str, usize)], first: usize, num: i32) -> Vec<String> {
+        named_blob_lines("LIG", formula, first, num)
+    }
+
+    fn named_blob_lines(
+        res: &str,
+        formula: &[(&str, usize)],
+        first: usize,
+        num: i32,
+    ) -> Vec<String> {
+        let mut out = vec![];
+        let mut serial = first;
+        for (el, n) in formula {
+            for i in 0..*n {
+                out.push(pdb_atom(
+                    serial,
+                    &format!("{el}{i}"),
+                    res,
+                    num,
+                    40.0 + serial as f64,
+                    el,
+                ));
+                serial += 1;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_declared_dna_strand_is_matched_to_its_blob() {
+        // DA-DG with its 5' phosphate: C20 N10 O12 P2
+        let dir = tempfile::tempdir().unwrap();
+        let pdb = complex(
+            dir.path(),
+            blob_lines(&[("C", 20), ("N", 10), ("O", 12), ("P", 2)], 100, 200),
+        );
+        let structure = sequence::chains_from_pdb(&pdb).unwrap();
+        let ligands = vec![nucleic_ligand("AG", metadata::SequenceType::Dna)];
+        let (chains, by_ligand) =
+            place_chains(&structure, Some(&ligands), &pdb).unwrap();
+        assert_eq!(chains.len(), 2);
+        assert_eq!(chains[1].polymer_type, "dna");
+        assert_eq!(chains[1].residues, ["DA", "DG"]);
+        assert_eq!(chains[1].source, "declared");
+        assert_eq!(by_ligand.get(&0), Some(&2));
+    }
+
+    #[test]
+    fn a_dna_strand_without_its_5_prime_phosphate_is_matched_too() {
+        // 3bbb: DA-DG, no 5' phosphate, C20 N10 O9 P1
+        let dir = tempfile::tempdir().unwrap();
+        let pdb = complex(
+            dir.path(),
+            blob_lines(&[("C", 20), ("N", 10), ("O", 9), ("P", 1)], 100, 200),
+        );
+        let structure = sequence::chains_from_pdb(&pdb).unwrap();
+        let ligands = vec![nucleic_ligand("(DA)(DG)", metadata::SequenceType::Dna)];
+        let (chains, _) = place_chains(&structure, Some(&ligands), &pdb).unwrap();
+        assert_eq!(chains[1].residues, ["DA", "DG"]);
+    }
+
+    #[test]
+    fn a_declared_rna_strand_is_matched_to_its_blob() {
+        // 6p7q: A-A with its 5' phosphate, C20 N10 O13 P2
+        let dir = tempfile::tempdir().unwrap();
+        let pdb = complex(
+            dir.path(),
+            blob_lines(&[("C", 20), ("N", 10), ("O", 13), ("P", 2)], 100, 200),
+        );
+        let structure = sequence::chains_from_pdb(&pdb).unwrap();
+        let ligands = vec![nucleic_ligand("AA", metadata::SequenceType::Rna)];
+        let (chains, _) = place_chains(&structure, Some(&ligands), &pdb).unwrap();
+        assert_eq!(chains[1].polymer_type, "rna");
+        assert_eq!(chains[1].residues, ["A", "A"]);
+    }
+
+    #[test]
+    fn the_same_letters_as_dna_do_not_match_an_rna_blob() {
+        // A-A RNA atoms; declared as DNA (two O fewer) it must be refused
+        let dir = tempfile::tempdir().unwrap();
+        let pdb = complex(
+            dir.path(),
+            blob_lines(&[("C", 20), ("N", 10), ("O", 13), ("P", 2)], 100, 200),
+        );
+        let structure = sequence::chains_from_pdb(&pdb).unwrap();
+        let ligands = vec![nucleic_ligand("AA", metadata::SequenceType::Dna)];
+        assert!(place_chains(&structure, Some(&ligands), &pdb).is_err());
+    }
+
+    #[test]
+    fn a_strand_with_no_matching_blob_names_both_formulas() {
+        let dir = tempfile::tempdir().unwrap();
+        let pdb = complex(
+            dir.path(),
+            blob_lines(&[("C", 5), ("N", 1), ("O", 2)], 100, 200),
+        );
+        let structure = sequence::chains_from_pdb(&pdb).unwrap();
+        let ligands = vec![nucleic_ligand("AG", metadata::SequenceType::Dna)];
+        let err = place_chains(&structure, Some(&ligands), &pdb)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("C20 N10 O12 P2"), "{err}");
+        assert!(err.contains(" or "), "{err}");
+        assert!(err.contains("C20 N10 O9 P1"), "{err}");
+        assert!(!err.contains("not supported yet"), "{err}");
+    }
+
+    #[test]
+    fn two_strands_take_two_different_blobs() {
+        // Two identical A-A blobs, two declared strands: one each
+        let dir = tempfile::tempdir().unwrap();
+        let mut lig =
+            blob_lines(&[("C", 20), ("N", 10), ("O", 13), ("P", 2)], 100, 200);
+        lig.extend(named_blob_lines(
+            "LI2",
+            &[("C", 20), ("N", 10), ("O", 13), ("P", 2)],
+            200,
+            201,
+        ));
+        let pdb = complex(dir.path(), lig);
+        let structure = sequence::chains_from_pdb(&pdb).unwrap();
+        let ligands = vec![
+            nucleic_ligand("AA", metadata::SequenceType::Rna),
+            nucleic_ligand("AA", metadata::SequenceType::Rna),
+        ];
+        let (chains, by_ligand) =
+            place_chains(&structure, Some(&ligands), &pdb).unwrap();
+        assert_eq!(chains.len(), 3);
+        assert_ne!(by_ligand.get(&0), by_ligand.get(&1));
+        // A third strand finds no unused blob
+        let three = vec![
+            nucleic_ligand("AA", metadata::SequenceType::Rna),
+            nucleic_ligand("AA", metadata::SequenceType::Rna),
+            nucleic_ligand("AA", metadata::SequenceType::Rna),
+        ];
+        assert!(place_chains(&structure, Some(&three), &pdb).is_err());
+    }
+
+    #[test]
+    fn a_peptide_and_a_strand_in_one_structure_each_find_theirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut lig = blob_lines(&[("C", 4), ("N", 2), ("O", 3)], 100, 200); // Gly-Gly
+        lig.extend(named_blob_lines(
+            "LI2",
+            &[("C", 20), ("N", 10), ("O", 13), ("P", 2)],
+            200,
+            201,
+        )); // A-A RNA
+        let pdb = complex(dir.path(), lig);
+        let structure = sequence::chains_from_pdb(&pdb).unwrap();
+        let ligands = vec![
+            nucleic_ligand("AA", metadata::SequenceType::Rna),
+            sequence_ligand("GG"),
+        ];
+        let (chains, by_ligand) =
+            place_chains(&structure, Some(&ligands), &pdb).unwrap();
+        assert_eq!(chains.len(), 3);
+        let rna = &chains[*by_ligand.get(&0).unwrap() as usize - 1];
+        let pep = &chains[*by_ligand.get(&1).unwrap() as usize - 1];
+        assert_eq!(rna.polymer_type, "rna");
+        assert_eq!(pep.residues, ["GLY", "GLY"]);
     }
 
     #[test]

@@ -850,6 +850,80 @@ pub fn expected_peptide_formula(
     Ok(formula)
 }
 
+/// Heavy atoms of each standard nucleotide as the chemical component
+/// dictionary has it, 5' phosphate included (C, N, O, P): DNA's DA..DT and
+/// RNA's A, C, G, U
+fn nucleotide_heavy_atoms(code: &str) -> Option<[(&'static str, u32); 4]> {
+    let (c, n, o, p) = match code {
+        "DA" => (10, 5, 6, 1),
+        "DC" => (9, 3, 7, 1),
+        "DG" => (10, 5, 7, 1),
+        "DT" => (10, 2, 8, 1),
+        "DU" => (9, 2, 8, 1),
+        "A" => (10, 5, 7, 1),
+        "C" => (9, 3, 8, 1),
+        "G" => (10, 5, 8, 1),
+        "U" => (9, 2, 9, 1),
+        _ => return None,
+    };
+    Some([("C", c), ("N", n), ("O", o), ("P", p)])
+}
+
+/// The heavy atoms a DNA or RNA strand of `residues` (component codes, 5' to
+/// 3') can have when written as one residue (DDD's `LIG`), most likely first:
+/// every nucleotide's heavy atoms, minus one O per phosphodiester bond; then
+/// the same without the 5' phosphate (one P and three O fewer), which PDB
+/// entries often leave off (3bbb, 4nku, 6kdi; 2026-11-04). Non-standard
+/// nucleotides (RPC, 64T, ...) come from the CCD table, as for peptides.
+pub fn expected_nucleic_formulas(residues: &[String]) -> Result<Vec<Formula>> {
+    if residues.is_empty() {
+        bail!("a nucleic-acid ligand needs at least one nucleotide");
+    }
+    let mut formula = Formula::new();
+    for code in residues {
+        let atoms: Vec<(&str, u32)> = match nucleotide_heavy_atoms(code) {
+            Some(atoms) => atoms.to_vec(),
+            None => crate::residue_formulas::component_heavy_atoms(code)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "no composition known for nucleotide {code}, so it cannot be checked \
+                         (add it with `mdr-process ccd-formula {code}`)"
+                    )
+                })?
+                .iter()
+                .map(|(e, n)| (e.as_str(), *n))
+                .collect(),
+        };
+        for (e, n) in atoms {
+            *formula.entry(e.to_string()).or_insert(0) += n;
+        }
+    }
+    let links = residues.len() as u32 - 1;
+    let o = formula.get("O").copied().unwrap_or(0);
+    if o < links {
+        bail!(
+            "{} has too few oxygens for {links} phosphodiester bonds",
+            residues.join("-")
+        );
+    }
+    formula.insert("O".to_string(), o - links);
+    formula.retain(|_, n| *n > 0);
+
+    let mut out = vec![formula.clone()];
+    let (p, o) = (
+        formula.get("P").copied().unwrap_or(0),
+        formula.get("O").copied().unwrap_or(0),
+    );
+    if p >= 1 && o >= 3 {
+        let mut bare = formula;
+        bare.insert("P".to_string(), p - 1);
+        bare.insert("O".to_string(), o - 3);
+        bare.retain(|_, n| *n > 0);
+        out.push(bare);
+    }
+    Ok(out)
+}
+
 /// A molecule outside every chain whose heavy atoms match a declared sequence
 #[derive(Debug, Clone, PartialEq)]
 pub struct Blob {
@@ -2196,7 +2270,16 @@ mod tests {
     /// Real DDD group B bundles (2026-11-04): LIG's heavy atoms, read from
     /// each tarball's Pro_lig.pdb, against RCSB's sequence for the peptide
     /// entity. Each is (bundle, LIG, residues, N cap, C cap).
-    const DDD_NON_STANDARD: &[(&str, &str, &str, Option<&str>, Option<&str>)] = &[
+    /// (bundle, LIG formula, residues, N cap, C cap)
+    type DddCase = (
+        &'static str,
+        &'static str,
+        &'static str,
+        Option<&'static str>,
+        Option<&'static str>,
+    );
+
+    const DDD_NON_STANDARD: &[DddCase] = &[
         ("1o9d", "C26N6O13P1", "GLN SER TYR TPO VAL", None, None),
         ("1a1b", "C26N3O9P1", "PTR GLU DIP", Some("ACE"), None),
         ("3s8o", "C22N5O9P1", "PTR 02K ASN", Some("ACE"), Some("NH2")),
@@ -2385,6 +2468,169 @@ mod tests {
         // Threonine's phospho form has one C more: not this blob
         let other = expected_peptide_formula(&codes("TPO ALA"), None, None).unwrap();
         assert!(find_blobs(&text, &other).unwrap().is_empty());
+    }
+
+    // ---- nucleic acids written as one residue ----
+
+    #[test]
+    fn each_standard_nucleotide_alone_is_its_ccd_formula() {
+        // The CCD's formulas, hydrogen left out; one residue has no bond
+        for (code, c, n, o) in [
+            ("DA", 10, 5, 6),
+            ("DC", 9, 3, 7),
+            ("DG", 10, 5, 7),
+            ("DT", 10, 2, 8),
+            ("A", 10, 5, 7),
+            ("C", 9, 3, 8),
+            ("G", 10, 5, 8),
+            ("U", 9, 2, 9),
+        ] {
+            let got = expected_nucleic_formulas(&codes(code)).unwrap();
+            assert_eq!(
+                got[0],
+                formula(&[("C", c), ("N", n), ("O", o), ("P", 1)]),
+                "{code}"
+            );
+        }
+    }
+
+    #[test]
+    fn each_phosphodiester_bond_loses_one_oxygen() {
+        let one = expected_nucleic_formulas(&codes("DA")).unwrap()[0].clone();
+        let two = expected_nucleic_formulas(&codes("DA DA")).unwrap()[0].clone();
+        let three = expected_nucleic_formulas(&codes("DA DA DA")).unwrap()[0].clone();
+        assert_eq!(two["O"], 2 * one["O"] - 1);
+        assert_eq!(three["O"], 3 * one["O"] - 2);
+        assert_eq!(three["P"], 3);
+    }
+
+    #[test]
+    fn the_second_candidate_has_no_5_prime_phosphate() {
+        let got = expected_nucleic_formulas(&codes("DA DG")).unwrap();
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0]["P"] - 1, got[1]["P"]);
+        assert_eq!(got[0]["O"] - 3, got[1]["O"]);
+        assert_eq!(got[0]["C"], got[1]["C"]);
+        assert_eq!(got[0]["N"], got[1]["N"]);
+    }
+
+    #[test]
+    fn a_lone_nucleotide_without_its_phosphate_drops_p_entirely() {
+        let got = expected_nucleic_formulas(&codes("DA")).unwrap();
+        assert_eq!(got[1], formula(&[("C", 10), ("N", 5), ("O", 3)]));
+        assert!(!got[1].contains_key("P"));
+    }
+
+    #[test]
+    fn dna_and_rna_letters_are_different_molecules() {
+        // ACG as DNA and as RNA: ribose has one O more per nucleotide
+        let dna = expected_nucleic_formulas(&codes("DA DC DG")).unwrap()[0].clone();
+        let rna = expected_nucleic_formulas(&codes("A C G")).unwrap()[0].clone();
+        assert_eq!(rna["O"], dna["O"] + 3);
+        assert_eq!(rna["C"], dna["C"]);
+    }
+
+    #[test]
+    fn order_does_not_change_a_strands_composition() {
+        let a = expected_nucleic_formulas(&codes("DA DG DT")).unwrap();
+        let b = expected_nucleic_formulas(&codes("DT DA DG")).unwrap();
+        assert_eq!(a, b);
+    }
+
+    /// The six DDD group B bundles whose LIG is DNA or RNA (2026-11-04): the
+    /// LIG formula read from each tarball, the strand, and which candidate
+    /// it is (0: with the 5' phosphate, 1: without)
+    const DDD_NUCLEIC: &[(&str, &str, &str, usize)] = &[
+        ("3bbb", "C20N10O9P1", "DA DG", 1),
+        ("4i67", "C39N18O32P5", "G G G RPC", 0),
+        ("4nku", "C19N7O12P1", "A U", 1),
+        ("5o58", "C20N10O14P2", "A G", 0),
+        ("6kdi", "C20N4O12P1", "64T 5PY", 1),
+        ("6p7q", "C20N10O13P2", "A A", 0),
+    ];
+
+    #[test]
+    fn ddd_nucleic_acid_bundles_match_their_lig() {
+        for (bundle, want, residues, which) in DDD_NUCLEIC {
+            let got = expected_nucleic_formulas(&codes(residues))
+                .unwrap_or_else(|e| panic!("{bundle}: {e}"));
+            assert_eq!(got[*which], lig(want), "{bundle}");
+            assert_ne!(
+                got[1 - *which],
+                lig(want),
+                "{bundle}: only one candidate fits"
+            );
+        }
+    }
+
+    #[test]
+    fn ddd_nucleic_acid_bundles_miss_with_a_nucleotide_dropped_or_swapped() {
+        for (bundle, want, residues, _) in DDD_NUCLEIC {
+            let all = codes(residues);
+            for skip in 0..all.len() {
+                let fewer: Vec<String> = all
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != skip)
+                    .map(|(_, c)| c.clone())
+                    .collect();
+                if fewer.is_empty() {
+                    continue;
+                }
+                for f in expected_nucleic_formulas(&fewer).unwrap() {
+                    assert_ne!(f, lig(want), "{bundle} without {skip}");
+                }
+            }
+        }
+        // 5o58 is A-G; as A-A (6p7q's strand) it must not match
+        for f in expected_nucleic_formulas(&codes("A A")).unwrap() {
+            assert_ne!(f, lig("C20N10O14P2"));
+        }
+    }
+
+    #[test]
+    fn non_standard_nucleotides_come_from_the_table() {
+        // RPC (C9 H15 N3 O11 P2) is not a standard nucleotide
+        let got = expected_nucleic_formulas(&codes("RPC")).unwrap();
+        assert_eq!(got[0], formula(&[("C", 9), ("N", 3), ("O", 11), ("P", 2)]));
+    }
+
+    #[test]
+    fn an_unknown_nucleotide_is_refused_and_says_how_to_add_it() {
+        let msg = expected_nucleic_formulas(&codes("DA ZZQ"))
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("nucleotide ZZQ"), "{msg}");
+        assert!(msg.contains("mdr-process ccd-formula ZZQ"), "{msg}");
+    }
+
+    #[test]
+    fn an_empty_strand_is_refused() {
+        assert!(expected_nucleic_formulas(&[]).is_err());
+    }
+
+    #[test]
+    fn a_dna_blob_is_found_by_composition_with_or_without_its_phosphate() {
+        let mut s = 0;
+        let mut lines = chain(&mut s, "MET ALA GLY", "A", 1, 0.0);
+        // 3bbb's LIG: DA-DG with no 5' phosphate, C20 N10 O9 P1
+        let mut atoms = vec![];
+        for (el, n) in [("C", 20), ("N", 10), ("O", 9), ("P", 1)] {
+            for i in 0..n {
+                atoms.push((format!("{el}{i}"), el));
+            }
+        }
+        let atoms: Vec<(&str, &str)> =
+            atoms.iter().map(|(a, e)| (a.as_str(), *e)).collect();
+        lines.extend(blob(&mut s, "LIG", 300, &atoms, 50.0));
+        let text = lines.join("\n") + "\nEND\n";
+        let candidates = expected_nucleic_formulas(&codes("DA DG")).unwrap();
+        assert!(find_blobs(&text, &candidates[0]).unwrap().is_empty());
+        assert_eq!(find_blobs(&text, &candidates[1]).unwrap().len(), 1);
+        // DA-DC is another molecule
+        for f in expected_nucleic_formulas(&codes("DA DC")).unwrap() {
+            assert!(find_blobs(&text, &f).unwrap().is_empty());
+        }
     }
 
     /// A blob residue: `atoms` as (name, element), all one residue name
