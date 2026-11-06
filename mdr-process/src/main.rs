@@ -290,10 +290,11 @@ fn run(args: Cli) -> Result<()> {
                     dirname.display()
                 );
 
-                let opts = args.no_id.then_some(MetaCheckOptions {
-                    allow_no_pdb_uniprot: true,
-                    ..Default::default()
-                });
+                let opts =
+                    (args.no_id || args.agent_imported).then_some(MetaCheckOptions {
+                        allow_no_pdb_uniprot: args.no_id,
+                        agent_imported: args.agent_imported,
+                    });
 
                 // Check the upload against its manifest when there is one; a
                 // directory that did not come from a ticket has none.
