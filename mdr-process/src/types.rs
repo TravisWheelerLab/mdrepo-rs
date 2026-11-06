@@ -514,6 +514,11 @@ pub struct ValidateArgs {
     /// Allow missing PDB/Uniprot IDs in metadata
     #[arg(short, long)]
     pub no_id: bool,
+
+    /// Check by the rules for an AI agent's submission (see `process
+    /// --agent-imported`)
+    #[arg(long)]
+    pub agent_imported: bool,
 }
 
 // --------------------------------------------------

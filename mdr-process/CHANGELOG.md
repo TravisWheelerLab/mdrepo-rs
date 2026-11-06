@@ -11,6 +11,16 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.33.0 (unreleased)
+
+- **`validate --agent-imported`** checks a directory by the agent rules
+  `process --agent-imported` and `meta-check --agent-imported` already use
+  (0.31.0): a format set that does not fit the engine is a warning when
+  processing can read the files, and the ORCID, temperature and software may
+  be left out. mdrepo-agent asked for it (mdrepo-agent#105) so its pre-push
+  gate no longer has to drop validate's errors that meta-check does not
+  raise.
+
 ## 0.30.0 (unreleased)
 
 - **A DNA or RNA ligand written as one residue is matched by composition**,
