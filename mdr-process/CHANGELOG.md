@@ -11,6 +11,24 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.34.0 (unreleased)
+
+- **No more `simproc` conda env.** The trajectory conversion script
+  (`cpptraj_gmx_traj_manipulation.py`) used to run under the hand-built
+  `simproc` env (Python 3.7, AmberTools 22, pytraj, ParmEd 3.4.3), found
+  through `micromamba env list`, with its `bin/` on PATH for cpptraj and
+  AMBERHOME set. It now runs under SCRIPT_DIR's uv environment (ParmEd
+  4.3.1), the same one as every other script, and cpptraj is a standalone
+  build from https://github.com/Amber-MD/cpptraj: `MDREPO_CPPTRAJ` if set,
+  else `cpptraj` on PATH.
+- Both are checked once before any trajectory (`cpptraj --version` runs;
+  the uv environment imports ParmEd), so a host that is not ready fails at
+  once with the fix in the message.
+- **Before installing on a host:** pull simulation-processing (the script
+  without pytraj, and ParmEd in its `pyproject.toml`) and `uv sync`; build
+  cpptraj and put it on PATH or set `MDREPO_CPPTRAJ`. micromamba is no
+  longer needed by mdr-process.
+
 ## 0.33.0 (unreleased)
 
 - **`validate --agent-imported`** checks a directory by the agent rules

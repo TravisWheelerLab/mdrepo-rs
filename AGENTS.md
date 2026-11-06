@@ -27,8 +27,9 @@ a deploy; dependency bumps are a separate reviewable change.
 ## Things to know
 
 - **`mdr-process` shells out constantly** — to `uv`, `gocmd`, `gmx`, `blastp`,
-  `cpptraj`, `mdcompress`, `molly`, and Python helpers in
-  `simulation-processing/python/`. Most "not found" failures are a missing `PATH`
+  `cpptraj` (a standalone build: `MDREPO_CPPTRAJ`, else `PATH`; no conda env
+  since 0.34.0), `mdcompress`, `molly`, and Python helpers in
+  `simulation-processing/python/`, all under its uv environment. Most "not found" failures are a missing `PATH`
   entry under cron, not a code defect.
 - **`libmdrepo::metadata::Meta::check` is the contract with contributors.** It is
   the single source of validation truth, reached three ways: `mdr-meta check` on

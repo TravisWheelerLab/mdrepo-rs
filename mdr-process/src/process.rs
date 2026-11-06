@@ -124,10 +124,11 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
     let mut trajectory_file_names = meta.trajectory_file_names.clone();
     trajectory_file_names.sort();
 
-    // Resolve the simproc env prefix once (serially) so per-trajectory work can
-    // invoke its python directly rather than via `micromamba run`.
-    let simproc_prefix = find_conda_env_prefix("simproc")?;
-    debug!("Using simproc env prefix: {}", simproc_prefix.display());
+    // Resolve the conversion script's interpreter and cpptraj once
+    // (serially), so a host that lacks either fails before any work, and
+    // per-trajectory work invokes the interpreter directly.
+    let cpptraj = find_cpptraj(env::var_os(CPPTRAJ_ENV))?;
+    let convert_python = find_convert_python(&uv, &script_dir)?;
 
     let trajectory_start = Instant::now();
     let mut processed_trajectories = trajectory_file_names
@@ -143,7 +144,8 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
                 processed_dir: &processed_dir,
                 script_dir: &script_dir,
                 uv: &uv,
-                simproc_prefix: &simproc_prefix,
+                convert_python: &convert_python,
+                cpptraj: &cpptraj,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -797,46 +799,121 @@ pub fn make_thumbnail(
 }
 
 // --------------------------------------------------
-/// Discover the filesystem prefix of a named conda/micromamba environment.
+/// Environment variable naming the cpptraj binary for the conversion script.
+/// Unset or empty: the first `cpptraj` on PATH.
+pub const CPPTRAJ_ENV: &str = "MDREPO_CPPTRAJ";
+
+/// What cpptraj_gmx_traj_manipulation.py prints when its environment is
+/// usable: the interpreter's own path, for invoking it directly afterwards.
+const CONVERT_PYTHON_PROBE: &str = "import sys, parmed; print(sys.executable)";
+
+/// Find the cpptraj the conversion script will run, and check that it runs.
 ///
-/// We resolve this once, serially, at the start of processing so that the
-/// per-trajectory work can invoke the environment's interpreter directly
-/// instead of wrapping every call in `micromamba run`. `micromamba run`
-/// registers each process in a lock-guarded registry
-/// (`$MAMBA_ROOT_PREFIX/proc`); under heavy parallelism dozens of concurrent
-/// invocations contend on that single lock and intermittently fail with
-/// "Could not set lock (Resource temporarily unavailable)". Activating the
-/// env ourselves (PATH + AMBERHOME) sidesteps the registry entirely.
-fn find_conda_env_prefix(env_name: &str) -> Result<PathBuf> {
-    let micromamba =
-        which("micromamba").map_err(|e| anyhow!("Failed to find micromamba ({e})"))?;
-    let output = Command::new(&micromamba)
-        .args(["env", "list", "--json"])
-        .output()?;
+/// Until 0.34.0 cpptraj came from the hand-built `simproc` conda env
+/// (AmberTools 22, Python 3.7), found through `micromamba env list`. It is
+/// now a standalone binary built from https://github.com/Amber-MD/cpptraj,
+/// like gmx: `from_env` (the value of MDREPO_CPPTRAJ) if given, else
+/// `cpptraj` on PATH. Resolved once, before any trajectory, so a host
+/// without it fails at once with the fix in the message rather than once per
+/// replicate.
+pub fn find_cpptraj(from_env: Option<std::ffi::OsString>) -> Result<PathBuf> {
+    let cpptraj = match from_env.filter(|v| !v.is_empty()) {
+        Some(value) => {
+            let path = PathBuf::from(value);
+            if !path.is_file() {
+                bail!(
+                    "{CPPTRAJ_ENV} is {} but there is no file there",
+                    path.display()
+                );
+            }
+            path
+        }
+        None => which("cpptraj").map_err(|e| {
+            anyhow!(
+                "Failed to find cpptraj ({e}): build it from \
+                https://github.com/Amber-MD/cpptraj and put it on PATH, \
+                or set {CPPTRAJ_ENV} to the binary"
+            )
+        })?,
+    };
+    let output = Command::new(&cpptraj)
+        .arg("--version")
+        .output()
+        .map_err(|e| anyhow!("Could not run cpptraj {}: {e}", cpptraj.display()))?;
     if !output.status.success() {
         bail!(
-            "micromamba env list failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+            "cpptraj {} --version failed ({}): {}",
+            cpptraj.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    let envs = parsed
-        .get("envs")
-        .and_then(|e| e.as_array())
-        .ok_or_else(|| {
-            anyhow!("Unexpected output from `micromamba env list --json`")
-        })?;
-    for env in envs {
-        if let Some(path) = env.as_str() {
-            let prefix = PathBuf::from(path);
-            if prefix.file_name().and_then(|n| n.to_str()) == Some(env_name)
-                && prefix.join("bin").is_dir()
-            {
-                return Ok(prefix);
-            }
-        }
+    debug!(
+        "Using {}: {}",
+        cpptraj.display(),
+        String::from_utf8_lossy(&output.stdout).trim()
+    );
+    Ok(cpptraj)
+}
+
+/// The interpreter of SCRIPT_DIR's uv environment, checked to import ParmEd.
+///
+/// The conversion script used to run under the `simproc` conda env; since
+/// simulation-processing dropped pytraj it runs under the same uv environment
+/// as every other script, which carries ParmEd 4.3.1. Asked once, here, and
+/// then invoked directly per replicate: `uv run` per replicate would add its
+/// sync check to every one of up to dozens of parallel conversions.
+///
+/// A host whose simulation-processing predates the change has no ParmEd in
+/// that environment; this says so before any work starts.
+pub fn find_convert_python(uv: &Path, script_dir: &Path) -> Result<PathBuf> {
+    let output = Command::new(uv)
+        .current_dir(script_dir)
+        .args(["run", "--quiet", "python", "-c", CONVERT_PYTHON_PROBE])
+        .output()
+        .map_err(|e| anyhow!("Could not run {}: {e}", uv.display()))?;
+    if !output.status.success() {
+        bail!(
+            "The uv environment in {} cannot run the conversion script \
+            (it needs ParmEd: pull simulation-processing, then `uv sync`): {}",
+            script_dir.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
-    bail!("Could not find conda env '{env_name}' via `micromamba env list`");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let python = stdout
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("uv run printed no interpreter path"))?;
+    if !python.is_file() {
+        bail!(
+            "uv run named interpreter {}, which does not exist",
+            python.display()
+        );
+    }
+    debug!("Conversion script interpreter: {}", python.display());
+    Ok(python)
+}
+
+/// PATH with `cpptraj`'s directory first, so the script's bare `cpptraj`
+/// calls run the binary find_cpptraj chose.
+pub fn path_with_cpptraj(
+    cpptraj: &Path,
+    path_var: Option<std::ffi::OsString>,
+) -> Result<std::ffi::OsString> {
+    let dir = cpptraj
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let dir = path::absolute(&dir)?;
+    let rest = path_var.unwrap_or_default();
+    Ok(env::join_paths(
+        std::iter::once(dir).chain(env::split_paths(&rest)),
+    )?)
 }
 
 // --------------------------------------------------
@@ -848,11 +925,10 @@ fn find_conda_env_prefix(env_name: &str) -> Result<PathBuf> {
 /// A second implementation would drift from the first, and the criteria are
 /// the interesting part.
 ///
-/// Run under `uv`, NOT the simproc python used for cpptraj. The screen needs
-/// MDAnalysis, which exists only in the uv environment: simproc is pinned to
-/// Python 3.7 by its AmberTools build. Wiring it to simproc (as 8c6537a did)
-/// made every XTC, TRR and DCD fail with "No module named 'MDAnalysis'"
-/// reported as a refusal of the data.
+/// Run under `uv`. The screen needs MDAnalysis, which the old `simproc`
+/// conda env (Python 3.7, retired in 0.34.0) never had. Wiring it to
+/// simproc (as 8c6537a did) made every XTC, TRR and DCD fail with "No module
+/// named 'MDAnalysis'" reported as a refusal of the data.
 ///
 /// The script has to be beside the others in SCRIPT_DIR, so installing this
 /// binary without pulling simulation-processing first fails every job on the
@@ -1024,14 +1100,12 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
         // submitted `.mdc` because the branch above has already rewritten
         // `trajectory_path` to the decompressed XTC by this point.
         //
-        // Run under `uv`, NOT the simproc python used for cpptraj below. The
-        // screen needs MDAnalysis, which exists only in the uv environment:
-        // simproc is pinned to Python 3.7 by its AmberTools build and cannot
-        // have a current MDAnalysis. Wiring it to simproc (as 8c6537a did)
-        // made every XTC, TRR and DCD -- and so every `.mdc`, which becomes an
-        // XTC above -- fail with "No module named 'MDAnalysis'" reported as a
-        // refusal of the data. Only NetCDF passed, because that path uses
-        // scipy alone.
+        // Run under `uv`. The screen needs MDAnalysis, which the old
+        // `simproc` conda env (Python 3.7, retired in 0.34.0) never had.
+        // Wiring it to simproc (as 8c6537a did) made every XTC, TRR and DCD
+        // -- and so every `.mdc`, which becomes an XTC above -- fail with "No
+        // module named 'MDAnalysis'" reported as a refusal of the data. Only
+        // NetCDF passed, because that path uses scipy alone.
         //
         // The script has to be beside the others in SCRIPT_DIR, so installing
         // this binary without pulling simulation-processing first fails every
@@ -1045,17 +1119,11 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
             "Refusing to convert",
         )?;
 
-        // Invoke the simproc env's python directly rather than via
-        // `micromamba run`. The latter registers each process under a single
-        // lock-guarded registry, which intermittently fails under the heavy
-        // parallelism here. We reproduce the parts of env activation the
-        // script actually needs: its bin/ on PATH (cpptraj) and AMBERHOME.
-        let simproc_bin = args.simproc_prefix.join("bin");
-        let python = simproc_bin.join("python");
-        let path_var = env::var_os("PATH").unwrap_or_default();
-        let new_path = env::join_paths(
-            std::iter::once(simproc_bin).chain(env::split_paths(&path_var)),
-        )?;
+        // The uv environment's interpreter, invoked directly (resolved once in
+        // process()), with the chosen cpptraj's directory first on PATH: the
+        // script calls a bare `cpptraj`. Until 0.34.0 both came from the
+        // simproc conda env (its bin/ on PATH, and AMBERHOME).
+        let new_path = path_with_cpptraj(args.cpptraj, env::var_os("PATH"))?;
 
         let coord = args.input_dir.join(args.structure_file_name);
         let top = args.input_dir.join(args.topology_file_name);
@@ -1071,16 +1139,14 @@ pub fn process_trajectory(args: ProcessTrajectoryArgs) -> Result<ProcessedTrajec
             trajectory_dir.to_string_lossy().into(),
         ];
 
-        let mut cmd = Command::new(python);
-        cmd.env("PATH", new_path)
-            .env("AMBERHOME", args.simproc_prefix)
-            .args(&script_args);
+        let mut cmd = Command::new(args.convert_python);
+        cmd.env("PATH", &new_path).args(&script_args);
 
-        // We run python directly (above) to dodge micromamba's global lock, but
-        // log the equivalent `micromamba run` form: copy/paste it to reproduce a
-        // single replicate by hand (one manual run never contends on the lock).
+        // Copy/paste to reproduce a single replicate by hand.
         debug!(
-            "Running (reproduce with: micromamba run -n simproc python {})",
+            "Running (reproduce with: PATH={:?}:\"$PATH\" {:?} {})",
+            args.cpptraj.parent().unwrap_or(Path::new(".")),
+            args.convert_python,
             script_args
                 .iter()
                 .map(|a| format!("{a:?}"))
@@ -6436,5 +6502,295 @@ mod place_ligands_tests {
             checked += 1;
         }
         assert_eq!(checked, 21);
+    }
+}
+
+// --------------------------------------------------
+#[cfg(test)]
+mod convert_env_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    // ----------------------------------------------------------------
+    // 0.34.0: the conversion script's cpptraj and interpreter, in place of
+    // the simproc conda env.
+
+    /// An executable shell script standing in for cpptraj or uv.
+    ///
+    /// Written by a child `sh`, not by this process: if a test thread here
+    /// held the file open for writing while another thread forked, the fork
+    /// would inherit that descriptor and exec'ing the script would fail with
+    /// "Text file busy" (ETXTBSY), at random under parallel tests.
+    fn fake_tool(dir: &Path, name: &str, body: &str) -> PathBuf {
+        use std::io::Write;
+        let path = dir.join(name);
+        let mut child = Command::new("sh")
+            .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+            .arg(&path)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(format!("#!/bin/sh\n{body}\n").as_bytes())
+            .unwrap();
+        assert!(child.wait().unwrap().success());
+        path
+    }
+
+    #[test]
+    fn cpptraj_from_the_environment_variable() {
+        let tmp = tempdir().unwrap();
+        let fake = fake_tool(
+            tmp.path(),
+            "cpptraj",
+            "echo 'CPPTRAJ: Version V6.4.4 (GitHub)'",
+        );
+        let found = find_cpptraj(Some(fake.clone().into_os_string())).unwrap();
+        assert_eq!(found, fake);
+    }
+
+    #[test]
+    fn cpptraj_variable_naming_a_missing_file_is_refused() {
+        let err = find_cpptraj(Some("/no/such/dir/cpptraj".into()))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(CPPTRAJ_ENV), "{err}");
+        assert!(err.contains("/no/such/dir/cpptraj"), "{err}");
+    }
+
+    #[test]
+    fn cpptraj_that_fails_its_version_check_is_refused() {
+        let tmp = tempdir().unwrap();
+        let fake = fake_tool(
+            tmp.path(),
+            "cpptraj",
+            "echo 'libnetcdf.so.19: cannot open' >&2; exit 127",
+        );
+        let err = find_cpptraj(Some(fake.into_os_string()))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("--version failed"), "{err}");
+        assert!(err.contains("libnetcdf"), "{err}");
+    }
+
+    #[test]
+    fn cpptraj_that_cannot_be_executed_is_refused() {
+        let tmp = tempdir().unwrap();
+        let not_exec = tmp.path().join("cpptraj");
+        fs::write(&not_exec, "not a program").unwrap();
+        let err = find_cpptraj(Some(not_exec.into_os_string()))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Could not run cpptraj"), "{err}");
+    }
+
+    #[test]
+    fn an_empty_cpptraj_variable_means_look_on_path() {
+        // Either PATH has one (and it runs), or the message says how to get one.
+        match find_cpptraj(Some("".into())) {
+            Ok(path) => assert_eq!(path, which("cpptraj").unwrap()),
+            Err(e) => {
+                let e = e.to_string();
+                assert!(e.contains("Failed to find cpptraj"), "{e}");
+                assert!(e.contains("github.com/Amber-MD/cpptraj"), "{e}");
+                assert!(e.contains(CPPTRAJ_ENV), "{e}");
+            }
+        }
+    }
+
+    /// The real cpptraj named by MDREPO_CPPTRAJ, when the host has one
+    #[test]
+    fn a_real_cpptraj_passes_the_check() {
+        let Some(real) = env::var_os(CPPTRAJ_ENV).filter(|v| !v.is_empty()) else {
+            eprintln!("skipping: {CPPTRAJ_ENV} not set");
+            return;
+        };
+        assert_eq!(
+            find_cpptraj(Some(real.clone())).unwrap(),
+            PathBuf::from(real)
+        );
+    }
+
+    #[test]
+    fn path_puts_cpptraj_directory_first() {
+        let path = path_with_cpptraj(
+            Path::new("/opt/cpptraj-6.4.4/bin/cpptraj"),
+            Some("/usr/local/bin:/usr/bin".into()),
+        )
+        .unwrap();
+        let dirs: Vec<_> = env::split_paths(&path).collect();
+        assert_eq!(
+            dirs,
+            [
+                PathBuf::from("/opt/cpptraj-6.4.4/bin"),
+                PathBuf::from("/usr/local/bin"),
+                PathBuf::from("/usr/bin")
+            ]
+        );
+    }
+
+    #[test]
+    fn path_with_no_path_variable_is_just_cpptraj_directory() {
+        let path =
+            path_with_cpptraj(Path::new("/opt/cpptraj/bin/cpptraj"), None).unwrap();
+        let dirs: Vec<_> = env::split_paths(&path)
+            .filter(|d| !d.as_os_str().is_empty())
+            .collect();
+        assert_eq!(dirs, [PathBuf::from("/opt/cpptraj/bin")]);
+    }
+
+    #[test]
+    fn a_relative_cpptraj_directory_is_made_absolute() {
+        // The script runs with its own working directory; a relative entry
+        // would point somewhere else there.
+        let path =
+            path_with_cpptraj(Path::new("tools/cpptraj"), Some("/usr/bin".into()))
+                .unwrap();
+        let first = env::split_paths(&path).next().unwrap();
+        assert!(first.is_absolute(), "{first:?}");
+        assert!(first.ends_with("tools"), "{first:?}");
+        let bare = path_with_cpptraj(Path::new("cpptraj"), None).unwrap();
+        assert!(env::split_paths(&bare).next().unwrap().is_absolute());
+    }
+
+    #[test]
+    fn convert_python_is_the_path_uv_prints() {
+        let tmp = tempdir().unwrap();
+        let python = fake_tool(tmp.path(), "python3.14", "exit 0");
+        let uv = fake_tool(
+            tmp.path(),
+            "uv",
+            &format!(
+                "echo 'warning: some uv chatter' ; echo '{}'",
+                python.display()
+            ),
+        );
+        assert_eq!(find_convert_python(&uv, tmp.path()).unwrap(), python);
+    }
+
+    #[test]
+    fn convert_python_probe_asks_for_parmed() {
+        // The probe is what makes a host without ParmEd fail up front.
+        assert!(CONVERT_PYTHON_PROBE.contains("import sys, parmed"));
+        let tmp = tempdir().unwrap();
+        let args_file = tmp.path().join("args");
+        let python = fake_tool(tmp.path(), "python", "exit 0");
+        let uv = fake_tool(
+            tmp.path(),
+            "uv",
+            &format!(
+                "echo \"$@\" > '{}'; echo '{}'",
+                args_file.display(),
+                python.display()
+            ),
+        );
+        find_convert_python(&uv, tmp.path()).unwrap();
+        let args = fs::read_to_string(args_file).unwrap();
+        assert!(args.starts_with("run --quiet python -c "), "{args}");
+        assert!(args.contains("parmed"), "{args}");
+    }
+
+    #[test]
+    fn convert_python_runs_in_the_script_directory() {
+        // uv finds the project (and so the venv with ParmEd) from its cwd.
+        let tmp = tempdir().unwrap();
+        let script_dir = tmp.path().join("scripts");
+        fs::create_dir(&script_dir).unwrap();
+        let cwd_file = tmp.path().join("cwd");
+        let python = fake_tool(tmp.path(), "python", "exit 0");
+        let uv = fake_tool(
+            tmp.path(),
+            "uv",
+            &format!(
+                "pwd > '{}'; echo '{}'",
+                cwd_file.display(),
+                python.display()
+            ),
+        );
+        find_convert_python(&uv, &script_dir).unwrap();
+        let cwd = fs::read_to_string(cwd_file).unwrap();
+        assert_eq!(
+            fs::canonicalize(cwd.trim()).unwrap(),
+            fs::canonicalize(&script_dir).unwrap()
+        );
+    }
+
+    #[test]
+    fn convert_python_without_parmed_says_how_to_fix_it() {
+        let tmp = tempdir().unwrap();
+        let uv = fake_tool(
+            tmp.path(),
+            "uv",
+            "echo \"ModuleNotFoundError: No module named 'parmed'\" >&2; exit 1",
+        );
+        let err = find_convert_python(&uv, tmp.path())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("needs ParmEd"), "{err}");
+        assert!(err.contains("uv sync"), "{err}");
+        assert!(err.contains("No module named 'parmed'"), "{err}");
+    }
+
+    #[test]
+    fn convert_python_that_does_not_exist_is_refused() {
+        let tmp = tempdir().unwrap();
+        let uv = fake_tool(tmp.path(), "uv", "echo /no/such/python");
+        let err = find_convert_python(&uv, tmp.path())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("/no/such/python"), "{err}");
+    }
+
+    #[test]
+    fn convert_python_with_no_output_is_refused() {
+        let tmp = tempdir().unwrap();
+        let uv = fake_tool(tmp.path(), "uv", "exit 0");
+        let err = find_convert_python(&uv, tmp.path())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no interpreter path"), "{err}");
+    }
+
+    #[test]
+    fn convert_python_with_a_missing_uv_is_refused() {
+        let tmp = tempdir().unwrap();
+        let err = find_convert_python(&tmp.path().join("uv"), tmp.path())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Could not run"), "{err}");
+    }
+
+    /// The real uv over the sibling simulation-processing checkout: Ok exactly
+    /// when that environment can import ParmEd (after simulation-processing
+    /// drops pytraj and adds ParmEd 4.3.1), refused with the fix otherwise.
+    #[test]
+    fn real_uv_environment_answers_for_parmed() {
+        let Ok(uv) = which("uv") else {
+            eprintln!("skipping: no uv");
+            return;
+        };
+        let script_dir = Path::new("../../simulation-processing/python");
+        if !script_dir.join("pyproject.toml").is_file() {
+            eprintln!("skipping: no simulation-processing checkout");
+            return;
+        }
+        let has_parmed = Command::new(&uv)
+            .current_dir(script_dir)
+            .args(["run", "--quiet", "python", "-c", "import parmed"])
+            .output()
+            .is_ok_and(|o| o.status.success());
+        match find_convert_python(&uv, script_dir) {
+            Ok(python) => {
+                assert!(has_parmed);
+                assert!(python.is_file(), "{python:?}");
+            }
+            Err(e) => {
+                assert!(!has_parmed, "{e}");
+                assert!(e.to_string().contains("needs ParmEd"), "{e}");
+            }
+        }
     }
 }
