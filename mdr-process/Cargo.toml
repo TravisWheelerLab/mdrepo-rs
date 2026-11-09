@@ -4,6 +4,7 @@ version = "0.35.0"
 edition = "2024"
 
 [dependencies]
+molly = "0.7"
 anyhow = "1.0.100"
 chksum-md5 = "0.1.0"
 sha2 = "0.11"

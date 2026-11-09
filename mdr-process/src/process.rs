@@ -1,6 +1,6 @@
 use crate::{
     import::{self, ImportOpts},
-    mmcif_writer, psf_elements, psf_writer, reference, sequence,
+    mmcif_writer, output_checks, psf_elements, psf_writer, reference, sequence,
     ticket::dsn_for,
     types::{
         CheckedLigand, DoiAuthor, DoiPaper, Duration, Export, ExportSimulation,
@@ -19,7 +19,7 @@ use libmdrepo::{
     constants,
     metadata::{self, Meta, MetaCheckOptions},
 };
-use log::{debug, warn};
+use log::{debug, info, warn};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
@@ -206,12 +206,7 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
     if args.skip_output_checks {
         warnings.push("Output checks skipped (--skip-output-checks)".to_string());
     } else {
-        for w in check_replicate_outputs(
-            &convert_python,
-            &script_dir,
-            &input_dir,
-            &processed_trajectories,
-        )? {
+        for w in check_replicate_outputs(&input_dir, &processed_trajectories)? {
             if !warnings.contains(&w) {
                 warnings.push(w);
             }
@@ -251,13 +246,7 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
             let label = dir
                 .file_name()
                 .map_or(String::new(), |n| n.to_string_lossy().to_string());
-            for w in require_outputs_pass(vec![check_outputs(
-                &convert_python,
-                &script_dir,
-                dir,
-                None,
-                &label,
-            )?])? {
+            for w in require_outputs_pass(vec![check_folder(dir, None, &label)?])? {
                 if !warnings.contains(&w) {
                     warnings.push(w);
                 }
@@ -4051,26 +4040,32 @@ fn timeout_from_env(name: &str, default_secs: u64) -> Result<time::Duration> {
 }
 
 // --------------------------------------------------
-/// What simulation-processing's check_outputs.py found in one folder: its
-/// fails and warns, each "<label>/<file>: <message>". Its infos are dropped.
+/// What the output checks found in one folder: its fails and warns, each
+/// "<label>/<file> (<check>): <message>". Infos are dropped.
 #[derive(Debug, Default, PartialEq)]
 pub struct OutputCheck {
     pub fails: Vec<String>,
     pub warns: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct OutputFinding {
-    check: String,
-    level: String,
-    file: String,
-    message: String,
+/// The output checks (crate::output_checks) on one folder of processed
+/// files: its fails and warns, each "<label>/<file> (<check>): <message>".
+/// A file that cannot be read is a failure, not an error.
+pub fn check_folder(
+    dir: &Path,
+    source_trajectory: Option<&Path>,
+    label: &str,
+) -> Result<OutputCheck> {
+    let findings =
+        output_checks::run_checks(&[dir.to_path_buf()], None, source_trajectory)?;
+    Ok(output_check_from(&findings, label))
 }
 
-/// check_outputs.py's --json findings for the folder named `label`
-pub fn parse_output_findings(json: &str, label: &str) -> Result<OutputCheck> {
-    let findings: Vec<OutputFinding> = serde_json::from_str(json)
-        .map_err(|e| anyhow!("check_outputs.py wrote unreadable JSON: {e}"))?;
+/// Fails and warns of `findings`, labelled with the folder; infos dropped
+pub fn output_check_from(
+    findings: &[output_checks::Finding],
+    label: &str,
+) -> OutputCheck {
     let mut out = OutputCheck::default();
     for f in findings {
         let line = if f.file.is_empty() {
@@ -4078,64 +4073,13 @@ pub fn parse_output_findings(json: &str, label: &str) -> Result<OutputCheck> {
         } else {
             format!("{label}/{} ({}): {}", f.file, f.check, f.message)
         };
-        match f.level.as_str() {
-            "fail" => out.fails.push(line),
-            "warn" => out.warns.push(line),
-            _ => {}
+        match f.level {
+            output_checks::Level::Fail => out.fails.push(line),
+            output_checks::Level::Warn => out.warns.push(line),
+            output_checks::Level::Info => {}
         }
     }
-    Ok(out)
-}
-
-/// Run check_outputs.py on one folder of processed files.
-///
-/// It reads them only. Exit 0 is no failures and 1 is failures; both write
-/// the JSON. Anything else -- a crash, a timeout -- is an error, not a pass:
-/// a check that did not run must not read as one that passed. So is a
-/// SCRIPT_DIR without the script, as with screen_trajectory.py.
-pub fn check_outputs(
-    python: &Path,
-    script_dir: &Path,
-    dir: &Path,
-    source_trajectory: Option<&Path>,
-    label: &str,
-) -> Result<OutputCheck> {
-    let script = script_dir.join("check_outputs.py");
-    if !script.is_file() {
-        bail!(
-            r#"Missing "{}": pull simulation-processing (1ffdb52 or later)"#,
-            script.display()
-        );
-    }
-    let json = tempfile::NamedTempFile::new()?;
-    let mut cmd = Command::new(python);
-    cmd.current_dir(script_dir)
-        .arg(&script)
-        .arg(dir)
-        .arg("--json")
-        .arg(json.path())
-        .arg("-q");
-    if let Some(source) = source_trajectory {
-        cmd.arg("--source-traj").arg(source);
-    }
-    debug!("Running {cmd:?}");
-    let limit = helper_timeout()?;
-    let Some(output) = output_with_timeout(&mut cmd, limit)? else {
-        bail!(
-            "check_outputs.py did not finish within {}s on {label} \
-            (set {HELPER_TIMEOUT_ENV} to change the limit)",
-            limit.as_secs()
-        );
-    };
-    match output.status.code() {
-        Some(0) | Some(1) => {}
-        _ => bail!(
-            "check_outputs.py failed to run on {label} ({}): {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        ),
-    }
-    parse_output_findings(&fs::read_to_string(json.path())?, label)
+    out
 }
 
 /// All the folders' warns, once each, for the submitter's warnings; or an
@@ -4161,13 +4105,11 @@ pub fn require_outputs_pass(checks: Vec<OutputCheck>) -> Result<Vec<String>> {
     Ok(warns)
 }
 
-/// check_outputs.py over every replicate's folder, each against its own
+/// The output checks over every replicate's folder, each against its own
 /// source trajectory. The released files are links into the longest
 /// replicate's folder and the tarballs carry all of them, so this covers
 /// everything a simulation publishes.
 fn check_replicate_outputs(
-    python: &Path,
-    script_dir: &Path,
     input_dir: &Path,
     trajectories: &[ProcessedTrajectory],
 ) -> Result<Vec<String>> {
@@ -4179,15 +4121,15 @@ fn check_replicate_outputs(
                 n.to_string_lossy().to_string()
             });
             let source = input_dir.join(&t.trajectory_file_name);
-            check_outputs(
-                python,
-                script_dir,
-                dir,
-                source.is_file().then_some(source.as_path()),
-                &label,
-            )
+            check_folder(dir, source.is_file().then_some(source.as_path()), &label)
         })
         .collect::<Result<Vec<_>>>()?;
+    let warns: usize = checks.iter().map(|c| c.warns.len()).sum();
+    let fails: usize = checks.iter().map(|c| c.fails.len()).sum();
+    info!(
+        "Output checks: {} folder(s), {fails} failure(s), {warns} warning(s)",
+        checks.len()
+    );
     require_outputs_pass(checks)
 }
 
@@ -6975,92 +6917,60 @@ mod convert_env_tests {
 }
 
 // --------------------------------------------------
-/// check_outputs.py from mdr-process: the JSON, the exit codes, the pass or
-/// stop, and the real script on small folders built here, including an XTC
-/// whose box is MDR00105222's [inf, inf, 0, 2.06, -inf, -inf, ...] -- the
-/// fault the checks were written for (simulation-processing #44, #47).
+/// The output checks inside `process`: labels, the pass or stop, and every
+/// replicate checked against its own source (crate::output_checks has the
+/// checks' own tests).
 #[cfg(test)]
 mod output_check_tests {
     use super::*;
 
-    const ATOMS: [(&str, &str, i32, &str, [f64; 3]); 3] = [
-        ("N", "LYS", 15, "N", [1.0, 2.0, 3.0]),
-        ("CA", "LYS", 15, "C", [2.4, 2.1, 3.0]),
-        ("CA", "GLY", 16, "C", [5.0, 4.8, 3.4]),
+    fn write_xtc(path: &Path, boxvec: [f32; 9], times: &[f32]) {
+        let mut w = molly::XTCWriter::create(path).unwrap();
+        for (i, t) in times.iter().enumerate() {
+            w.write_frame(&molly::Frame {
+                step: i as u32,
+                time: *t,
+                boxvec,
+                precision: 1000.0,
+                positions: vec![0.1, 0.2, 0.3, 0.24, 0.21, 0.3, 0.5, 0.48, 0.34],
+            })
+            .unwrap();
+        }
+    }
+
+    const CELL: [f32; 9] = [5.0, 0.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 5.0];
+    const INF_BOX: [f32; 9] = [
+        f32::INFINITY,
+        f32::INFINITY,
+        0.0,
+        2.06,
+        f32::NEG_INFINITY,
+        f32::NEG_INFINITY,
+        0.0,
+        0.0,
+        0.0,
     ];
 
-    fn pdb(atoms: &[(&str, &str, i32, &str, [f64; 3])]) -> String {
-        let mut s = String::new();
-        for (i, (name, res, resid, el, x)) in atoms.iter().enumerate() {
-            s.push_str(&format!(
-                "ATOM  {:5} {:<4}{:>4} A{:4}    {:8.3}{:8.3}{:8.3}  1.00  0.00          {:>2}\n",
-                i + 1,
-                format!(" {name}"),
-                res,
-                resid,
-                x[0],
-                x[1],
-                x[2],
-                el
-            ));
-        }
-        s + "END\n"
-    }
-
-    fn psf(atoms: &[(&str, &str, i32, &str, [f64; 3])]) -> String {
-        let mut s = format!(
-            "PSF EXT\n\n       1 !NTITLE\n REMARKS t\n\n{:10} !NATOM\n",
-            atoms.len()
-        );
-        for (i, (name, res, resid, _, _)) in atoms.iter().enumerate() {
-            s.push_str(&format!(
-                "{:10} PROA     {:<8} {:<8} {:<8} {:<6}  0.000000  12.0110  0\n",
-                i + 1,
-                resid,
-                res,
-                name,
-                name
-            ));
-        }
-        s + "\n         0 !NBOND: bonds\n"
-    }
-
-    /// A python3 for the fake-script tests: any will do.
-    fn any_python() -> Option<PathBuf> {
-        which("python3").ok()
-    }
-
-    /// The real script and its environment, or None (the test then skips).
-    fn real_checker() -> Option<(PathBuf, &'static Path)> {
-        let uv = which("uv").ok()?;
-        let script_dir = Path::new("../../simulation-processing/python");
-        if !script_dir.join("check_outputs.py").is_file()
-            || !python_env_builds(&uv, script_dir)
-        {
-            return None;
-        }
-        find_convert_python(&uv, script_dir)
-            .ok()
-            .map(|p| (p, script_dir))
-    }
-
-    fn fake_script(body: &str) -> tempfile::TempDir {
-        let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("check_outputs.py"), body).unwrap();
-        dir
-    }
-
-    // --- parsing and the verdict ---------------------------------------
     #[test]
     fn findings_are_split_by_level_and_labelled() {
-        let json = r#"[
-            {"check": "box", "level": "fail", "file": "full.xtc", "message": "bad box"},
-            {"check": "time", "level": "warn", "file": "sampled.xtc", "message": "no time axis"},
-            {"check": "atoms", "level": "info", "file": "", "message": "files agree"},
-            {"check": "time", "level": "warn", "file": "", "message": "x"}
-        ]"#;
+        use output_checks::{Finding, Level};
+        let f = |check, level, file: &str, m: &str| Finding {
+            check,
+            level,
+            file: file.into(),
+            message: m.into(),
+        };
+        let got = output_check_from(
+            &[
+                f("box", Level::Fail, "full.xtc", "bad box"),
+                f("time", Level::Warn, "sampled.xtc", "no time axis"),
+                f("atoms", Level::Info, "", "files agree"),
+                f("time", Level::Warn, "", "x"),
+            ],
+            "rep_2",
+        );
         assert_eq!(
-            parse_output_findings(json, "rep_2").unwrap(),
+            got,
             OutputCheck {
                 fails: vec!["rep_2/full.xtc (box): bad box".into()],
                 warns: vec![
@@ -7069,12 +6979,6 @@ mod output_check_tests {
                 ],
             }
         );
-    }
-
-    #[test]
-    fn unreadable_json_is_an_error() {
-        let e = parse_output_findings("not json", "rep_1").unwrap_err();
-        assert!(e.to_string().contains("unreadable JSON"), "{e}");
     }
 
     #[test]
@@ -7111,174 +7015,78 @@ mod output_check_tests {
         assert!(e.contains("--skip-output-checks"), "{e}");
     }
 
-    // --- running the script: fakes ---------------------------------------
     #[test]
-    fn a_missing_script_says_to_pull() {
-        let Some(py) = any_python() else { return };
-        let empty = tempfile::tempdir().unwrap();
-        let e =
-            check_outputs(&py, empty.path(), empty.path(), None, "rep_1").unwrap_err();
-        assert!(e.to_string().contains("pull simulation-processing"), "{e}");
-    }
-
-    #[test]
-    fn exit_1_is_a_verdict_not_an_error() {
-        let Some(py) = any_python() else { return };
-        let sd = fake_script(
-            "import json, sys\n\
-             out = sys.argv[sys.argv.index('--json') + 1]\n\
-             json.dump([{'check': 'box', 'level': 'fail', 'file': 'full.xtc', 'message': 'm'}], open(out, 'w'))\n\
-             sys.exit(1)\n",
-        );
-        let got = check_outputs(&py, sd.path(), sd.path(), None, "rep_1").unwrap();
-        assert_eq!(got.fails, vec!["rep_1/full.xtc (box): m"]);
-    }
-
-    #[test]
-    fn a_crash_is_an_error_not_a_pass() {
-        let Some(py) = any_python() else { return };
-        let sd = fake_script("import sys\nsys.stderr.write('boom')\nsys.exit(2)\n");
-        let e = check_outputs(&py, sd.path(), sd.path(), None, "rep_1")
-            .unwrap_err()
-            .to_string();
-        assert!(
-            e.contains("failed to run on rep_1") && e.contains("boom"),
-            "{e}"
-        );
-    }
-
-    #[test]
-    fn the_folder_and_source_reach_the_script() {
-        let Some(py) = any_python() else { return };
-        let sd = fake_script(
-            "import json, sys\n\
-             a = sys.argv\n\
-             out = a[a.index('--json') + 1]\n\
-             msg = a[1] + '|' + a[a.index('--source-traj') + 1] + '|' + str('-q' in a)\n\
-             json.dump([{'check': 't', 'level': 'warn', 'file': '', 'message': msg}], open(out, 'w'))\n",
-        );
-        let folder = tempfile::tempdir().unwrap();
-        let src = folder.path().join("src.xtc");
-        let got =
-            check_outputs(&py, sd.path(), folder.path(), Some(&src), "rep_9").unwrap();
-        assert_eq!(
-            got.warns,
-            vec![format!(
-                "rep_9 (t): {}|{}|True",
-                folder.path().display(),
-                src.display()
-            )]
-        );
-    }
-
-    // --- the real script ----------------------------------------------------
-    #[test]
-    fn real_agreeing_files_pass() {
-        let Some((py, sd)) = real_checker() else {
-            eprintln!("skipping: no simulation-processing environment");
-            return;
-        };
+    fn a_folder_with_the_105222_box_fails() {
         let d = tempfile::tempdir().unwrap();
-        fs::write(d.path().join("full.pdb"), pdb(&ATOMS)).unwrap();
-        fs::write(d.path().join("full.psf"), psf(&ATOMS)).unwrap();
-        let got = check_outputs(&py, sd, d.path(), None, "rep_1").unwrap();
-        assert_eq!(got, OutputCheck::default());
-    }
-
-    #[test]
-    fn real_disagreeing_files_fail() {
-        let Some((py, sd)) = real_checker() else {
-            eprintln!("skipping: no simulation-processing environment");
-            return;
-        };
-        let mut wrong = ATOMS;
-        wrong[1].0 = "CB";
-        let d = tempfile::tempdir().unwrap();
-        fs::write(d.path().join("full.pdb"), pdb(&wrong)).unwrap();
-        fs::write(d.path().join("full.psf"), psf(&ATOMS)).unwrap();
-        let got = check_outputs(&py, sd, d.path(), None, "rep_1").unwrap();
+        write_xtc(&d.path().join("full.xtc"), INF_BOX, &[0.0, 10.0, 20.0]);
+        let got = check_folder(d.path(), None, "rep_1").unwrap();
         assert_eq!(got.fails.len(), 1, "{got:?}");
-        assert!(got.fails[0].contains("atom name"), "{got:?}");
-    }
-
-    /// Write an XTC through the script environment's MDAnalysis.
-    fn write_xtc(py: &Path, path: &Path, box_: &str) {
-        let code = format!(
-            "import numpy as np\n\
-             from MDAnalysis.lib.formats.libmdaxdr import XTCFile\n\
-             x = np.array([[0.1, 0.2, 0.3], [0.24, 0.21, 0.3], [0.5, 0.48, 0.34]], dtype=np.float32)\n\
-             b = np.array({box_}, dtype=np.float32)\n\
-             with XTCFile(r'{}', 'w') as f:\n    \
-                 [f.write(x, b, i, float(10 * i), 1000.0) for i in range(3)]\n",
-            path.display()
-        );
-        let out = Command::new(py).args(["-c", &code]).output().unwrap();
         assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-
-    #[test]
-    fn real_105222_box_fails_and_a_zero_box_passes() {
-        let Some((py, sd)) = real_checker() else {
-            eprintln!("skipping: no simulation-processing environment");
-            return;
-        };
-        let bad = tempfile::tempdir().unwrap();
-        write_xtc(
-            &py,
-            &bad.path().join("full.xtc"),
-            "[[np.inf, np.inf, 0], [2.06, -np.inf, -np.inf], [0, 0, 0]]",
-        );
-        let got = check_outputs(&py, sd, bad.path(), None, "rep_1").unwrap();
-        assert!(
-            got.fails.iter().any(|f| f.contains("non-finite box")),
+            got.fails[0].starts_with(
+                "rep_1/full.xtc (box): 3 of 3 frames have a non-finite box"
+            ),
             "{got:?}"
         );
+    }
 
-        let good = tempfile::tempdir().unwrap();
-        write_xtc(&py, &good.path().join("full.xtc"), "np.zeros((3, 3))");
-        assert_eq!(
-            check_outputs(&py, sd, good.path(), None, "rep_1").unwrap(),
-            OutputCheck::default()
+    #[test]
+    fn an_unreadable_file_fails_the_folder_rather_than_erroring() {
+        let d = tempfile::tempdir().unwrap();
+        fs::write(d.path().join("full.xtc"), b"not an xtc").unwrap();
+        let got = check_folder(d.path(), None, "rep_1").unwrap();
+        assert!(
+            got.fails.iter().any(|f| f.contains("cannot be read")),
+            "{got:?}"
         );
     }
 
     #[test]
     fn every_replicate_is_checked_against_its_own_source() {
-        let Some((py, sd)) = real_checker() else {
-            eprintln!("skipping: no simulation-processing environment");
-            return;
-        };
         let input = tempfile::tempdir().unwrap();
         let processed = tempfile::tempdir().unwrap();
         let mut trajectories = vec![];
-        for (n, box_) in [
-            (1, "np.eye(3) * 5"),
-            (2, "[[np.inf, 0, 0], [0, 5, 0], [0, 0, 5]]"),
+        // rep_1 matches its source; rep_2's times were stamped over a source
+        // that skipped time, and rep_3 has the 105222 box.
+        for (n, boxvec, times, src) in [
+            (1, CELL, [0.0, 10.0, 20.0], [100.0, 110.0, 120.0]),
+            (2, CELL, [0.0, 10.0, 20.0], [0.0, 10.0, 90.0]),
+            (3, INF_BOX, [0.0, 10.0, 20.0], [0.0, 10.0, 20.0]),
         ] {
             let rep = processed.path().join(format!("rep_{n}"));
             fs::create_dir(&rep).unwrap();
-            write_xtc(&py, &rep.join("full.xtc"), box_);
-            write_xtc(
-                &py,
-                &input.path().join(format!("t{n}.xtc")),
-                "np.eye(3) * 5",
-            );
+            write_xtc(&rep.join("full.xtc"), boxvec, &times);
+            write_xtc(&input.path().join(format!("t{n}.xtc")), CELL, &src);
             trajectories.push(ProcessedTrajectory {
                 directory_name: rep.to_string_lossy().to_string(),
                 trajectory_file_name: format!("t{n}.xtc"),
                 ..ProcessedTrajectory::default()
             });
         }
-        let e = check_replicate_outputs(&py, sd, input.path(), &trajectories)
+        let e = check_replicate_outputs(input.path(), &trajectories)
             .unwrap_err()
             .to_string();
+        assert!(!e.contains("rep_1/"), "{e}");
         assert!(
-            e.contains("rep_2/full.xtc (box)") && !e.contains("rep_1/"),
+            e.contains("rep_2/full.xtc (time): 1 frame times differ from the source's"),
             "{e}"
+        );
+        assert!(e.contains("rep_3/full.xtc (box)"), "{e}");
+    }
+
+    #[test]
+    fn a_missing_source_is_not_compared() {
+        let processed = tempfile::tempdir().unwrap();
+        let rep = processed.path().join("rep_1");
+        fs::create_dir(&rep).unwrap();
+        write_xtc(&rep.join("full.xtc"), CELL, &[0.0, 10.0]);
+        let t = vec![ProcessedTrajectory {
+            directory_name: rep.to_string_lossy().to_string(),
+            trajectory_file_name: "gone.xtc".into(),
+            ..ProcessedTrajectory::default()
+        }];
+        assert_eq!(
+            check_replicate_outputs(processed.path(), &t).unwrap(),
+            Vec::<String>::new()
         );
     }
 }

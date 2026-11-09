@@ -3,7 +3,7 @@ use clap::Parser;
 use libmdrepo::metadata::MetaCheckOptions;
 use log::info;
 use mdr_process::{
-    backfill, backfill_declared, backfill_uniprot, process, reprocess,
+    backfill, backfill_declared, backfill_uniprot, output_checks, process, reprocess,
     residue_formulas, sequence, ticket,
     types::{Cli, Command, LogLevel},
     validate,
@@ -222,6 +222,37 @@ fn run(args: Cli) -> Result<()> {
                 report["mmcif"]["status"].as_str().unwrap_or(""),
                 report["thumbnail"].as_str().unwrap_or(""),
             );
+            Ok(())
+        }
+        Command::CheckOutputs(args) => {
+            let box_present = if args.has_box {
+                Some(true)
+            } else if args.no_box {
+                Some(false)
+            } else {
+                None
+            };
+            let findings = output_checks::run_checks(
+                &args.dirs,
+                box_present,
+                args.source_traj.as_deref(),
+            )?;
+            for f in &findings {
+                if args.quiet && f.level == output_checks::Level::Info {
+                    continue;
+                }
+                let file = if f.file.is_empty() { "-" } else { &f.file };
+                println!("{} {:5} {file}: {}", f.level, f.check, f.message);
+            }
+            if let Some(path) = &args.json {
+                fs::write(path, serde_json::to_string_pretty(&findings)?)?;
+            }
+            let count = |l| findings.iter().filter(|f| f.level == l).count();
+            let fails = count(output_checks::Level::Fail);
+            println!("{fails} fail, {} warn", count(output_checks::Level::Warn));
+            if fails > 0 {
+                bail!("{fails} output check(s) failed");
+            }
             Ok(())
         }
         Command::CcdFormula(args) => {
