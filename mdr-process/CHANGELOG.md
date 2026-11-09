@@ -13,28 +13,29 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
 
 ## 0.35.0 (unreleased)
 
-- **Output checks before the import and before the push.** `process` runs
-  simulation-processing's `check_outputs.py` on every replicate's folder
-  (each against its own source trajectory) after the import JSON is made and
-  before anything is written to the database or IRODS, and again on the
-  longest replicate's folder once the mmCIF pair exists, before the push. A
-  failure stops the run and lists every finding; nothing is imported, or,
-  for the mmCIF check, the simulation stays a placeholder with nothing
-  pushed, as after an incomplete push. Warnings join the run's warnings as
-  "Output check: ...". Dry runs check too. The checks: the box (finite;
-  none or a real cell in every frame; `full.pdb` CRYST1 agrees), time (never
-  backwards; full and minimal agree; matches the source's stored times),
-  atoms (same atoms, names and residues as the `.psf`; `.pdb`/`.mmcif`
-  coordinates = the first frame). Why: box-less runs shipped XTCs with an
-  uninitialized box for years (simulation-processing #44), and no check read
-  inside a trajectory.
-- `--skip-output-checks`: for a simulation whose findings were looked at and
-  accepted. Recorded as a warning. The ticket and reprocess flows always
-  check.
-- A check that cannot run (script missing, crash, timeout) is an error, not
-  a pass.
-- **Before installing on a host:** pull simulation-processing to 1ffdb52 or
-  later (`check_outputs.py`) and `uv sync`.
+- **Output checks before the import and before the push.** `process` checks
+  every replicate's folder (each against its own source trajectory) after
+  the import JSON is made and before anything is written to the database
+  or IRODS, and the longest replicate's folder again once the mmCIF pair
+  exists, before the push. A failure stops the run and lists every finding;
+  nothing is imported, or, for the mmCIF check, the simulation stays a
+  placeholder with nothing pushed, as after an incomplete push. Warnings
+  join the run's warnings as "Output check: ...". Dry runs check too. One
+  log line per run: `Output checks: N folder(s), F failure(s), W warning(s)`.
+- The checks (new module `output_checks`): the **box** (finite; none or a
+  real cell in every frame; `full.pdb` CRYST1 agrees with frame 0), **time**
+  (never backwards; full and minimal agree; an XTC source's stored times
+  match), **atoms** (same atoms, names and residues as the `.psf`;
+  `.pdb`/`.mmcif` coordinates = the first frame). `.gro` is not checked.
+  Why: box-less runs shipped XTCs with an uninitialized box for years
+  (simulation-processing #44) and no check read inside a trajectory.
+- `mdr-process check-outputs DIR... [--box|--no-box] [--source-traj FILE]
+  [--json OUT] [-q]`: the same checks on any folder(s), exit 1 on failure.
+- `--skip-output-checks` on `process`: for a simulation whose findings were
+  looked at and accepted. Recorded as a warning. The ticket and reprocess
+  flows always check.
+- New dependency: the `molly` crate (XTC reading; mdr-process already ran the
+  `molly` command for frame times).
 
 ## 0.34.0 (unreleased)
 
