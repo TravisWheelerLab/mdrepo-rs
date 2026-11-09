@@ -39,6 +39,44 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   gate no longer has to drop validate's errors that meta-check does not
   raise.
 
+## 0.32.0 (unreleased)
+
+- **The mmCIF writer places a ligand by InChI connectivity when its InChIKey
+  misses** (#85, MDR-110). It tries the InChIKey, then the key's first block,
+  then the `/c` layer (`compare_smiles.py`'s `same_connectivity`, the test
+  `resolve_ligands` already uses) against each residue `mol_id.py` found,
+  placing the ligand only when exactly one residue name matches. A cofactor
+  stored neutral but simulated protonated (NADP, FAD, ATP, CoA, ...) now gets
+  its identity in the mmCIF. Connectivity ignores stereo. The ligand keeps
+  its own stored SMILES and InChIKey; a ligand with no InChIKey is not
+  compared, and a failed comparison counts as no match.
+- `mmcif-input.json` gains `smiles_of` (older files still load and place by
+  key only); `standardize`'s report adds `ligands_by_connectivity`; the
+  unplaced warning says "by InChIKey or connectivity".
+
+## 0.31.0 (unreleased)
+
+- **`process --agent-imported` and `meta-check --agent-imported`**, for
+  simulations an AI agent (mdrepo-agent) imports (#84, #46). The flag sets
+  `md_simulation.is_agent_imported` (md-repo-app 0302) and files the
+  simulation under `mdrepo_admin`. The TOML may leave out
+  `lead_contributor_orcid`, `temperature_kelvin` and the software (name and
+  version together, or neither); no software is stored as NULL, not CUSTOM.
+  `integration_timestep_fs` stays required. A format set that does not fit
+  the declared engine is a warning when processing can read every file;
+  a topology with no trajectory path, a format no engine uses, and a
+  GROMACS `.top` with no `.tpr`/`.gro` stay errors. A reprocess never clears
+  the flag. Without the flag nothing is relaxed.
+- **`meta-check --json`** prints one object (`ok`, `errors`, `warnings`;
+  each finding has `level`, `field`, `code`, `message`), with the log on
+  stderr. `code` names the rule (`required`, `range`, `format_mismatch`,
+  `gromacs_top_needs_coordinates`, `parse`) and stays fixed if the wording
+  changes. It still exits 0; the text output is unchanged.
+- A person's TOML missing one of those four fields now gets a `required`
+  error naming the field (e.g. `temperature_kelvin: required`) instead of a
+  TOML parse error; all four are still required for people. libmdrepo's `Meta` holds them as
+  `Option`s; the public export's `Summary` carries `is_agent_imported`.
+
 ## 0.30.0 (unreleased)
 
 - **A DNA or RNA ligand written as one residue is matched by composition**,
