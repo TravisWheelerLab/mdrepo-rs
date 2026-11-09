@@ -11,6 +11,44 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.39.0 (unreleased)
+
+- **A fusion's junction is cut where the two alignments match best**, rather
+  than given to the row with the higher bit score over its whole length.
+  BLAST's local alignments run past a junction, so both of a fusion's rows
+  claim the residues around it, and `sifts_parts` gave every shared residue
+  to the higher-scoring row. In a 4eiy-like A2A-BRIL-A2A construct the
+  second receptor row (206 bits) outscores BRIL's (204) while matching the
+  17 residues at the junction 5 times against BRIL's 16: those 17 were
+  recorded as receptor, BRIL's part lost 22 residues, and the receptor's
+  part claimed 203-218 of the entry, a stretch the construct deletes. The
+  cut now taken maximises the identical residues of the left part up to it
+  plus those of the right part after it, counted by walking the two
+  alignments (`junction_cut`), so a part kept earlier can be cut back by a
+  row taken after it. Ties, as when both rows match the shared residues,
+  and junctions no cut resolves still go to the row ranked first. The
+  2026-10-21 dry run reported receptor-BRIL junction overlaps of 15-23
+  residues, so this moves real reference ranges.
+- **Two rows of one entry are the same residues claimed again by where they
+  put those residues in the entry**, not by how many of ours they share
+  (`same_entry_residues`). The old rule dropped a second row of an entry
+  that overlapped the first by more than `JUNCTION_OVERLAP` (5) of our
+  residues. Real BLAST rows for a tethered dimer (3nxn, two copies of the
+  HIV protease in one chain) share 6 at the junction, the first row putting
+  them on the entry's 608-613 and the second on its 491-496, so the second
+  copy was dropped: the polymer got one part over 54% of the chain, claiming
+  residues of the entry the chain does not have. Rows that do put the shared
+  residues on the same residues of the entry are still a repeat, and still
+  dropped. `JUNCTION_OVERLAP` now only bounds what two rows joined into one
+  part may share of the entry.
+- Both are H1 and H2 of the 2026-11 review of the reference track, each
+  confirmed there against real `blastp` output.
+- **References already in md_polymer_uniprot do not change by themselves.**
+  The import writes a polymer's reference once, so run
+  `backfill-polymer-uniprot --dry-run` against this build and check
+  `--overlaps-out` before the real run: a fused chain's parts move, and a
+  chain whose repeat was dropped gains one.
+
 ## 0.37.0 (unreleased)
 
 - **`mdr-process zero-xtc-box IN [-o|--output FILE]`**: set every frame's box to zero

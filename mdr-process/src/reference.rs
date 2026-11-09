@@ -25,9 +25,11 @@
 //!    part. Parts come only from SIFTS: its accessions' BLAST rows, each at
 //!    `MIN_SIFTS_IDENTITY` over `MIN_RESIDUES` or more, taken by bit score,
 //!    a row that claims residues a part already has (more than
-//!    `JUNCTION_SHARE` of the shorter, or `JUNCTION_OVERLAP` for the same
-//!    entry) dropped, those shared at a junction trimmed off the lower
-//!    (`sifts_parts`). `MIN_SIFTS_COVERAGE` then applies to the
+//!    `JUNCTION_SHARE` of the shorter, or, for two rows of one entry, the
+//!    same residues of the entry) dropped, those shared at a junction cut
+//!    between the two where their identities are highest, rather than given
+//!    to the higher bit score (`sifts_parts`, `junction_cut`).
+//!    `MIN_SIFTS_COVERAGE` then applies to the
 //!    parts together. They take the place of the single SIFTS candidate;
 //!    when they cover too little, the single candidate is taken as before.
 //!    A declared UniProt ID, and the search, still give one reference.
@@ -149,16 +151,22 @@ const BLAST_OUTFMT: &str = "6 qaccver saccver pident length mismatch gapopen \
 const BLAST_COLUMNS: usize = 17;
 const BLAST_COLUMNS_BEFORE_ALIGNMENTS: usize = 15;
 
-/// Two rows of one entry may share this many of our residues and both be
-/// parts (`sifts_parts`); a row of one entry overlapping another of it by
-/// more is the same residues claimed again (a second BLAST row over a
-/// repeat). Rows of different entries go by `JUNCTION_SHARE` instead.
+/// Two rows of one entry joined into a single part (`sifts_parts`) may
+/// share this many of *the entry's* residues, BLAST having broken one
+/// alignment in two.
+///
+/// Until 0.35.0 this was also what two rows of one entry could share of
+/// *ours* and both be parts, more being the same residues claimed again.
+/// Real BLAST rows for a tethered dimer (3nxn) share 6 at the junction, so
+/// the second copy was dropped. Whether an overlap is the same residues
+/// claimed again is now decided by `same_entry_residues`, not by a count.
 pub const JUNCTION_OVERLAP: u32 = 5;
 
-/// Two parts of different entries may share up to this share of the
-/// shorter's residues, BLAST's local alignments running past the junction;
-/// the shared ones go to the part with the higher bit score
-/// (`sifts_parts`). A row overlapping a part by more is another candidate
+/// Two parts may share up to this share of the shorter's residues, BLAST's
+/// local alignments running past the junction; the two are cut where their
+/// identities are highest (`junction_cut`), and before 0.35.0 the shared
+/// residues went to the part with the higher bit score. A row overlapping a
+/// part by more is another candidate
 /// for the same residues (an ortholog, an isoform), not a part. Ken,
 /// 2026-10-22, from the backfill's laptop dry run (`--overlaps-out`): real
 /// junctions overlap by up to ~30 residues (receptor and BRIL 15-23,
@@ -279,11 +287,14 @@ pub struct Overlap {
     pub outcome: &'static str,
 }
 
-/// The second row was kept as a part, without the shared residues
+/// The pair was cut at its junction (`junction_cut`) and both are parts:
+/// the shared residues went to whichever row aligns them better, so either
+/// of the two may be the one that lost them
 pub const TRIMMED: &str = "trimmed";
 /// The second row overlapped the kept first by more than `JUNCTION_SHARE`
-/// of the shorter (`JUNCTION_OVERLAP` residues for the same entry): a
-/// competing candidate, not a part
+/// of the shorter, or, being of the same entry, on the same residues of the
+/// entry (`same_entry_residues`): the same residues claimed again, not a
+/// part
 pub const DROPPED: &str = "dropped";
 /// The second row was trimmed to under `MIN_RESIDUES` or
 /// `MIN_SIFTS_IDENTITY`, or its alignment could not be walked
@@ -846,15 +857,21 @@ fn shared(x: (u32, u32), y: (u32, u32)) -> u32 {
 /// A row is a candidate at `MIN_SIFTS_IDENTITY` or more over `MIN_RESIDUES`
 /// or more of ours. They are taken best bit score first (ties: the UniRef100
 /// representative, `preferred`; a canonical entry over an isoform; the
-/// lowest accession; our order). One overlapping a part already kept of
-/// another entry by more than `JUNCTION_SHARE` of the shorter of the two,
-/// or of the same entry by more than `JUNCTION_OVERLAP` residues, is
-/// dropped: the same residues claimed again, by an ortholog, an isoform, or
-/// a second BLAST row over a repeat. One overlapping by that or less is
-/// kept without the shared residues, which the part with the higher bit
-/// score keeps; its alignment is walked (`realign`) so its reference range
-/// moves exactly and its identity is counted again over what is left, by
-/// `identity`'s rule.
+/// lowest accession; our order). One overlapping a part already kept by
+/// more than `JUNCTION_SHARE` of the shorter of the two, or, being of the
+/// same entry, on the same residues of the entry (`same_entry_residues`),
+/// is dropped: the same residues claimed again, by an ortholog, an isoform,
+/// or a second BLAST row over a repeat.
+///
+/// An overlap short of that is a junction, and the two rows are cut at the
+/// column where the identical residues of the one on the left up to it plus
+/// those of the one on the right after it are most (`junction_cut`), so the
+/// shared residues are recorded as the protein they match rather than as
+/// whichever row scored higher over its whole length. Either row may be the
+/// one that loses them, so a part kept earlier can be cut back by a row
+/// taken after it. Each side's alignment is walked (`realign`) so its
+/// reference range moves exactly and its identity is counted again over
+/// what is left, by `identity`'s rule.
 ///
 /// Two kept rows of the same entry with no part between them become one
 /// when they run on in our chain and in the entry, with fewer than
@@ -909,6 +926,9 @@ pub fn sifts_parts(
         len as f64 / (x.1 - x.0 + 1).min(y.1 - y.0 + 1) as f64
     };
 
+    // Each row's alignment walked once, for the junction cuts
+    let aligned: Vec<Option<Vec<Column>>> = ranked.iter().map(|h| columns(h)).collect();
+
     // (kept part, the ranked row it came from)
     let mut kept: Vec<(Part, usize)> = vec![];
     // (first, second) -> (length, share, outcome), for pairs that decided
@@ -917,39 +937,70 @@ pub fn sifts_parts(
     for (n, hit) in ranked.iter().enumerate() {
         let query = span(hit.qstart, hit.qend);
         let acc = accession(&hit.saccver);
-        // (kept row, its range, residues shared, share, too much to trim)
-        let against: Vec<_> = kept
+        let mine = Side {
+            accession: &acc,
+            columns: aligned[n].as_deref(),
+            range: query,
+        };
+        // (its place in `kept`, its ranked row, its range, residues
+        // shared, share, the same residues claimed again)
+        let against: Vec<Against> = kept
             .iter()
-            .map(|(p, k)| {
+            .enumerate()
+            .filter_map(|(pos, (p, k))| {
                 let len = shared(query, p.query);
+                if len == 0 {
+                    return None;
+                }
                 let share = share_of(len, query, p.query);
-                let too_much = if p.accession == acc {
-                    len > JUNCTION_OVERLAP
-                } else {
-                    share > JUNCTION_SHARE
-                };
-                (*k, p.query, len, share, too_much)
+                // Not a junction to cut but the same residues claimed
+                // again: too much of the shorter row, or, for two rows of
+                // one entry, our shared residues on the same residues of
+                // the entry under both
+                let again = share > JUNCTION_SHARE
+                    || (p.accession == acc
+                        && same_entry_residues(
+                            &side_of(p, aligned[*k].as_deref()),
+                            &mine,
+                        ));
+                Some((pos, *k, p.query, len, share, again))
             })
-            .filter(|&(_, _, len, _, _)| len > 0)
             .collect();
-        if against.iter().any(|a| a.4) {
-            for &(k, _, len, share, too_much) in &against {
-                let outcome = if too_much { DROPPED } else { MOOT };
+        if against.iter().any(|a| a.5) {
+            for &(_, k, _, len, share, again) in &against {
+                let outcome = if again { DROPPED } else { MOOT };
                 decided.insert((k, n), (len, share, outcome));
             }
             continue;
         }
+        // Each junction cut where the two rows' identities are highest
+        // (`junction_cut`): what this row keeps, and the parts kept
+        // earlier that give up junction residues to it. A kept part is
+        // always the row ranked first of its pair.
         let (mut lo, mut hi) = query;
-        for &(_, (ks, ke), _, _, _) in &against {
-            if ks <= lo {
-                lo = lo.max(ke + 1);
+        let mut recut: Vec<(usize, u32, u32)> = vec![];
+        for &(pos, k, (ks, ke), _, _, _) in &against {
+            let theirs = side_of(&kept[pos].0, aligned[k].as_deref());
+            // A kept part overlapping ours either starts at or before our
+            // start or ends at or after our end; one inside ours would be
+            // the whole of the shorter row, dropped above
+            if ks <= query.0 {
+                let cut = junction_cut(&theirs, &mine, true);
+                lo = lo.max(cut + 1);
+                if cut < ke {
+                    recut.push((pos, ks, cut));
+                }
             } else {
-                hi = hi.min(ks - 1);
+                let cut = junction_cut(&mine, &theirs, false);
+                hi = hi.min(cut);
+                if cut >= ks {
+                    recut.push((pos, cut + 1, ke));
+                }
             }
         }
         let part = if (lo, hi) == query {
             Some(Part {
-                accession: accession(&hit.saccver),
+                accession: acc.clone(),
                 query,
                 reference: span(hit.sstart, hit.send),
                 nident: hit.nident,
@@ -964,10 +1015,23 @@ pub fn sifts_parts(
         } else {
             TRIMMED_AWAY
         };
-        for &(k, _, len, share, _) in &against {
+        for &(_, k, _, len, share, _) in &against {
             decided.insert((k, n), (len, share, outcome));
         }
         if let Some(part) = part {
+            // Only now that this row is a part do the parts it took
+            // junction residues from lose them. `junction_cut` took no cut
+            // that leaves one of them under `MIN_RESIDUES` or
+            // `MIN_SIFTS_IDENTITY`.
+            for &(pos, cut_lo, cut_hi) in &recut {
+                let trimmed = {
+                    let (p, k) = &kept[pos];
+                    side_of(p, aligned[*k].as_deref()).part(cut_lo, cut_hi)
+                };
+                if let Some(trimmed) = trimmed {
+                    kept[pos].0 = trimmed;
+                }
+            }
             kept.push((part, n));
         }
     }
@@ -1040,20 +1104,20 @@ pub fn sifts_parts(
     (parts, overlaps)
 }
 
-/// A BLAST row cut to our residues `lo..=hi`, by walking its alignment
-/// (`qseq`, `sseq`): it starts and ends on the first and last of them
-/// aligned to a residue of the entry, which give the new ranges, and its
-/// identical residues are counted again. None when the row has no
-/// alignment (a file from before 0.17.0), the alignment does not fit the
-/// row's ranges, or nothing of ours in `lo..=hi` is aligned.
-fn realign(hit: &PolymerBlastHit, lo: u32, hi: u32) -> Option<Part> {
+/// One column of a BLAST row's alignment: our position, the entry's, and
+/// whether the two residues are identical
+type Column = (Option<u32>, Option<u32>, bool);
+
+/// A BLAST row's alignment (`qseq`, `sseq`) walked into columns. None when
+/// the row carries no alignment (a file from before 0.17.0) or the
+/// alignment does not fit the row's ranges.
+fn columns(hit: &PolymerBlastHit) -> Option<Vec<Column>> {
     let (qseq, sseq) = (hit.qseq.as_deref()?, hit.sseq.as_deref()?);
     if qseq.len() != sseq.len() || hit.qstart > hit.qend || hit.sstart > hit.send {
         return None;
     }
-    // Per column: our position, the entry's, and whether they are identical
     let (mut q, mut s) = (hit.qstart - 1, hit.sstart - 1);
-    let mut columns = vec![];
+    let mut walked = Vec::with_capacity(qseq.len());
     for (a, b) in qseq.bytes().zip(sseq.bytes()) {
         let qp = (a != b'-').then(|| {
             q += 1;
@@ -1063,23 +1127,154 @@ fn realign(hit: &PolymerBlastHit, lo: u32, hi: u32) -> Option<Part> {
             s += 1;
             s
         });
-        columns.push((qp, sp, a != b'-' && a.eq_ignore_ascii_case(&b)));
+        walked.push((qp, sp, a != b'-' && a.eq_ignore_ascii_case(&b)));
     }
-    if (q, s) != (hit.qend, hit.send) {
-        return None;
-    }
-    let inside = |&(qp, sp, _): &(Option<u32>, Option<u32>, bool)| {
+    ((q, s) == (hit.qend, hit.send)).then_some(walked)
+}
+
+/// A row's alignment cut to our residues `lo..=hi`: the part starts and
+/// ends on the first and last of them aligned to a residue of the entry,
+/// which give its ranges, and its identical residues are counted again.
+/// None when nothing of ours in `lo..=hi` is aligned.
+fn cut_part(acc: &str, columns: &[Column], lo: u32, hi: u32) -> Option<Part> {
+    let inside = |&(qp, sp, _): &Column| {
         sp.is_some() && qp.is_some_and(|qp| (lo..=hi).contains(&qp))
     };
     let first = columns.iter().position(inside)?;
     let last = columns.iter().rposition(inside)?;
     let cut = &columns[first..=last];
     Some(Part {
-        accession: accession(&hit.saccver),
+        accession: acc.to_string(),
         query: (cut[0].0?, cut[cut.len() - 1].0?),
         reference: (cut[0].1?, cut[cut.len() - 1].1?),
         nident: cut.iter().filter(|c| c.2).count() as u32,
     })
+}
+
+/// A BLAST row cut to our residues `lo..=hi`, by walking its alignment
+/// (`columns`, then `cut_part`). None when the row has no alignment (a
+/// file from before 0.17.0), the alignment does not fit the row's ranges,
+/// or nothing of ours in `lo..=hi` is aligned.
+fn realign(hit: &PolymerBlastHit, lo: u32, hi: u32) -> Option<Part> {
+    cut_part(&accession(&hit.saccver), &columns(hit)?, lo, hi)
+}
+
+/// One of the two rows of an overlap `sifts_parts` is deciding: its
+/// accession, its alignment's columns, and the range of ours it holds now,
+/// which for a part kept earlier may already have been cut
+struct Side<'a> {
+    accession: &'a str,
+    columns: Option<&'a [Column]>,
+    range: (u32, u32),
+}
+
+impl Side<'_> {
+    /// The part this row keeps of our residues `lo..=hi`, inside its range
+    fn part(&self, lo: u32, hi: u32) -> Option<Part> {
+        cut_part(
+            self.accession,
+            self.columns?,
+            lo.max(self.range.0),
+            hi.min(self.range.1),
+        )
+    }
+
+    /// `part`, unless it is under `MIN_RESIDUES` or `MIN_SIFTS_IDENTITY`
+    fn passes(&self, lo: u32, hi: u32) -> Option<Part> {
+        self.part(lo, hi).filter(|p| {
+            p.len() as usize >= MIN_RESIDUES && p.identity() >= MIN_SIFTS_IDENTITY
+        })
+    }
+}
+
+/// A part kept earlier that a row being weighed overlaps: its place in the
+/// kept parts, the ranked row it came from, the range of ours it holds now,
+/// the residues of ours the two share, that over the shorter of the two,
+/// and whether the two claim the same residues again rather than meeting at
+/// a junction
+type Against = (usize, usize, (u32, u32), u32, f64, bool);
+
+/// A kept part as a `Side`, with its row's columns
+fn side_of<'a>(part: &'a Part, columns: Option<&'a [Column]>) -> Side<'a> {
+    Side {
+        accession: part.accession.as_str(),
+        columns,
+        range: part.query,
+    }
+}
+
+/// Where to cut between two rows that overlap on our residues: the last of
+/// the overlap the `left` row keeps, one before its first for none of it.
+///
+/// BLAST's local alignments run past a fusion's junction (X-drop
+/// extension), so both rows claim the residues around it, and the cut
+/// decides which protein each of them is recorded as. The cut taken
+/// maximises the identical residues of the left part up to it plus those of
+/// the right part after it, both counted by walking the two alignments,
+/// over the cuts that leave each part at `MIN_RESIDUES` and
+/// `MIN_SIFTS_IDENTITY` or better. Where cuts tie, as when both rows align
+/// the shared residues identically, and where no cut is left, the shared
+/// residues all go to the row ranked first (`left_is_first`).
+///
+/// Until 0.35.0 they always went to the row ranked first, by the bit score
+/// of the whole row: a 4eiy-like BRIL fusion, whose second receptor row
+/// outscores BRIL's while matching the 17 residues at the junction 5 times
+/// to BRIL's 16, had those 17 recorded as receptor, and the receptor part
+/// claimed a stretch of the entry the construct deletes.
+fn junction_cut(left: &Side, right: &Side, left_is_first: bool) -> u32 {
+    let lo = left.range.0.max(right.range.0);
+    let hi = left.range.1.min(right.range.1);
+    // (identical residues of the two parts, the cut)
+    let mut best: Option<(u32, u32)> = None;
+    for cut in lo.saturating_sub(1)..=hi {
+        let Some(score) = left
+            .passes(left.range.0, cut)
+            .zip(right.passes(cut + 1, right.range.1))
+            .map(|(l, r)| l.nident + r.nident)
+        else {
+            continue;
+        };
+        // A tie goes to the row ranked first: the largest such cut when
+        // that is the left row, the smallest when it is the right one
+        let better = match best {
+            Some((top, _)) if left_is_first => score >= top,
+            Some((top, _)) => score > top,
+            None => true,
+        };
+        if better {
+            best = Some((score, cut));
+        }
+    }
+    let all_to_first = if left_is_first {
+        hi
+    } else {
+        lo.saturating_sub(1)
+    };
+    best.map_or(all_to_first, |(_, cut)| cut)
+}
+
+/// The two rows align most of the residues of ours they share to the same
+/// residues of the entry: the same residues claimed again, a second BLAST
+/// row over a repeat. False when they align them to different residues of
+/// the entry, which is one row run past a junction into the other's copy
+/// (3nxn's tethered HIV protease dimer, whose rows share 6 of ours), and
+/// false when either row has no alignment to walk.
+fn same_entry_residues(left: &Side, right: &Side) -> bool {
+    let (Some(a), Some(b)) = (left.columns, right.columns) else {
+        return false;
+    };
+    let lo = left.range.0.max(right.range.0);
+    let hi = left.range.1.min(right.range.1);
+    let placed = |cols: &[Column]| -> HashMap<u32, u32> {
+        cols.iter()
+            .filter_map(|&(qp, sp, _)| Some((qp?, sp?)))
+            .filter(|&(qp, _)| (lo..=hi).contains(&qp))
+            .collect()
+    };
+    let (a, b) = (placed(a), placed(b));
+    let both = a.keys().filter(|q| b.contains_key(*q)).count();
+    let same = a.iter().filter(|&(q, s)| b.get(q) == Some(s)).count();
+    both > 0 && same * 2 > both
 }
 
 /// The polymers (`p<i>` -> i) that some SIFTS accession of their declared
@@ -2837,18 +3032,110 @@ mod tests {
         assert_eq!(overlaps, [(70, DROPPED)]);
     }
 
-    /// Two rows of one entry sharing 10 of ours are the same residues
-    /// claimed again, though 10 is well under half of either: for the same
-    /// entry the limit is `JUNCTION_OVERLAP` residues
+    /// Two rows of one entry sharing 10 of ours, which they put on
+    /// different residues of the entry (491-500 under the second, 591-600
+    /// under the first), are a tethered dimer's two copies with one row run
+    /// past the junction: a junction to cut, not the same residues claimed
+    /// again. Both alignments match the shared residues, so they stay with
+    /// the row ranked first. Until 0.35.0 any same-entry overlap over
+    /// `JUNCTION_OVERLAP` was dropped, and the second copy was lost.
     #[test]
-    fn sifts_parts_drop_the_same_entry_over_junction_overlap() {
+    fn sifts_parts_cut_the_same_entry_at_a_junction() {
         let rows = [
             sifts_row("P04585", (1, 110), (491, 600), 200.0, 210, None),
             sifts_row("P04585", (101, 210), (491, 600), 190.0, 210, None),
         ];
         let (got, overlaps) = parts(&rows, 210);
+        assert_eq!(
+            got,
+            [
+                part("P04585", (1, 110), (491, 600), 100.0),
+                part("P04585", (111, 210), (501, 600), 100.0),
+            ]
+        );
+        assert_eq!(overlaps, [(10, TRIMMED)]);
+    }
+
+    /// Two rows of one entry that put our shared residues on the *same*
+    /// residues of the entry are the same residues claimed again, a second
+    /// BLAST row over a repeat, and the second row is dropped
+    /// (`same_entry_residues`)
+    #[test]
+    fn sifts_parts_drop_the_same_entry_residues_claimed_again() {
+        let rows = [
+            sifts_row("P04585", (1, 110), (491, 600), 200.0, 210, None),
+            sifts_row("P04585", (101, 210), (591, 700), 190.0, 210, None),
+        ];
+        let (got, overlaps) = parts(&rows, 210);
         assert_eq!(got, [part("P04585", (1, 110), (491, 600), 100.0)]);
         assert_eq!(overlaps, [(10, DROPPED)]);
+    }
+
+    /// 3nxn's tethered HIV protease dimer as real BLAST gives it: the first
+    /// row runs through the linker into the second copy, aligning our
+    /// 105-110 to the entry's 595-600 at none of six, where the second row
+    /// aligns the same six to its 491-496 at six of six. The cut gives them
+    /// to the second row and the chain keeps both copies. Before 0.35.0 the
+    /// rows shared 6 > `JUNCTION_OVERLAP`, so the second copy was dropped
+    /// and the one part left claimed residues of the entry the chain does
+    /// not have.
+    #[test]
+    fn sifts_parts_cut_a_tethered_dimer_by_identity() {
+        let past = "A".repeat(104) + &"C".repeat(6);
+        let entry = "A".repeat(110);
+        let rows = [
+            sifts_row(
+                "P04585",
+                (1, 110),
+                (491, 600),
+                207.0,
+                203,
+                Some((&past, &entry)),
+            ),
+            sifts_row("P04585", (105, 203), (491, 589), 206.0, 203, None),
+        ];
+        let (got, overlaps) = parts(&rows, 203);
+        assert_eq!(
+            got,
+            [
+                part("P04585", (1, 104), (491, 594), 100.0),
+                part("P04585", (105, 203), (491, 589), 100.0),
+            ]
+        );
+        assert_eq!(overlaps, [(6, TRIMMED)]);
+    }
+
+    /// A 4eiy-like BRIL fusion's second junction, H1 of the 2026-11 review:
+    /// the receptor's second row (206 bits) outscores BRIL's (204) and runs
+    /// 18 residues back into BRIL, matching none of them where BRIL matches
+    /// all 18. The cut gives them to BRIL, so the part kept first is the
+    /// one that loses them. Before 0.35.0 the whole row's bit score decided
+    /// and the receptor kept them, which also had its part claim 203-218 of
+    /// the entry, a stretch the construct deletes.
+    #[test]
+    fn sifts_parts_cut_a_junction_off_the_higher_bit_score() {
+        let past = "C".repeat(18) + &"A".repeat(98);
+        let entry = "A".repeat(116);
+        let rows = [
+            sifts_row(
+                "P29274",
+                (306, 421),
+                (203, 318),
+                206.0,
+                421,
+                Some((&past, &entry)),
+            ),
+            sifts_row("P0ABE7", (218, 323), (23, 128), 204.0, 421, None),
+        ];
+        let (got, overlaps) = parts(&rows, 400);
+        assert_eq!(
+            got,
+            [
+                part("P0ABE7", (218, 323), (23, 128), 100.0),
+                part("P29274", (324, 421), (221, 318), 100.0),
+            ]
+        );
+        assert_eq!(overlaps, [(18, TRIMMED)]);
     }
 
     /// iGluR S1S2: the two lobes of GluA2's ligand-binding domain, the
