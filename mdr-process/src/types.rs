@@ -129,6 +129,41 @@ pub enum Command {
     /// (mdr-process/data/residue-formulas.tsv) from the PDB's CCD; rebuild
     /// afterwards. Codes already in the table are left as they are
     CcdFormula(CcdFormulaArgs),
+
+    /// Check that a simulation's processed files agree with each other:
+    /// the box, the frame times and the atoms (read-only; exit 1 on a
+    /// failure). `process` runs the same checks before importing
+    CheckOutputs(CheckOutputsArgs),
+}
+
+// --------------------------------------------------
+#[derive(Debug, Parser)]
+pub struct CheckOutputsArgs {
+    /// Folder(s) holding the files; the first with a given file name wins
+    /// (an MDR-108 build: new/ then orig/)
+    #[arg(value_name = "DIR", required = true)]
+    pub dirs: Vec<PathBuf>,
+
+    /// The pipeline found a periodic box
+    #[arg(long = "box", conflicts_with = "no_box")]
+    pub has_box: bool,
+
+    /// The pipeline found no periodic box
+    #[arg(long)]
+    pub no_box: bool,
+
+    /// The source trajectory full.xtc came from (its stored times are
+    /// compared when it is an XTC)
+    #[arg(long, value_name = "FILE")]
+    pub source_traj: Option<PathBuf>,
+
+    /// Write the findings as JSON
+    #[arg(long, value_name = "OUT")]
+    pub json: Option<PathBuf>,
+
+    /// Print failures and warnings only
+    #[arg(short, long)]
+    pub quiet: bool,
 }
 
 // --------------------------------------------------
@@ -383,6 +418,12 @@ pub struct ProcessArgs {
     #[arg(short, long)]
     pub dry_run: bool,
 
+    /// Do not run simulation-processing's check_outputs.py on the processed
+    /// files before the import and the push. For a simulation whose findings
+    /// were looked at and accepted; the skip is recorded as a warning.
+    #[arg(long)]
+    pub skip_output_checks: bool,
+
     /// Replace original files
     #[arg(long)]
     pub replace_original_files: bool,
@@ -586,6 +627,7 @@ pub struct ProcessTrajectoryArgs<'a> {
 
 // --------------------------------------------------
 #[derive(Debug)]
+#[cfg_attr(test, derive(Default))]
 pub struct ProcessedTrajectory {
     pub full_gro: PathBuf,
     pub full_pdb: PathBuf,

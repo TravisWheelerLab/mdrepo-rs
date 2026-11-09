@@ -1,6 +1,6 @@
 use crate::{
     import::{self, ImportOpts},
-    mmcif_writer, psf_elements, psf_writer, reference, sequence,
+    mmcif_writer, output_checks, psf_elements, psf_writer, reference, sequence,
     ticket::dsn_for,
     types::{
         CheckedLigand, DoiAuthor, DoiPaper, Duration, Export, ExportSimulation,
@@ -19,7 +19,7 @@ use libmdrepo::{
     constants,
     metadata::{self, Meta, MetaCheckOptions},
 };
-use log::{debug, warn};
+use log::{debug, info, warn};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
@@ -201,6 +201,18 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
         })?;
     warnings.extend(import_warnings);
 
+    // Before anything is written to the database or IRODS: a failure here
+    // leaves nothing behind. Dry runs check too.
+    if args.skip_output_checks {
+        warnings.push("Output checks skipped (--skip-output-checks)".to_string());
+    } else {
+        for w in check_replicate_outputs(&input_dir, &processed_trajectories)? {
+            if !warnings.contains(&w) {
+                warnings.push(w);
+            }
+        }
+    }
+
     let mut simulation_id: Option<u32> = None;
     let mut push_elapsed = None;
     if !args.dry_run {
@@ -225,6 +237,21 @@ pub fn process(args: &ProcessArgs) -> Result<ProcessResult> {
             &script_dir,
             &uv,
         )?);
+
+        // The mmCIF pair exists only now. A failure here leaves the
+        // simulation a placeholder with nothing pushed, as an incomplete
+        // push does.
+        if !args.skip_output_checks {
+            let dir = Path::new(&example_trajectory.directory_name);
+            let label = dir
+                .file_name()
+                .map_or(String::new(), |n| n.to_string_lossy().to_string());
+            for w in require_outputs_pass(vec![check_folder(dir, None, &label)?])? {
+                if !warnings.contains(&w) {
+                    warnings.push(w);
+                }
+            }
+        }
 
         let import_result = ImportResult {
             filename: import_json.to_string_lossy().to_string(),
@@ -4013,6 +4040,100 @@ fn timeout_from_env(name: &str, default_secs: u64) -> Result<time::Duration> {
 }
 
 // --------------------------------------------------
+/// What the output checks found in one folder: its fails and warns, each
+/// "<label>/<file> (<check>): <message>". Infos are dropped.
+#[derive(Debug, Default, PartialEq)]
+pub struct OutputCheck {
+    pub fails: Vec<String>,
+    pub warns: Vec<String>,
+}
+
+/// The output checks (crate::output_checks) on one folder of processed
+/// files: its fails and warns, each "<label>/<file> (<check>): <message>".
+/// A file that cannot be read is a failure, not an error.
+pub fn check_folder(
+    dir: &Path,
+    source_trajectory: Option<&Path>,
+    label: &str,
+) -> Result<OutputCheck> {
+    let findings =
+        output_checks::run_checks(&[dir.to_path_buf()], None, source_trajectory)?;
+    Ok(output_check_from(&findings, label))
+}
+
+/// Fails and warns of `findings`, labelled with the folder; infos dropped
+pub fn output_check_from(
+    findings: &[output_checks::Finding],
+    label: &str,
+) -> OutputCheck {
+    let mut out = OutputCheck::default();
+    for f in findings {
+        let line = if f.file.is_empty() {
+            format!("{label} ({}): {}", f.check, f.message)
+        } else {
+            format!("{label}/{} ({}): {}", f.file, f.check, f.message)
+        };
+        match f.level {
+            output_checks::Level::Fail => out.fails.push(line),
+            output_checks::Level::Warn => out.warns.push(line),
+            output_checks::Level::Info => {}
+        }
+    }
+    out
+}
+
+/// All the folders' warns, once each, for the submitter's warnings; or an
+/// error listing every failure in every folder.
+pub fn require_outputs_pass(checks: Vec<OutputCheck>) -> Result<Vec<String>> {
+    let fails: Vec<String> = checks.iter().flat_map(|c| c.fails.clone()).collect();
+    if !fails.is_empty() {
+        bail!(
+            "The processed files failed {} output check(s); nothing was \
+            imported or pushed (re-run with --skip-output-checks only after \
+            deciding these are acceptable):\n{}",
+            fails.len(),
+            fails.join("\n")
+        );
+    }
+    let mut warns = vec![];
+    for w in checks.into_iter().flat_map(|c| c.warns) {
+        let w = format!("Output check: {w}");
+        if !warns.contains(&w) {
+            warns.push(w);
+        }
+    }
+    Ok(warns)
+}
+
+/// The output checks over every replicate's folder, each against its own
+/// source trajectory. The released files are links into the longest
+/// replicate's folder and the tarballs carry all of them, so this covers
+/// everything a simulation publishes.
+fn check_replicate_outputs(
+    input_dir: &Path,
+    trajectories: &[ProcessedTrajectory],
+) -> Result<Vec<String>> {
+    let checks = trajectories
+        .par_iter()
+        .map(|t| {
+            let dir = Path::new(&t.directory_name);
+            let label = dir.file_name().map_or(t.directory_name.clone(), |n| {
+                n.to_string_lossy().to_string()
+            });
+            let source = input_dir.join(&t.trajectory_file_name);
+            check_folder(dir, source.is_file().then_some(source.as_path()), &label)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let warns: usize = checks.iter().map(|c| c.warns.len()).sum();
+    let fails: usize = checks.iter().map(|c| c.fails.len()).sum();
+    info!(
+        "Output checks: {} folder(s), {fails} failure(s), {warns} warning(s)",
+        checks.len()
+    );
+    require_outputs_pass(checks)
+}
+
+// --------------------------------------------------
 /// Run a helper script under `helper_timeout`, failing if it overruns or exits
 /// non-zero. Logs its stdout like the plain `cmd.output()` calls it replaces.
 fn run_helper(cmd: &mut Command, what: &str) -> Result<()> {
@@ -6792,5 +6913,180 @@ mod convert_env_tests {
                 assert!(e.to_string().contains("needs ParmEd"), "{e}");
             }
         }
+    }
+}
+
+// --------------------------------------------------
+/// The output checks inside `process`: labels, the pass or stop, and every
+/// replicate checked against its own source (crate::output_checks has the
+/// checks' own tests).
+#[cfg(test)]
+mod output_check_tests {
+    use super::*;
+
+    fn write_xtc(path: &Path, boxvec: [f32; 9], times: &[f32]) {
+        let mut w = molly::XTCWriter::create(path).unwrap();
+        for (i, t) in times.iter().enumerate() {
+            w.write_frame(&molly::Frame {
+                step: i as u32,
+                time: *t,
+                boxvec,
+                precision: 1000.0,
+                positions: vec![0.1, 0.2, 0.3, 0.24, 0.21, 0.3, 0.5, 0.48, 0.34],
+            })
+            .unwrap();
+        }
+    }
+
+    const CELL: [f32; 9] = [5.0, 0.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 5.0];
+    const INF_BOX: [f32; 9] = [
+        f32::INFINITY,
+        f32::INFINITY,
+        0.0,
+        2.06,
+        f32::NEG_INFINITY,
+        f32::NEG_INFINITY,
+        0.0,
+        0.0,
+        0.0,
+    ];
+
+    #[test]
+    fn findings_are_split_by_level_and_labelled() {
+        use output_checks::{Finding, Level};
+        let f = |check, level, file: &str, m: &str| Finding {
+            check,
+            level,
+            file: file.into(),
+            message: m.into(),
+        };
+        let got = output_check_from(
+            &[
+                f("box", Level::Fail, "full.xtc", "bad box"),
+                f("time", Level::Warn, "sampled.xtc", "no time axis"),
+                f("atoms", Level::Info, "", "files agree"),
+                f("time", Level::Warn, "", "x"),
+            ],
+            "rep_2",
+        );
+        assert_eq!(
+            got,
+            OutputCheck {
+                fails: vec!["rep_2/full.xtc (box): bad box".into()],
+                warns: vec![
+                    "rep_2/sampled.xtc (time): no time axis".into(),
+                    "rep_2 (time): x".into()
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn passing_folders_give_their_warns_once() {
+        let w = |s: &str| OutputCheck {
+            fails: vec![],
+            warns: vec![s.into()],
+        };
+        let got =
+            require_outputs_pass(vec![w("a"), w("b"), w("a"), OutputCheck::default()])
+                .unwrap();
+        assert_eq!(got, vec!["Output check: a", "Output check: b"]);
+    }
+
+    #[test]
+    fn any_failure_stops_and_every_failure_is_listed() {
+        let f = |s: &str| OutputCheck {
+            fails: vec![s.into()],
+            warns: vec!["w".into()],
+        };
+        let e = require_outputs_pass(vec![
+            f("rep_1/full.xtc: one"),
+            OutputCheck::default(),
+            f("rep_3/minimal.pdb: two"),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("failed 2 output check(s)"), "{e}");
+        assert!(e.contains("nothing was imported or pushed"), "{e}");
+        assert!(
+            e.contains("rep_1/full.xtc: one") && e.contains("rep_3/minimal.pdb: two"),
+            "{e}"
+        );
+        assert!(e.contains("--skip-output-checks"), "{e}");
+    }
+
+    #[test]
+    fn a_folder_with_the_105222_box_fails() {
+        let d = tempfile::tempdir().unwrap();
+        write_xtc(&d.path().join("full.xtc"), INF_BOX, &[0.0, 10.0, 20.0]);
+        let got = check_folder(d.path(), None, "rep_1").unwrap();
+        assert_eq!(got.fails.len(), 1, "{got:?}");
+        assert!(
+            got.fails[0].starts_with(
+                "rep_1/full.xtc (box): 3 of 3 frames have a non-finite box"
+            ),
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_file_fails_the_folder_rather_than_erroring() {
+        let d = tempfile::tempdir().unwrap();
+        fs::write(d.path().join("full.xtc"), b"not an xtc").unwrap();
+        let got = check_folder(d.path(), None, "rep_1").unwrap();
+        assert!(
+            got.fails.iter().any(|f| f.contains("cannot be read")),
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn every_replicate_is_checked_against_its_own_source() {
+        let input = tempfile::tempdir().unwrap();
+        let processed = tempfile::tempdir().unwrap();
+        let mut trajectories = vec![];
+        // rep_1 matches its source; rep_2's times were stamped over a source
+        // that skipped time, and rep_3 has the 105222 box.
+        for (n, boxvec, times, src) in [
+            (1, CELL, [0.0, 10.0, 20.0], [100.0, 110.0, 120.0]),
+            (2, CELL, [0.0, 10.0, 20.0], [0.0, 10.0, 90.0]),
+            (3, INF_BOX, [0.0, 10.0, 20.0], [0.0, 10.0, 20.0]),
+        ] {
+            let rep = processed.path().join(format!("rep_{n}"));
+            fs::create_dir(&rep).unwrap();
+            write_xtc(&rep.join("full.xtc"), boxvec, &times);
+            write_xtc(&input.path().join(format!("t{n}.xtc")), CELL, &src);
+            trajectories.push(ProcessedTrajectory {
+                directory_name: rep.to_string_lossy().to_string(),
+                trajectory_file_name: format!("t{n}.xtc"),
+                ..ProcessedTrajectory::default()
+            });
+        }
+        let e = check_replicate_outputs(input.path(), &trajectories)
+            .unwrap_err()
+            .to_string();
+        assert!(!e.contains("rep_1/"), "{e}");
+        assert!(
+            e.contains("rep_2/full.xtc (time): 1 frame times differ from the source's"),
+            "{e}"
+        );
+        assert!(e.contains("rep_3/full.xtc (box)"), "{e}");
+    }
+
+    #[test]
+    fn a_missing_source_is_not_compared() {
+        let processed = tempfile::tempdir().unwrap();
+        let rep = processed.path().join("rep_1");
+        fs::create_dir(&rep).unwrap();
+        write_xtc(&rep.join("full.xtc"), CELL, &[0.0, 10.0]);
+        let t = vec![ProcessedTrajectory {
+            directory_name: rep.to_string_lossy().to_string(),
+            trajectory_file_name: "gone.xtc".into(),
+            ..ProcessedTrajectory::default()
+        }];
+        assert_eq!(
+            check_replicate_outputs(processed.path(), &t).unwrap(),
+            Vec::<String>::new()
+        );
     }
 }

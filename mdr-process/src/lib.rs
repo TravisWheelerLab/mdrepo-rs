@@ -3,6 +3,7 @@ pub mod backfill_declared;
 pub mod backfill_uniprot;
 pub mod import;
 pub mod mmcif_writer;
+pub mod output_checks;
 pub mod process;
 pub mod psf_elements;
 pub mod psf_writer;

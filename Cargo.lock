@@ -2102,7 +2102,7 @@ dependencies = [
 
 [[package]]
 name = "mdr-process"
-version = "0.34.0"
+version = "0.35.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -2116,6 +2116,7 @@ dependencies = [
  "libmdrepo",
  "log",
  "mdr-db",
+ "molly",
  "num_cpus",
  "pdbrust",
  "rayon",
@@ -2190,6 +2191,12 @@ dependencies = [
  "wasi",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "molly"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75dccedc345e14623ecc79262729c65fb6a7262751e1ad7e4230664475c7957b"
 
 [[package]]
 name = "multiversion_no_op"
