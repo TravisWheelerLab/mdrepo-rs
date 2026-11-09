@@ -530,6 +530,7 @@ fn process_landing(
             agent_imported: false,
             force: args.force,
             dry_run: args.dry_run,
+            skip_output_checks: false,
             replace_original_files: false,
             blast_num_threads: args.blast_num_threads,
             transfer_threads: args.transfer_threads,
