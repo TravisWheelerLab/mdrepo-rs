@@ -994,32 +994,44 @@ pub fn check_atoms(files: &HashMap<String, PathBuf>, trajs: &[Frames]) -> Vec<Fi
 }
 
 // --------------------------------------------------
-/// {file name: path} for the names the checks know; the first dir wins
-pub fn find_files(dirs: &[PathBuf]) -> HashMap<String, PathBuf> {
+/// {file name: path} for the names the checks know, in `dir` only
+pub fn find_files(dir: &Path) -> HashMap<String, PathBuf> {
     let mut names: Vec<String> = ["full", "minimal"]
         .iter()
         .flat_map(|s| ["xtc", "pdb", "psf", "mmcif"].map(|e| format!("{s}.{e}")))
         .collect();
     names.push("sampled.xtc".into());
-    let mut found = HashMap::new();
-    for d in dirs {
-        for n in &names {
-            let p = d.join(n);
-            if !found.contains_key(n) && p.is_file() {
-                found.insert(n.clone(), p);
-            }
-        }
-    }
-    found
+    names
+        .into_iter()
+        .map(|n| (dir.join(&n), n))
+        .filter(|(p, _)| p.is_file())
+        .map(|(p, n)| (n, p))
+        .collect()
 }
 
-/// All three checks over the files found in `dirs`
+/// All three checks over the files found in `dir` (one replicate's folder).
+/// A missing folder is an error; a folder holding none of the files is a
+/// failure, not a pass with nothing to compare.
 pub fn run_checks(
-    dirs: &[PathBuf],
+    dir: &Path,
     box_present: Option<bool>,
     source_trajectory: Option<&Path>,
 ) -> Result<Vec<Finding>> {
-    let files = find_files(dirs);
+    if !dir.is_dir() {
+        bail!("{}: not a folder", dir.display());
+    }
+    let files = find_files(dir);
+    if files.is_empty() {
+        return Ok(vec![finding(
+            "files",
+            Level::Fail,
+            "",
+            format!(
+                "{}: none of full/minimal .xtc/.pdb/.psf/.mmcif or sampled.xtc",
+                dir.display()
+            ),
+        )]);
+    }
     let (mut trajs, mut out) = (vec![], vec![]);
     for n in ["full.xtc", "minimal.xtc", "sampled.xtc"] {
         if let Some(p) = files.get(n) {
@@ -1227,7 +1239,7 @@ mod tests {
     const C50: Option<[f64; 6]> = Some([50.0, 50.0, 50.0, 90.0, 90.0, 90.0]);
 
     fn run(d: &Path, bp: Option<bool>) -> Vec<Finding> {
-        run_checks(&[d.to_path_buf()], bp, None).unwrap()
+        run_checks(d, bp, None).unwrap()
     }
 
     fn levels(f: &[Finding], check: Option<&str>) -> Vec<(Level, String)> {
@@ -1778,36 +1790,51 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let s = full_set(&d.path().join("s"), CUBE, C50);
         fs::write(s.join("full.gro"), "garbage\n 1\n").unwrap();
-        assert!(!find_files(std::slice::from_ref(&s)).contains_key("full.gro"));
+        assert!(!find_files(&s).contains_key("full.gro"));
         assert_eq!(levels(&run(&s, None), None), vec![]);
     }
 
     #[test]
-    fn files_split_across_dirs_first_dir_wins() {
+    fn only_the_given_folder_is_read() {
+        // A bad replicate next to a good one is not looked at: one call
+        // checks one folder (`check-outputs rep_*` used to check rep_1 only)
         let d = tempfile::tempdir().unwrap();
-        let (orig, new) = (d.path().join("orig"), d.path().join("new"));
-        fs::create_dir_all(&orig).unwrap();
-        fs::create_dir_all(&new).unwrap();
-        write_pdb(&orig.join("minimal.pdb"), &ATOMS[..5], &XYZ[..5], None, 1);
-        xtc(&orig.join("sampled.xtc"), 5, CUBE);
-        write_psf(&new.join("minimal.psf"), &ATOMS[..5]);
-        write_mmcif(&new.join("minimal.mmcif"), &ATOMS[..5], &XYZ[..5]);
-        write_pdb(&new.join("minimal.pdb"), &ATOMS[..4], &XYZ[..4], None, 1);
-        assert!(
-            find_files(&[new.clone(), orig.clone()])["minimal.pdb"].starts_with(&new)
-        );
-        let f = run_checks(&[new.clone(), orig.clone()], None, None).unwrap();
-        assert!(
-            levels(&f, Some("atoms")).contains(&fail("minimal")),
-            "{f:?}"
-        );
-        assert_eq!(
-            levels(
-                &run_checks(&[orig, new], None, None).unwrap(),
-                Some("atoms")
-            ),
-            vec![]
-        );
+        let good = full_set(&d.path().join("rep_1"), CUBE, C50);
+        let bad = full_set(&d.path().join("rep_2"), CUBE, C50);
+        write_pdb(&bad.join("minimal.pdb"), &ATOMS[..4], &XYZ[..4], None, 1);
+        assert!(find_files(&good).values().all(|p| p.starts_with(&good)));
+        assert_eq!(levels(&run(&good, None), None), vec![]);
+        assert!(levels(&run(&bad, None), Some("atoms")).contains(&fail("minimal")));
+    }
+
+    #[test]
+    fn files_in_subfolders_are_not_found() {
+        let d = tempfile::tempdir().unwrap();
+        full_set(&d.path().join("rep_1"), CUBE, C50);
+        assert!(find_files(d.path()).is_empty());
+        let f = run(d.path(), None);
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert_eq!((f[0].level, f[0].check), (Level::Fail, "files"));
+    }
+
+    #[test]
+    fn an_empty_folder_is_a_failure() {
+        let d = tempfile::tempdir().unwrap();
+        fs::write(d.path().join("full.gro"), "only a gro\n 0\n").unwrap();
+        let f = run(d.path(), None);
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert_eq!(f[0].level, Level::Fail);
+        assert!(f[0].message.contains("none of"), "{f:?}");
+    }
+
+    #[test]
+    fn a_missing_folder_is_an_error() {
+        let d = tempfile::tempdir().unwrap();
+        let missing = d.path().join("nope");
+        let e = run_checks(&missing, None, None).unwrap_err();
+        assert!(e.to_string().contains("not a folder"), "{e}");
+        fs::write(&missing, "a file").unwrap();
+        assert!(run_checks(&missing, None, None).is_err());
     }
 
     #[test]
@@ -1816,12 +1843,6 @@ mod tests {
         let s = full_set(&d.path().join("s"), CUBE, C50);
         fs::write(s.join("full.mmcif"), "not a cif").unwrap();
         assert!(levels(&run(&s, None), Some("atoms")).contains(&fail("full.mmcif")));
-    }
-
-    #[test]
-    fn an_empty_dir_checks_nothing_and_passes() {
-        let d = tempfile::tempdir().unwrap();
-        assert_eq!(levels(&run(d.path(), None), None), vec![]);
     }
 
     #[test]

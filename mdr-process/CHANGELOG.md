@@ -11,6 +11,21 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.36.0 (unreleased)
+
+- **`check-outputs` takes exactly one folder.** It used to take several
+  and treat them as one simulation's file set (the first file of a name
+  won), so `check-outputs rep_*` checked only rep_1's files and passed a
+  run whose rep_2 had an infinite box in all 20,000 frames (105222 before
+  simulation-processing #44). A second folder is now a usage error; check
+  each replicate with its own call. `process` already did.
+- **A missing or empty folder no longer passes.** A path that is not a
+  folder is an error; a folder holding none of full/minimal
+  `.xtc`/`.pdb`/`.psf`/`.mmcif` or `sampled.xtc` (an empty folder, or one
+  holding only `rep_N` subfolders) is a `files` failure. Both used
+  to report "0 fail, 0 warn" and exit 0. Applies to `process`'s output
+  checks too.
+
 ## 0.35.0 (unreleased)
 
 - **Output checks before the import and before the push.** `process` checks
@@ -31,6 +46,7 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   (simulation-processing #44) and no check read inside a trajectory.
 - `mdr-process check-outputs DIR... [--box|--no-box] [--source-traj FILE]
   [--json OUT] [-q]`: the same checks on any folder(s), exit 1 on failure.
+  (One folder only from 0.36.0.)
 - `--skip-output-checks` on `process`: for a simulation whose findings were
   looked at and accepted. Recorded as a warning. The ticket and reprocess
   flows always check.

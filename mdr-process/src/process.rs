@@ -4056,8 +4056,7 @@ pub fn check_folder(
     source_trajectory: Option<&Path>,
     label: &str,
 ) -> Result<OutputCheck> {
-    let findings =
-        output_checks::run_checks(&[dir.to_path_buf()], None, source_trajectory)?;
+    let findings = output_checks::run_checks(dir, None, source_trajectory)?;
     Ok(output_check_from(&findings, label))
 }
 

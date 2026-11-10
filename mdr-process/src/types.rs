@@ -139,10 +139,10 @@ pub enum Command {
 // --------------------------------------------------
 #[derive(Debug, Parser)]
 pub struct CheckOutputsArgs {
-    /// Folder(s) holding the files; the first with a given file name wins
-    /// (an MDR-108 build: new/ then orig/)
-    #[arg(value_name = "DIR", required = true)]
-    pub dirs: Vec<PathBuf>,
+    /// One replicate's folder of processed files (full/minimal .xtc .pdb
+    /// .psf .mmcif, sampled.xtc). Check each replicate with its own call
+    #[arg(value_name = "DIR")]
+    pub dir: PathBuf,
 
     /// The pipeline found a periodic box
     #[arg(long = "box", conflicts_with = "no_box")]
