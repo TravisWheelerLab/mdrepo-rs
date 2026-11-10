@@ -14,3 +14,4 @@ pub mod sequence;
 pub mod ticket;
 pub mod types;
 pub mod validate;
+pub mod xtc_box;

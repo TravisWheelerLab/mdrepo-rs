@@ -134,6 +134,29 @@ pub enum Command {
     /// the box, the frame times and the atoms (read-only; exit 1 on a
     /// failure). `process` runs the same checks before importing
     CheckOutputs(CheckOutputsArgs),
+
+    /// Set every frame's box to zero in an XTC, or in each .xtc inside a
+    /// tar, for a simulation with no box whose files carry junk boxes
+    /// (cpptraj before simulation-processing #44). Without --output, only
+    /// reports. Never writes IN; refuses a file with a real cell
+    ZeroXtcBox(ZeroXtcBoxArgs),
+}
+
+// --------------------------------------------------
+#[derive(Debug, Parser)]
+pub struct ZeroXtcBoxArgs {
+    /// An .xtc, or a .tar of .xtc files (full.tar, minimal.tar, ...)
+    #[arg(value_name = "IN")]
+    pub input: PathBuf,
+
+    /// Where to write the patched copy (must not exist). Without it,
+    /// nothing is written
+    #[arg(short, long, value_name = "FILE")]
+    pub output: Option<PathBuf>,
+
+    /// Write the per-XTC report as JSON
+    #[arg(long, value_name = "FILE")]
+    pub json: Option<PathBuf>,
 }
 
 // --------------------------------------------------
