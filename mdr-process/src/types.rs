@@ -418,8 +418,9 @@ pub struct ProcessArgs {
     #[arg(short, long)]
     pub dry_run: bool,
 
-    /// Do not run simulation-processing's check_outputs.py on the processed
-    /// files before the import and the push. For a simulation whose findings
+    /// Do not run the output checks (box, time, atoms; as `check-outputs`)
+    /// on the processed files before the import and the push. For a
+    /// simulation whose findings
     /// were looked at and accepted; the skip is recorded as a warning.
     #[arg(long)]
     pub skip_output_checks: bool,
