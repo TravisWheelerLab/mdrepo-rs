@@ -11,6 +11,13 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.36.1 (unreleased)
+
+- `process --help`: `--skip-output-checks` no longer says it skips
+  simulation-processing's `check_outputs.py`; the checks are mdr-process's
+  own (`check-outputs`) since 0.35.0, and the script is removed
+  (simulation-processing #49).
+
 ## 0.36.0 (unreleased)
 
 - **`check-outputs` takes exactly one folder.** It used to take several

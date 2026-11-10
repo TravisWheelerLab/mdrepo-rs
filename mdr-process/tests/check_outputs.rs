@@ -240,3 +240,16 @@ fn real_bad_replicates_fail() -> Result<()> {
     }
     Ok(())
 }
+
+// --------------------------------------------------
+#[test]
+fn process_help_names_the_built_in_checks() -> Result<()> {
+    // The checks were simulation-processing's check_outputs.py before 0.35.0
+    let out = cargo_bin_cmd!().args(["process", "--help"]).output()?;
+    assert!(out.status.success());
+    let text = stdout(&out);
+    assert!(text.contains("--skip-output-checks"), "{text}");
+    assert!(text.contains("check-outputs"), "{text}");
+    assert!(!text.contains("check_outputs.py"), "{text}");
+    Ok(())
+}
