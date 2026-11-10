@@ -224,6 +224,37 @@ fn run(args: Cli) -> Result<()> {
             );
             Ok(())
         }
+        Command::ZeroXtcBox(args) => {
+            let reports =
+                mdr_process::xtc_box::zero_boxes(&args.input, args.output.as_deref())?;
+            for r in &reports {
+                let kinds: Vec<String> =
+                    r.kinds.iter().map(|(k, n)| format!("{k} {n}")).collect();
+                println!(
+                    "{}\t{} frames\t{} to zero\t{}",
+                    r.name,
+                    r.frames,
+                    r.to_zero,
+                    kinds.join(", ")
+                );
+            }
+            if let Some(path) = &args.json {
+                fs::write(path, serde_json::to_string_pretty(&reports)?)?;
+            }
+            let to_zero: usize = reports.iter().map(|r| r.to_zero).sum();
+            match &args.output {
+                Some(out) => println!(
+                    "{} XTC(s), {to_zero} box(es) zeroed -> {}",
+                    reports.len(),
+                    out.display()
+                ),
+                None => println!(
+                    "{} XTC(s), {to_zero} box(es) to zero (report only)",
+                    reports.len()
+                ),
+            }
+            Ok(())
+        }
         Command::CheckOutputs(args) => {
             let box_present = if args.has_box {
                 Some(true)

@@ -11,6 +11,30 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.37.0 (unreleased)
+
+- **`mdr-process zero-xtc-box IN [OUT]`**: set every frame's box to zero
+  in an XTC, or in each `.xtc` inside a tar (`full.tar`, `minimal.tar`),
+  for a simulation with no box whose files carry junk boxes. cpptraj wrote
+  an uninitialized box for box-less input (a DCD with the unit-cell flag
+  off) until simulation-processing #44: inf, -inf, 1e10 nm, or tiny
+  leftovers like -4.3e-29, in every frame of some replicates and none of
+  others. The coordinates are fine, so only the 36 box bytes of each frame
+  change; file and tar sizes, tar headers and every other byte stay the
+  same.
+- Without OUT it only reports (per XTC: frames, boxes to zero, box kinds;
+  `--json`). With OUT it never writes IN: the copy is written as
+  `OUT.partial`, read back (same frames, every box zero, no byte changed
+  outside a box field) and only then renamed. A file with a real-looking
+  cell in any frame is refused, since that simulation has a box. An
+  existing OUT, a damaged frame or tar header, or a sparse tar member is
+  an error.
+- Tar members found by ustar name + prefix, GNU long names and pax `path`
+  / `size`.
+- Real data: 21553 (contributor 250) and 105141 (contributor 355): before,
+  6 of 10 and 30 of 50 replicates fail `check-outputs`; after, none; molly
+  reads identical coordinates. 0.4-7 s per tar.
+
 ## 0.36.1 (unreleased)
 
 - `process --help`: `--skip-output-checks` no longer says it skips

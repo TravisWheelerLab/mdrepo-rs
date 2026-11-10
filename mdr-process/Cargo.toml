@@ -1,6 +1,6 @@
 [package]
 name = "mdr-process"
-version = "0.36.1"
+version = "0.37.0"
 edition = "2024"
 
 [dependencies]
@@ -34,4 +34,5 @@ which = "8.0.0"
 tempfile = "3"
 
 [dev-dependencies]
+tar = "0.4"
 assert_cmd = "2.1.2"
