@@ -233,7 +233,7 @@ fn run(args: Cli) -> Result<()> {
                 None
             };
             let findings = output_checks::run_checks(
-                &args.dirs,
+                &args.dir,
                 box_present,
                 args.source_traj.as_deref(),
             )?;
