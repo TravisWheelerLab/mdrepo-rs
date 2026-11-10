@@ -13,7 +13,7 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
 
 ## 0.37.0 (unreleased)
 
-- **`mdr-process zero-xtc-box IN [OUT]`**: set every frame's box to zero
+- **`mdr-process zero-xtc-box IN [-o|--output FILE]`**: set every frame's box to zero
   in an XTC, or in each `.xtc` inside a tar (`full.tar`, `minimal.tar`),
   for a simulation with no box whose files carry junk boxes. cpptraj wrote
   an uninitialized box for box-less input (a DCD with the unit-cell flag
@@ -22,12 +22,12 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   others. The coordinates are fine, so only the 36 box bytes of each frame
   change; file and tar sizes, tar headers and every other byte stay the
   same.
-- Without OUT it only reports (per XTC: frames, boxes to zero, box kinds;
-  `--json`). With OUT it never writes IN: the copy is written as
-  `OUT.partial`, read back (same frames, every box zero, no byte changed
+- Without `--output` it only reports (per XTC: frames, boxes to zero, box
+  kinds; `--json`). With it, IN is never written: the copy is written as
+  `FILE.partial`, read back (same frames, every box zero, no byte changed
   outside a box field) and only then renamed. A file with a real-looking
   cell in any frame is refused, since that simulation has a box. An
-  existing OUT, a damaged frame or tar header, or a sparse tar member is
+  existing output file, a damaged frame or tar header, or a sparse tar member is
   an error.
 - Tar members found by ustar name + prefix, GNU long names and pax `path`
   / `size`.

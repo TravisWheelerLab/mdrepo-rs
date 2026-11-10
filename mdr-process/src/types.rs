@@ -137,7 +137,7 @@ pub enum Command {
 
     /// Set every frame's box to zero in an XTC, or in each .xtc inside a
     /// tar, for a simulation with no box whose files carry junk boxes
-    /// (cpptraj before simulation-processing #44). Without OUT, only
+    /// (cpptraj before simulation-processing #44). Without --output, only
     /// reports. Never writes IN; refuses a file with a real cell
     ZeroXtcBox(ZeroXtcBoxArgs),
 }
@@ -151,7 +151,7 @@ pub struct ZeroXtcBoxArgs {
 
     /// Where to write the patched copy (must not exist). Without it,
     /// nothing is written
-    #[arg(value_name = "OUT")]
+    #[arg(short, long, value_name = "FILE")]
     pub output: Option<PathBuf>,
 
     /// Write the per-XTC report as JSON

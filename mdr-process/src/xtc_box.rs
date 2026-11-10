@@ -338,7 +338,7 @@ fn refuse_cells(xtcs: &[Xtc]) -> Result<()> {
 }
 
 // --------------------------------------------------
-/// Report on `input` and, with `output`, write a copy whose boxes are all
+/// Report on `input` and, with `output` (`--output`), write a copy whose boxes are all
 /// zero. Returns the report made BEFORE patching.
 pub fn zero_boxes(input: &Path, output: Option<&Path>) -> Result<Vec<XtcReport>> {
     let xtcs = find_xtcs(input)?;

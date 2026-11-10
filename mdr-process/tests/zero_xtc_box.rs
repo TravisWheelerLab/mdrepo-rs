@@ -1,4 +1,4 @@
-//! `mdr-process zero-xtc-box IN [OUT]`: report, or write a copy whose
+//! `mdr-process zero-xtc-box IN [-o FILE]`: report, or write a copy whose
 //! boxes are zero. The rules are unit-tested in src/xtc_box.rs; these check
 //! the command line: exit codes, what is written, what is refused.
 
@@ -77,7 +77,12 @@ fn writes_a_zeroed_copy() -> Result<()> {
     let d = tempfile::tempdir()?;
     let i = xtc(&d.path().join("full.xtc"), &[INF, INF, INF])?;
     let o = d.path().join("fixed.xtc");
-    let out = cargo_bin_cmd!().arg(COMMAND).arg(&i).arg(&o).output()?;
+    let out = cargo_bin_cmd!()
+        .arg(COMMAND)
+        .arg(&i)
+        .arg("-o")
+        .arg(&o)
+        .output()?;
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(
         stdout(&out).contains("3 box(es) zeroed"),
@@ -110,7 +115,12 @@ fn a_real_cell_is_refused() -> Result<()> {
     let d = tempfile::tempdir()?;
     let i = xtc(&d.path().join("full.xtc"), &[CUBE, INF])?;
     let o = d.path().join("fixed.xtc");
-    let out = cargo_bin_cmd!().arg(COMMAND).arg(&i).arg(&o).output()?;
+    let out = cargo_bin_cmd!()
+        .arg(COMMAND)
+        .arg(&i)
+        .arg("-o")
+        .arg(&o)
+        .output()?;
     assert!(!out.status.success());
     assert!(
         stderr(&out).contains("real-looking cell"),
@@ -128,7 +138,12 @@ fn an_existing_output_is_kept() -> Result<()> {
     let i = xtc(&d.path().join("full.xtc"), &[INF])?;
     let o = d.path().join("fixed.xtc");
     fs::write(&o, "keep")?;
-    let out = cargo_bin_cmd!().arg(COMMAND).arg(&i).arg(&o).output()?;
+    let out = cargo_bin_cmd!()
+        .arg(COMMAND)
+        .arg(&i)
+        .arg("-o")
+        .arg(&o)
+        .output()?;
     assert!(!out.status.success());
     assert!(stderr(&out).contains("already exists"), "{}", stderr(&out));
     assert_eq!(fs::read_to_string(&o)?, "keep");
@@ -175,7 +190,48 @@ fn help_says_it_never_writes_the_input() -> Result<()> {
     let out = cargo_bin_cmd!().args([COMMAND, "--help"]).output()?;
     assert!(out.status.success());
     let text = stdout(&out);
-    assert!(text.contains("<IN>") && text.contains("[OUT]"), "{text}");
+    assert!(text.contains("<IN>"), "{text}");
+    assert!(text.contains("-o, --output <FILE>"), "{text}");
     assert!(text.contains("Never writes IN"), "{text}");
+    Ok(())
+}
+
+// --------------------------------------------------
+#[test]
+fn a_second_positional_is_refused() -> Result<()> {
+    // The output is named (-o/--output), never a bare second argument
+    let d = tempfile::tempdir()?;
+    let i = xtc(&d.path().join("full.xtc"), &[INF])?;
+    let o = d.path().join("fixed.xtc");
+    let out = cargo_bin_cmd!().arg(COMMAND).arg(&i).arg(&o).output()?;
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("unexpected argument"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!o.exists());
+    Ok(())
+}
+
+// --------------------------------------------------
+#[test]
+fn long_output_flag_works() -> Result<()> {
+    let d = tempfile::tempdir()?;
+    let i = xtc(&d.path().join("full.xtc"), &[INF, INF])?;
+    let o = d.path().join("fixed.xtc");
+    let out = cargo_bin_cmd!()
+        .arg(COMMAND)
+        .arg("--output")
+        .arg(&o)
+        .arg(&i)
+        .output()?;
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("2 box(es) zeroed"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(o.exists());
     Ok(())
 }
