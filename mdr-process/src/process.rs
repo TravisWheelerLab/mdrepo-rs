@@ -412,15 +412,21 @@ fn save_mmcif_input(
 /// md_uniprot, in chain order, as the splitter numbers the chains), and
 /// its ligands, placed on the residues `residues` describes (`place_ligands`).
 /// For an import, after it; for the backfill (`standardize`), as stored.
-/// Returns the input, the ligands left unplaced, and those placed by
-/// connectivity (name, residue).
+/// Returns the input, the ligands left unplaced, those placed by
+/// connectivity (name, residue), and every placed ligand's (md_ligand.id,
+/// residue name), for its copy count.
 pub fn mmcif_input_from_db(
     conn: &mut diesel::PgConnection,
     sim_id: i64,
     title: &str,
     residues: &LigandResidues,
     same_bonds: &mut dyn FnMut(&str, &str) -> Result<bool>,
-) -> Result<(mmcif_writer::MmcifInput, Vec<String>, PlacedByConnectivity)> {
+) -> Result<(
+    mmcif_writer::MmcifInput,
+    Vec<String>,
+    PlacedByConnectivity,
+    PlacedIds,
+)> {
     let mut references = vec![];
     for chain in mdr_db::ops::list_chains_for_simulation(conn, sim_id)?
         .into_iter()
@@ -444,6 +450,7 @@ pub fn mmcif_input_from_db(
     let stored = stored
         .into_iter()
         .map(|l| StoredLigand {
+            id: l.id,
             name: l.name,
             smiles: l.smiles,
             inchikey: l.inchikey,
@@ -459,6 +466,7 @@ pub fn mmcif_input_from_db(
         },
         placed.unplaced,
         placed.by_connectivity,
+        placed.placed_ids,
     ))
 }
 
@@ -467,9 +475,14 @@ pub fn mmcif_input_from_db(
 /// connectivity
 pub type PlacedByConnectivity = Vec<(String, String)>;
 
+/// (md_ligand.id, residue name) of each ligand `place_ligands` placed
+pub type PlacedIds = Vec<(i64, String)>;
+
 /// A stored ligand, as `place_ligands` needs it
 #[derive(Debug, Clone, PartialEq)]
 pub struct StoredLigand {
+    /// md_ligand.id, so a count can be written back to the row
+    pub id: i64,
     pub name: String,
     pub smiles: Option<String>,
     pub inchikey: Option<String>,
@@ -482,6 +495,7 @@ pub struct Placement {
     /// Small molecules left without a residue, by name, for the warning
     pub unplaced: Vec<String>,
     pub by_connectivity: PlacedByConnectivity,
+    pub placed_ids: PlacedIds,
 }
 
 // --------------------------------------------------
@@ -564,16 +578,41 @@ pub fn place_ligands(
         }
 
         match resname {
-            Some(resname) => out.ligands.push(mmcif_writer::LigandInfo {
-                resname,
-                name: l.name,
-                smiles: l.smiles,
-                inchikey: l.inchikey,
-            }),
+            Some(resname) => {
+                out.placed_ids.push((l.id, resname.clone()));
+                out.ligands.push(mmcif_writer::LigandInfo {
+                    resname,
+                    name: l.name,
+                    smiles: l.smiles,
+                    inchikey: l.inchikey,
+                })
+            }
             None => out.unplaced.push(l.name),
         }
     }
     out
+}
+
+// --------------------------------------------------
+/// Each placed ligand's copy count: the residues of the name it was placed
+/// on, in the full structure. None when the structure holds none of them,
+/// which placement should make impossible, so the row stays "not counted"
+/// rather than getting a guess.
+pub fn ligand_copies(
+    placed_ids: &[(i64, String)],
+    counts: &mmcif_writer::MmcifCounts,
+) -> Vec<(i64, Option<i32>)> {
+    placed_ids
+        .iter()
+        .map(|(id, resname)| {
+            let copies = counts
+                .residues_by_comp
+                .get(resname)
+                .and_then(|&n| i32::try_from(n).ok())
+                .filter(|&n| n >= 1);
+            (*id, copies)
+        })
+        .collect()
 }
 
 // --------------------------------------------------
@@ -604,7 +643,7 @@ fn add_import_mmcifs(
     let url = env::var(env_key).map_err(|e| anyhow!("{env_key}: {e}"))?;
     let mut conn =
         mdr_db::connect(&url).map_err(|e| anyhow!("Failed to connect: {e}"))?;
-    let (input, unplaced, by_connectivity) = mmcif_input_from_db(
+    let (input, unplaced, by_connectivity, placed_ids) = mmcif_input_from_db(
         &mut conn,
         i64::from(sim_id),
         &saved.title,
@@ -621,7 +660,7 @@ fn add_import_mmcifs(
     let dir = Path::new(&example.directory_name);
     let bonds = dir.join("bonds.tsv");
     let (full, min) = (dir.join("full.mmcif"), dir.join("minimal.mmcif"));
-    if let Err(e) = mmcif_writer::write_mmcifs(
+    let full_counts = match mmcif_writer::write_mmcifs(
         &example.full_pdb,
         &example.min_pdb,
         bonds.is_file().then_some(bonds.as_path()),
@@ -629,8 +668,17 @@ fn add_import_mmcifs(
         &min,
         &input,
     ) {
-        warn!("No mmCIF: {e}");
-        return Ok(vec![format!("The standard mmCIF was not written: {e}")]);
+        Ok((full_counts, _)) => full_counts,
+        Err(e) => {
+            warn!("No mmCIF: {e}");
+            return Ok(vec![format!("The standard mmCIF was not written: {e}")]);
+        }
+    };
+
+    // Each placed ligand's copies, from the residues it was placed on
+    // (mdrepo-rs#105). A ligand not placed stays null: not counted.
+    for (ligand_id, copies) in ligand_copies(&placed_ids, &full_counts) {
+        mdr_db::ops::set_ligand_num_copies(&mut conn, ligand_id, copies)?;
     }
 
     let mut files = vec![];
@@ -1618,7 +1666,7 @@ fn standardize_mmcif(
     } else {
         LigandResidues::default()
     };
-    let (input, unplaced, by_connectivity) =
+    let (input, unplaced, by_connectivity, _) =
         mmcif_input_from_db(&mut conn, sim_id, &title, &residues, &mut |a, b| {
             same_connectivity(a, b, script_dir, uv)
         })?;
@@ -6317,7 +6365,7 @@ mol_id: No ligand-like residue found in minimal.pdb
 mod place_ligands_tests {
     use super::{
         InferredLigandStructure, LigandResidues, MmcifImportInput, Placement,
-        StoredLigand, place_ligands, same_connectivity,
+        StoredLigand, ligand_copies, mmcif_writer, place_ligands, same_connectivity,
     };
     use anyhow::{Result, bail};
     use std::{cell::RefCell, collections::HashMap, path::PathBuf};
@@ -6327,6 +6375,7 @@ mod place_ligands_tests {
 
     fn stored(name: &str, smiles: Option<&str>, key: Option<&str>) -> StoredLigand {
         StoredLigand {
+            id: 0,
             name: name.to_string(),
             smiles: smiles.map(String::from),
             inchikey: key.map(String::from),
@@ -6504,6 +6553,44 @@ mod place_ligands_tests {
         let seen: Vec<String> =
             stub.calls.borrow().iter().map(|(_, b)| b.clone()).collect();
         assert_eq!(seen, vec!["a", "c"]);
+    }
+
+    #[test]
+    fn placed_ligands_carry_their_row_ids_and_unplaced_do_not() {
+        let r = residues(&[(NAP_KEY, "NAP", "nap")]);
+        let stub = Stub::new(&[]);
+        let mut nadp = stored("NADP", Some("s"), Some(NAP_KEY));
+        nadp.id = 104462;
+        let mut other = stored("other", Some("x"), Some("NOMATCHNOMATCH-UHFFFAOYSA-N"));
+        other.id = 104463;
+        let out = place(vec![nadp, other], &r, &stub);
+        assert_eq!(out.placed_ids, vec![(104462, "NAP".to_string())]);
+        assert_eq!(out.unplaced, vec!["other".to_string()]);
+    }
+
+    #[test]
+    fn ligand_copies_come_from_the_residues_of_the_placed_name() {
+        let counts = mmcif_writer::MmcifCounts {
+            num_atoms: 0,
+            num_entities: 0,
+            num_chains: 0,
+            num_links: 0,
+            residues_by_comp: std::collections::BTreeMap::from([
+                ("BNZ".to_string(), 21),
+                ("LI0".to_string(), 21),
+                ("NA".to_string(), 4),
+            ]),
+        };
+        let placed = vec![
+            (1, "BNZ".to_string()),
+            (2, "LI0".to_string()),
+            // Placed on a name the full structure lacks: left uncounted
+            (3, "XXX".to_string()),
+        ];
+        assert_eq!(
+            ligand_copies(&placed, &counts),
+            vec![(1, Some(21)), (2, Some(21)), (3, None)]
+        );
     }
 
     #[test]

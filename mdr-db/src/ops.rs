@@ -711,6 +711,17 @@ pub fn update_ligand(
         .get_result(conn)
 }
 
+/// Set (or, with None, clear) one ligand's copy count
+pub fn set_ligand_num_copies(
+    conn: &mut PgConnection,
+    rid: i64,
+    copies: Option<i32>,
+) -> QueryResult<usize> {
+    diesel::update(md_ligand::table.find(rid))
+        .set(md_ligand::num_copies.eq(copies))
+        .execute(conn)
+}
+
 pub fn delete_ligand(conn: &mut PgConnection, rid: i64) -> QueryResult<usize> {
     diesel::delete(md_ligand::table.find(rid)).execute(conn)
 }

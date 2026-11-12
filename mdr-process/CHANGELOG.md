@@ -11,6 +11,24 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.40.0 (unreleased)
+
+**Needs md-repo-app 0303 (`md_ligand.num_copies`) on the database first.**
+Every ligand read now selects the column, so this build fails against a
+database without it -- the MDR-108 backfill's `standardize` included.
+Install it on a host only after 0303 is deployed to that host's database.
+
+- **Each ligand's copy number is recorded** (mdrepo-rs#105). After an
+  import writes full.mmcif, every ligand placed on a residue name gets
+  `md_ligand.num_copies`: the number of residues of that name in the full
+  structure (MDR00081993: 21 for each of its five probe fragments). The
+  writer counts them as it assigns entities (`MmcifCounts.residues_by_comp`,
+  every non-polymer, non-water residue name, ions included). A ligand not
+  placed, a chain ligand, and every simulation imported before this stay
+  NULL, "not counted". The backfill (`standardize`) does not write it;
+  existing simulations get a separate pass. A molecule split over several
+  residues is counted once per residue.
+
 ## 0.39.0 (unreleased)
 
 - **A fusion's junction is cut where the two alignments match best**, rather

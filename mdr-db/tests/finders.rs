@@ -1757,3 +1757,61 @@ fn upsert_creator_finds_a_name_that_rust_and_postgres_lowercase_differently() {
     let again = ops::upsert_creator(&mut c, mk()).unwrap();
     assert_eq!(first, again);
 }
+
+// ── md_ligand.num_copies (md-repo-app 0303, mdrepo-rs#105) ────────────────────
+
+#[test]
+fn ligand_num_copies_starts_null_and_is_set_and_cleared() {
+    let mut c = conn_or_skip!();
+    let sim = seed_sim(&mut c);
+    let lig = ops::insert_ligand(
+        &mut c,
+        NewLigand {
+            name: "BNZ".into(),
+            smiles: Some("c1ccccc1".into()),
+            inchi: None,
+            inchikey: Some("UHOVQNZJYSORNB-UHFFFAOYSA-N".into()),
+            declared_identity: None,
+            identity_software: None,
+            simulation_id: sim,
+            chain_id: None,
+        },
+    )
+    .unwrap();
+    // An insert never names the column: "not counted"
+    assert_eq!(lig.num_copies, None);
+
+    assert_eq!(
+        ops::set_ligand_num_copies(&mut c, lig.id, Some(21)).unwrap(),
+        1
+    );
+    assert_eq!(
+        ops::get_ligand(&mut c, lig.id).unwrap().num_copies,
+        Some(21)
+    );
+
+    assert_eq!(ops::set_ligand_num_copies(&mut c, lig.id, None).unwrap(), 1);
+    assert_eq!(ops::get_ligand(&mut c, lig.id).unwrap().num_copies, None);
+}
+
+#[test]
+fn ligand_num_copies_of_zero_is_refused() {
+    let mut c = conn_or_skip!();
+    let sim = seed_sim(&mut c);
+    let lig = ops::insert_ligand(
+        &mut c,
+        NewLigand {
+            name: "BNZ".into(),
+            smiles: Some("c1ccccc1".into()),
+            inchi: None,
+            inchikey: None,
+            declared_identity: None,
+            identity_software: None,
+            simulation_id: sim,
+            chain_id: None,
+        },
+    )
+    .unwrap();
+    // The CHECK: a ligand that is present is present at least once
+    assert!(ops::set_ligand_num_copies(&mut c, lig.id, Some(0)).is_err());
+}

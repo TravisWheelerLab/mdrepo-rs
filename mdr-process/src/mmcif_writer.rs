@@ -85,6 +85,11 @@ pub struct MmcifCounts {
     pub num_entities: usize,
     pub num_chains: usize,
     pub num_links: usize,
+    /// Residues of each non-polymer, non-water residue name: a ligand's
+    /// copies (mdrepo-rs#105). Ions included, though their copies share one
+    /// asym per ion type. A molecule split over several residues counts once
+    /// per residue.
+    pub residues_by_comp: BTreeMap<String, usize>,
 }
 
 // --------------------------------------------------
@@ -284,6 +289,7 @@ pub fn mmcif_text(
     let mut entities: Vec<EntityKind> = vec![];
     let mut polymer_entity: HashMap<(String, Vec<String>), usize> = HashMap::new();
     let mut nonpoly_entity: HashMap<String, usize> = HashMap::new();
+    let mut residues_by_comp: BTreeMap<String, usize> = BTreeMap::new();
     let mut water_entity: Option<usize> = None;
     let mut chain_monomers: Vec<Vec<String>> = vec![vec![]; chains.len()];
     for res in &residues {
@@ -370,6 +376,7 @@ pub fn mmcif_text(
             }
         } else {
             let comp = first.resname.clone();
+            *residues_by_comp.entry(comp.clone()).or_default() += 1;
             let e = *nonpoly_entity.entry(comp.clone()).or_insert_with(|| {
                 entities.push(EntityKind::NonPolymer { comp: comp.clone() });
                 entities.len() - 1
@@ -895,6 +902,7 @@ pub fn mmcif_text(
         num_entities: entities.len(),
         num_chains: asym_entity.len(),
         num_links: conn_rows.len(),
+        residues_by_comp,
     };
     Ok((out, counts))
 }
@@ -1199,6 +1207,32 @@ mod tests {
         assert!(
             text.lines()
                 .any(|l| l.starts_with("ATOM 23 ") && l.contains(" WAT "))
+        );
+    }
+
+    #[test]
+    fn ligand_copies_are_counted_per_residue_name() {
+        // The dimer's one LIG, two more copies of it, and two sodium ions;
+        // the polymer and the waters are not counted
+        let mut pdb = dimer().replace("END\n", "");
+        let mut n = 24;
+        for num in [10, 11] {
+            for (name, el, dx) in [("C1", "C", 0.0), ("O1", "O", 1.2)] {
+                n += 1;
+                pdb +=
+                    &atom(n, name, "LIG", ' ', num, el, 300.0 + 10.0 * num as f64 + dx);
+            }
+        }
+        for num in [20, 21] {
+            n += 1;
+            pdb += &atom(n, "NA", "NA", ' ', num, "NA", 500.0 + 10.0 * num as f64);
+        }
+        pdb += "END\n";
+
+        let (_, counts) = mmcif_text(&pdb, &MmcifInput::default(), &[]).unwrap();
+        assert_eq!(
+            counts.residues_by_comp,
+            BTreeMap::from([("LIG".to_string(), 3), ("NA".to_string(), 2)])
         );
     }
 
