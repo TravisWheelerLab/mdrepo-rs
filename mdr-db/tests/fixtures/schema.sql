@@ -40,6 +40,9 @@
 -- (md_simulation.is_agent_imported boolean DEFAULT false NOT NULL; its
 -- index is left out, as no test depends on it).
 --
+-- Since then (2026-11-12, by hand): md-repo-app 0303
+-- (md_ligand.num_copies integer, nullable, CHECK NULL or >= 1).
+--
 --
 -- PostgreSQL database dump
 --
@@ -1269,6 +1272,8 @@ CREATE TABLE public.md_ligand (
     inchi text,
     inchikey text,
     chain_id bigint,
+    num_copies integer,
+    CONSTRAINT md_ligand_num_copies_positive CHECK (((num_copies IS NULL) OR (num_copies >= 1))),
     CONSTRAINT md_ligand_smiles_or_chain CHECK (((smiles IS NOT NULL) OR (chain_id IS NOT NULL)))
 );
 

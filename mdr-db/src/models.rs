@@ -297,8 +297,14 @@ pub struct Ligand {
     pub identity_software: Option<String>,
     pub simulation_id: i64,
     pub chain_id: Option<i64>,
+    /// How many copies of the molecule the simulation's structure holds
+    /// (md-repo-app 0303, mdrepo-rs#105). Null is "not counted", never one:
+    /// set after the import from the residues the ligand was placed on.
+    pub num_copies: Option<i32>,
 }
 
+/// Not `num_copies`: it is counted after the ligand is placed, so an insert
+/// leaves it null
 #[derive(Debug, Insertable, Deserialize)]
 #[diesel(table_name = md_ligand)]
 pub struct NewLigand {

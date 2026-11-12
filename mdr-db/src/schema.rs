@@ -97,6 +97,7 @@ diesel::table! {
         identity_software -> Nullable<Text>,
         simulation_id -> Int8,
         chain_id -> Nullable<Int8>,
+        num_copies -> Nullable<Int4>,
     }
 }
 
