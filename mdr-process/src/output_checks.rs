@@ -29,7 +29,9 @@
 //!   same residues (numbering may differ -- .psf restarts it per segment,
 //!   cpptraj's .pdb does not -- reported as info); elements are real element
 //!   symbols; .pdb and .mmcif coordinates equal the trajectory's first frame
-//!   within the formats' precision. .gro files are not checked: they are to
+//!   within the formats' precision, after taking out a shift of the whole
+//!   structure of up to 0.1 A (gmx trjconv's fit, reported as info). .gro
+//!   files are not checked: they are to
 //!   be deprecated, and full.gro is the submitter's structure, not frame 0.
 //!
 //! Read-only. A missing file is skipped, so the same checks run on a fresh
@@ -49,6 +51,10 @@ use std::{
 /// XTC stores nm to 3 decimals by default (0.01 A steps) and PDB A to 3, so
 /// the worst honest disagreement is about 0.01 A; 0.02 A leaves room.
 pub const COORD_TOL_A: f64 = 0.02;
+/// The most the whole structure may be shifted from frame 0 (see
+/// [`compare_coords`]). Seen: 0.028 A (DDD 4gm3); 0.1 A leaves room and is
+/// still far below any real misplacement.
+pub const SHIFT_TOL_A: f64 = 0.1;
 const BOX_LEN_RTOL: f64 = 2e-3;
 const BOX_ANGLE_TOL_DEG: f64 = 0.2;
 const ZERO: f64 = 1e-6;
@@ -936,22 +942,132 @@ pub fn check_atom_set(
             if xyz.len() != fx.len() {
                 continue;
             }
-            let dev: Vec<f64> = xyz
-                .iter()
-                .zip(fx.iter())
-                .map(|(a, b)| (0..3).map(|k| (a[k] - b[k]).abs()).fold(0.0, f64::max))
-                .collect();
-            let (worst, max) = dev.iter().enumerate().fold((0, 0.0), |acc, (i, &d)| {
-                if d > acc.1 { (i, d) } else { acc }
-            });
-            if max > COORD_TOL_A {
-                let n = dev.iter().filter(|&&d| d > COORD_TOL_A).count();
-                out.push(finding("atoms", Level::Fail, &s.name, format!(
-                    "coordinates differ from {} frame 0 by up to {max:.3} A (atom {}); {n} atoms beyond {COORD_TOL_A} A", tr.name, worst + 1)));
+            if let Some(f) = coord_finding(&compare_coords(xyz, fx), &s.name, &tr.name)
+            {
+                out.push(f);
             }
         }
     }
     out
+}
+
+/// How a structure's coordinates differ from a trajectory's first frame
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoordDiff {
+    /// Mean of (structure - frame) per axis: a shift of the whole structure
+    pub shift: Xyz,
+    /// Largest per-axis difference before the shift is taken out
+    pub raw_max: f64,
+    /// Largest per-axis difference after the shift is taken out, its atom
+    /// (0-based), and how many atoms are beyond COORD_TOL_A after it
+    pub max: f64,
+    pub worst: usize,
+    pub beyond: usize,
+    /// A coordinate or the shift is NaN or infinite
+    pub non_finite: bool,
+}
+
+/// Compare per atom after taking out the mean difference. gmx trjconv's
+/// `-fit rot+trans` (minimal.xtc) can leave frame 0 shifted as a whole by a
+/// few hundredths of an angstrom from minimal.pdb on large systems (DDD 4gm3:
+/// 0.028 A in z over 37,690 atoms, 0.0055 A left after the shift; 3tpu
+/// 0.018 A). A shift moves every atom the same way; damage does not, so it
+/// stays in what is left. The two lists must be the same length.
+pub fn compare_coords(xyz: &[Xyz], frame: &[Xyz]) -> CoordDiff {
+    let n = xyz.len().min(frame.len());
+    let mut shift = [0.0; 3];
+    let mut non_finite = false;
+    for (a, b) in xyz.iter().zip(frame).take(n) {
+        for k in 0..3 {
+            let d = a[k] - b[k];
+            if !d.is_finite() {
+                non_finite = true;
+            }
+            shift[k] += d;
+        }
+    }
+    if n > 0 {
+        for s in shift.iter_mut() {
+            *s /= n as f64;
+        }
+    }
+    let (mut raw_max, mut max, mut worst, mut beyond) = (0.0f64, 0.0f64, 0, 0);
+    for (i, (a, b)) in xyz.iter().zip(frame).take(n).enumerate() {
+        let mut dev = 0.0f64;
+        for k in 0..3 {
+            let d = a[k] - b[k];
+            raw_max = raw_max.max(d.abs());
+            dev = dev.max((d - shift[k]).abs());
+        }
+        if dev > max {
+            (max, worst) = (dev, i);
+        }
+        if dev > COORD_TOL_A {
+            beyond += 1;
+        }
+    }
+    non_finite |= shift.iter().any(|s| !s.is_finite());
+    CoordDiff {
+        shift,
+        raw_max,
+        max,
+        worst,
+        beyond,
+        non_finite,
+    }
+}
+
+/// FAIL when the coordinates are not finite, when the whole-structure shift
+/// is over SHIFT_TOL_A on any axis, or when any atom is still more than
+/// COORD_TOL_A off after the shift; INFO when a shift alone put the raw
+/// difference over COORD_TOL_A; else nothing.
+pub fn coord_finding(d: &CoordDiff, file: &str, traj: &str) -> Option<Finding> {
+    let shift_txt = format!(
+        "({:.3}, {:.3}, {:.3}) A",
+        d.shift[0], d.shift[1], d.shift[2]
+    );
+    let big_shift = d.shift.iter().map(|s| s.abs()).fold(0.0, f64::max);
+    if d.non_finite {
+        Some(finding(
+            "atoms",
+            Level::Fail,
+            file,
+            format!("coordinates vs {traj} frame 0 are not finite (NaN or infinite)"),
+        ))
+    } else if big_shift > SHIFT_TOL_A {
+        Some(finding(
+            "atoms",
+            Level::Fail,
+            file,
+            format!(
+                "shifted as a whole from {traj} frame 0 by {shift_txt}, over {SHIFT_TOL_A} A"
+            ),
+        ))
+    } else if d.max > COORD_TOL_A {
+        Some(finding(
+            "atoms",
+            Level::Fail,
+            file,
+            format!(
+                "coordinates differ from {traj} frame 0 by up to {:.3} A (atom {}) after a whole-structure shift of {shift_txt}; {} atoms beyond {COORD_TOL_A} A",
+                d.max,
+                d.worst + 1,
+                d.beyond
+            ),
+        ))
+    } else if d.raw_max > COORD_TOL_A {
+        Some(finding(
+            "atoms",
+            Level::Info,
+            file,
+            format!(
+                "shifted as a whole from {traj} frame 0 by {shift_txt} (raw difference up to {:.3} A); every atom within {COORD_TOL_A} A after the shift",
+                d.raw_max
+            ),
+        ))
+    } else {
+        None
+    }
 }
 
 pub fn check_atoms(files: &HashMap<String, PathBuf>, trajs: &[Frames]) -> Vec<Finding> {
@@ -1876,6 +1992,280 @@ mod tests {
                 .filter(|x| x.level == Level::Fail)
                 .collect();
             assert!(fails.is_empty(), "{d}: {fails:?}");
+        }
+    }
+
+    // --- whole-structure shift (DDD 3tpu/4gm3, 2026-11-12) -------------------
+    fn shifted(xyz: &[Xyz], t: Xyz) -> Vec<Xyz> {
+        xyz.iter()
+            .map(|a| [a[0] + t[0], a[1] + t[1], a[2] + t[2]])
+            .collect()
+    }
+
+    /// A deterministic +-0.004 A pattern, like XTC/PDB rounding
+    fn jitter(xyz: &[Xyz]) -> Vec<Xyz> {
+        xyz.iter()
+            .enumerate()
+            .map(|(i, a)| {
+                let j = |k: usize| if (i + k) % 2 == 0 { 0.004 } else { -0.004 };
+                [a[0] + j(0), a[1] + j(1), a[2] + j(2)]
+            })
+            .collect()
+    }
+
+    fn big(n: usize) -> Vec<Xyz> {
+        (0..n)
+            .map(|i| {
+                let f = i as f64;
+                [
+                    20.0 + (f * 0.37) % 80.0,
+                    21.0 + (f * 0.53) % 117.0,
+                    22.0 + (f * 0.71) % 143.0,
+                ]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn compare_identical_is_all_zero() {
+        let d = compare_coords(&XYZ, &XYZ);
+        assert_eq!(
+            (d.shift, d.raw_max, d.max, d.beyond),
+            ([0.0; 3], 0.0, 0.0, 0)
+        );
+        assert!(!d.non_finite);
+        assert_eq!(coord_finding(&d, "minimal.pdb", "minimal.xtc"), None);
+    }
+
+    #[test]
+    fn compare_takes_out_a_uniform_shift() {
+        let frame = big(1000);
+        let pdb = shifted(&frame, [0.0, -0.003, 0.028]);
+        let d = compare_coords(&pdb, &frame);
+        assert!((d.shift[2] - 0.028).abs() < 1e-9 && (d.shift[1] + 0.003).abs() < 1e-9);
+        assert!((d.raw_max - 0.028).abs() < 1e-9);
+        assert!(d.max < 1e-9 && d.beyond == 0);
+    }
+
+    #[test]
+    fn a_4gm3_like_shift_is_info_not_fail() {
+        // 0.028 A in z plus rounding noise, as minimal.pdb vs minimal.xtc
+        let frame = big(5000);
+        let pdb = jitter(&shifted(&frame, [-0.0005, -0.0033, 0.0276]));
+        let d = compare_coords(&pdb, &frame);
+        assert!(d.raw_max > COORD_TOL_A, "{d:?}");
+        assert!(d.max < 0.006, "{d:?}");
+        let f = coord_finding(&d, "minimal.pdb", "minimal.xtc").unwrap();
+        assert_eq!(f.level, Level::Info, "{f:?}");
+        assert!(
+            f.message.contains("shifted as a whole") && f.message.contains("0.028"),
+            "{}",
+            f.message
+        );
+    }
+
+    #[test]
+    fn a_shift_over_the_shift_limit_fails() {
+        let frame = big(100);
+        let d = compare_coords(&shifted(&frame, [0.0, 0.15, 0.0]), &frame);
+        let f = coord_finding(&d, "minimal.pdb", "minimal.xtc").unwrap();
+        assert_eq!(f.level, Level::Fail);
+        assert!(f.message.contains("over 0.1 A"), "{}", f.message);
+    }
+
+    #[test]
+    fn a_negative_shift_over_the_limit_fails() {
+        let frame = big(100);
+        let d = compare_coords(&shifted(&frame, [-0.2, 0.0, 0.0]), &frame);
+        assert_eq!(coord_finding(&d, "a", "b").unwrap().level, Level::Fail);
+    }
+
+    #[test]
+    fn a_shift_just_under_the_limit_passes_as_info() {
+        let frame = big(100);
+        let d = compare_coords(&shifted(&frame, [0.0, 0.0, 0.099]), &frame);
+        assert_eq!(coord_finding(&d, "a", "b").unwrap().level, Level::Info);
+    }
+
+    #[test]
+    fn a_small_shift_under_the_tolerance_says_nothing() {
+        let frame = big(100);
+        let d = compare_coords(&shifted(&frame, [0.01, 0.0, 0.0]), &frame);
+        assert_eq!(coord_finding(&d, "a", "b"), None);
+    }
+
+    #[test]
+    fn one_moved_atom_still_fails_in_a_big_structure() {
+        let frame = big(5000);
+        let mut pdb = jitter(&frame);
+        pdb[1234][0] += 0.05;
+        let d = compare_coords(&pdb, &frame);
+        assert_eq!((d.worst, d.beyond), (1234, 1), "{d:?}");
+        let f = coord_finding(&d, "minimal.pdb", "minimal.xtc").unwrap();
+        assert_eq!(f.level, Level::Fail);
+        assert!(
+            f.message.contains("atom 1235") && f.message.contains("1 atoms beyond"),
+            "{}",
+            f.message
+        );
+    }
+
+    #[test]
+    fn a_moved_atom_on_top_of_a_shift_still_fails() {
+        let frame = big(5000);
+        let mut pdb = shifted(&frame, [0.0, 0.0, 0.028]);
+        pdb[7][1] += 0.04;
+        let d = compare_coords(&pdb, &frame);
+        let f = coord_finding(&d, "a", "b").unwrap();
+        assert_eq!(f.level, Level::Fail, "{f:?}");
+        assert!(
+            f.message.contains("after a whole-structure shift"),
+            "{}",
+            f.message
+        );
+    }
+
+    #[test]
+    fn a_moved_chain_is_not_a_shift() {
+        // A quarter of the atoms moved 2 A: the mean is 0.5 A (over the
+        // shift limit) and the rest is 1.5 A off either way
+        let frame = big(400);
+        let mut pdb = frame.clone();
+        for a in pdb.iter_mut().take(100) {
+            a[0] += 2.0;
+        }
+        let f = coord_finding(&compare_coords(&pdb, &frame), "a", "b").unwrap();
+        assert_eq!(f.level, Level::Fail);
+    }
+
+    #[test]
+    fn a_far_moved_chain_in_a_huge_system_still_fails() {
+        // Damaged DDD last frames: a chain 1e4 A away. Even as 1% of the
+        // atoms the mean shift is far over the limit, and so is the rest.
+        let frame = big(10000);
+        let mut pdb = frame.clone();
+        for a in pdb.iter_mut().take(100) {
+            a[2] += 1.0e4;
+        }
+        let d = compare_coords(&pdb, &frame);
+        assert!(d.max > 1000.0);
+        assert_eq!(coord_finding(&d, "a", "b").unwrap().level, Level::Fail);
+    }
+
+    #[test]
+    fn a_small_spread_damage_that_averages_out_still_fails() {
+        // Half the atoms +0.05, half -0.05 in x: mean 0, every atom off
+        let frame = big(1000);
+        let pdb: Vec<Xyz> = frame
+            .iter()
+            .enumerate()
+            .map(|(i, a)| [a[0] + if i % 2 == 0 { 0.05 } else { -0.05 }, a[1], a[2]])
+            .collect();
+        let d = compare_coords(&pdb, &frame);
+        assert!(d.shift[0].abs() < 1e-9 && d.beyond == 1000, "{d:?}");
+        assert_eq!(coord_finding(&d, "a", "b").unwrap().level, Level::Fail);
+    }
+
+    #[test]
+    fn non_finite_coordinates_fail() {
+        let mut pdb = XYZ.to_vec();
+        pdb[2][1] = f64::NAN;
+        let d = compare_coords(&pdb, &XYZ);
+        assert!(d.non_finite);
+        let f = coord_finding(&d, "minimal.pdb", "minimal.xtc").unwrap();
+        assert!(
+            f.level == Level::Fail && f.message.contains("not finite"),
+            "{f:?}"
+        );
+    }
+
+    #[test]
+    fn infinite_frame_coordinates_fail() {
+        let mut frame = XYZ.to_vec();
+        frame[0][0] = f64::INFINITY;
+        let d = compare_coords(&XYZ, &frame);
+        assert_eq!(coord_finding(&d, "a", "b").unwrap().level, Level::Fail);
+    }
+
+    #[test]
+    fn empty_lists_compare_clean() {
+        let d = compare_coords(&[], &[]);
+        assert_eq!(
+            (d.shift, d.max, d.beyond, d.non_finite),
+            ([0.0; 3], 0.0, 0, false)
+        );
+        assert_eq!(coord_finding(&d, "a", "b"), None);
+    }
+
+    #[test]
+    fn a_single_atom_off_is_only_a_shift() {
+        // One atom: any difference is its own mean; within the shift limit
+        // it is reported, not failed
+        let d = compare_coords(&[[1.0, 1.0, 1.05]], &[[1.0, 1.0, 1.0]]);
+        assert!(d.max < 1e-9);
+        assert_eq!(coord_finding(&d, "a", "b").unwrap().level, Level::Info);
+    }
+
+    #[test]
+    fn shifted_minimal_pdb_set_passes_with_info() {
+        // Whole file set: minimal.pdb shifted 0.03 A in z vs minimal.xtc
+        let d = tempfile::tempdir().unwrap();
+        let s = full_set(&d.path().join("s"), CUBE, C50);
+        let moved: Vec<Xyz> = shifted(&XYZ[..5], [0.0, 0.0, 0.03]);
+        write_pdb(&s.join("minimal.pdb"), &ATOMS[..5], &moved, None, 1);
+        let all = run(&s, None);
+        assert_eq!(levels(&all, Some("atoms")), vec![], "{all:?}");
+        assert!(
+            all.iter().any(|x| x.level == Level::Info
+                && x.file == "minimal.pdb"
+                && x.message.contains("shifted as a whole")),
+            "{all:?}"
+        );
+    }
+
+    #[test]
+    fn far_shifted_minimal_pdb_set_fails() {
+        let d = tempfile::tempdir().unwrap();
+        let s = full_set(&d.path().join("s"), CUBE, C50);
+        let moved: Vec<Xyz> = shifted(&XYZ[..5], [0.0, 0.0, 0.3]);
+        write_pdb(&s.join("minimal.pdb"), &ATOMS[..5], &moved, None, 1);
+        assert_eq!(
+            levels(&run(&s, None), Some("atoms")),
+            vec![(Level::Fail, "minimal.pdb".to_string())]
+        );
+    }
+
+    #[test]
+    fn shifted_mmcif_set_passes_with_info() {
+        let d = tempfile::tempdir().unwrap();
+        let s = full_set(&d.path().join("s"), CUBE, C50);
+        write_mmcif(
+            &s.join("full.mmcif"),
+            &ATOMS,
+            &shifted(&XYZ, [0.025, 0.0, 0.0]),
+        );
+        assert_eq!(levels(&run(&s, None), Some("atoms")), vec![]);
+    }
+
+    /// Real outputs that failed only by a whole-structure shift before
+    /// 0.38.0 must now pass (the ddd host:
+    /// /mdrepotmp/work-coordtol-2026-11-12/{4gm3,3tpu}/out):
+    /// MDR_CHECK_OUTPUTS_SHIFTED=dir:dir cargo test -p mdr-process -- --ignored real_shifted
+    #[test]
+    #[ignore = "needs processed folders in MDR_CHECK_OUTPUTS_SHIFTED"]
+    fn real_shifted_outputs_pass() {
+        let dirs = std::env::var("MDR_CHECK_OUTPUTS_SHIFTED")
+            .expect("MDR_CHECK_OUTPUTS_SHIFTED");
+        for d in dirs.split(':') {
+            let all = run(Path::new(d), None);
+            let fails: Vec<&Finding> =
+                all.iter().filter(|x| x.level == Level::Fail).collect();
+            assert!(fails.is_empty(), "{d}: {fails:?}");
+            assert!(
+                all.iter().any(|x| x.file == "minimal.pdb"
+                    && x.message.contains("shifted as a whole")),
+                "{d}: {all:?}"
+            );
         }
     }
 }
