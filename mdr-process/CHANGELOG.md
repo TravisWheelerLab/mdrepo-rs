@@ -29,18 +29,23 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   and junctions no cut resolves still go to the row ranked first. The
   2026-10-21 dry run reported receptor-BRIL junction overlaps of 15-23
   residues, so this moves real reference ranges.
-- **Two rows of one entry are the same residues claimed again by where they
-  put those residues in the entry**, not by how many of ours they share
-  (`same_entry_residues`). The old rule dropped a second row of an entry
-  that overlapped the first by more than `JUNCTION_OVERLAP` (5) of our
-  residues. Real BLAST rows for a tethered dimer (3nxn, two copies of the
-  HIV protease in one chain) share 6 at the junction, the first row putting
-  them on the entry's 608-613 and the second on its 491-496, so the second
-  copy was dropped: the polymer got one part over 54% of the chain, claiming
-  residues of the entry the chain does not have. Rows that do put the shared
-  residues on the same residues of the entry are still a repeat, and still
-  dropped. `JUNCTION_OVERLAP` now only bounds what two rows joined into one
-  part may share of the entry.
+- **Two rows of one entry that overlap are cut at their junction like any
+  other pair**, up to `JUNCTION_SHARE` of the shorter. The old rule dropped
+  a second row of an entry that overlapped the first by more than
+  `JUNCTION_OVERLAP` (5) of our residues. Real BLAST rows for a tethered
+  dimer (3nxn, two copies of the HIV protease in one chain) share 6 at the
+  junction, the first row putting them on the entry's 608-613 and the
+  second on its 491-496, so the second copy was dropped: the polymer got
+  one part over 54% of the chain, claiming residues of the entry the chain
+  does not have. Rows that put the shared residues on the same residues of
+  the entry are one alignment BLAST broke in two: the second is cut at the
+  junction and the two are joined into one part. `JUNCTION_OVERLAP` now
+  only bounds what two rows joined into one part may share of the entry.
+- **A row with a kept part on each side keeps its part where cuts exist
+  that leave it one.** Each junction is first cut by identity alone. If the
+  two cuts together leave the row under 20 residues or 70% identity, they
+  are taken again with each allowing for the other, so a short insert
+  between two halves of a receptor is not trimmed away.
 - Both are H1 and H2 of the 2026-11 review of the reference track, each
   confirmed there against real `blastp` output.
 - **References already in md_polymer_uniprot do not change by themselves.**

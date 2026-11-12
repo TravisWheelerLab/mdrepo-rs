@@ -973,61 +973,88 @@ pub fn sifts_parts(
         // (`junction_cut`): what this row keeps, and the parts kept
         // earlier that give up junction residues to it. A kept part is
         // always the row ranked first of its pair.
-        let (mut lo, mut hi) = query;
-        let mut recut: Vec<(usize, u32, u32)> = vec![];
+        //
         // A kept part overlapping ours either starts at or before our
         // start (on our left) or ends at or after our end (on our right);
         // one inside ours would be the whole of the shorter row, dropped
         // above, and kept parts never overlap, so there is at most one of
-        // each. When there are both, the left cut is weighed against only
-        // what the right part cannot take from us, and the right cut
-        // against what the left cut left us, so the two together still
-        // leave this row a part that passes.
+        // each.
         let right_start = against
             .iter()
             .filter(|a| a.2.0 > query.0)
             .map(|a| a.2.0)
             .min();
-        for &(pos, k, (ks, ke), _, _, _) in against.iter().filter(|a| a.2.0 <= query.0)
-        {
-            let theirs = side_of(&kept[pos].0, aligned[k].as_deref());
-            let ours = Side {
-                range: (
-                    query.0,
-                    right_start.map_or(query.1, |s| s.saturating_sub(1)),
-                ),
-                ..mine
-            };
-            let cut = junction_cut(&theirs, &ours, true);
-            lo = lo.max(cut + 1);
-            if cut < ke {
-                recut.push((pos, ks, cut));
+        // The two cuts, as (what is left of ours, the kept parts to cut
+        // back). Each is first weighed against our whole row, so identity
+        // alone places it. With a part on each side each cut then assumes
+        // the other takes nothing, and the two can leave this row under
+        // `MIN_RESIDUES` or `MIN_SIFTS_IDENTITY` where other cuts would
+        // keep all three parts. Only then are they weighed `together`: the
+        // left cut against what the right part cannot take from us, and
+        // the right cut against what the left cut left us. That gives a
+        // neighbour's residues to this row, so it is not done when the
+        // cuts identity places already leave it a part.
+        let cuts = |together: bool| {
+            let (mut lo, mut hi) = query;
+            let mut recut: Vec<(usize, u32, u32)> = vec![];
+            for &(pos, k, (ks, ke), _, _, _) in
+                against.iter().filter(|a| a.2.0 <= query.0)
+            {
+                let theirs = side_of(&kept[pos].0, aligned[k].as_deref());
+                let end = match right_start {
+                    Some(s) if together => s.saturating_sub(1),
+                    _ => query.1,
+                };
+                let ours = Side {
+                    range: (query.0, end),
+                    ..mine
+                };
+                let cut = junction_cut(&theirs, &ours, true);
+                lo = lo.max(cut + 1);
+                if cut < ke {
+                    recut.push((pos, ks, cut));
+                }
             }
-        }
-        for &(pos, k, (ks, ke), _, _, _) in against.iter().filter(|a| a.2.0 > query.0) {
-            let theirs = side_of(&kept[pos].0, aligned[k].as_deref());
-            let ours = Side {
-                range: (lo, query.1),
-                ..mine
-            };
-            let cut = junction_cut(&ours, &theirs, false);
-            hi = hi.min(cut);
-            if cut >= ks {
-                recut.push((pos, cut + 1, ke));
+            for &(pos, k, (ks, ke), _, _, _) in
+                against.iter().filter(|a| a.2.0 > query.0)
+            {
+                let theirs = side_of(&kept[pos].0, aligned[k].as_deref());
+                let ours = Side {
+                    range: (if together { lo } else { query.0 }, query.1),
+                    ..mine
+                };
+                let cut = junction_cut(&ours, &theirs, false);
+                hi = hi.min(cut);
+                if cut >= ks {
+                    recut.push((pos, cut + 1, ke));
+                }
             }
-        }
-        let part = if (lo, hi) == query {
-            Some(Part {
-                accession: acc.clone(),
-                query,
-                reference: span(hit.sstart, hit.send),
-                nident: hit.nident,
-            })
-        } else {
-            realign(hit, lo, hi).filter(|p| {
-                p.len() as usize >= MIN_RESIDUES && p.identity() >= MIN_SIFTS_IDENTITY
-            })
+            (lo, hi, recut)
         };
+        let part_of = |lo: u32, hi: u32| {
+            if (lo, hi) == query {
+                Some(Part {
+                    accession: acc.clone(),
+                    query,
+                    reference: span(hit.sstart, hit.send),
+                    nident: hit.nident,
+                })
+            } else {
+                realign(hit, lo, hi).filter(|p| {
+                    p.len() as usize >= MIN_RESIDUES
+                        && p.identity() >= MIN_SIFTS_IDENTITY
+                })
+            }
+        };
+        let (lo, hi, mut recut) = cuts(false);
+        let mut part = part_of(lo, hi);
+        let two_sided =
+            right_start.is_some() && against.iter().any(|a| a.2.0 <= query.0);
+        if part.is_none() && two_sided {
+            let (lo, hi, again) = cuts(true);
+            part = part_of(lo, hi);
+            recut = again;
+        }
         let outcome = if part.is_some() {
             TRIMMED
         } else {
@@ -4106,6 +4133,46 @@ mod tests {
         let mut spans: Vec<(i32, i32)> = got.iter().map(|p| p.1).collect();
         spans.sort();
         assert!(spans.windows(2).all(|w| w[0].1 < w[1].0), "{got:?}");
+    }
+
+    /// A row with a kept part on each side whose two cuts, each placed by
+    /// identity alone, already leave it a part: the cuts are not weighed
+    /// together, so the left part keeps 111-115, which it matches and the
+    /// row between does not. Weighing them together whenever there are
+    /// two sides cut the left part back to 1-110 for nothing.
+    #[test]
+    fn review102_a_row_cut_on_both_sides_takes_no_more_than_it_needs() {
+        let right = format!("{}{}{}", "A".repeat(6), "G".repeat(14), "A".repeat(105));
+        let between = format!("{}{}{}", "A".repeat(6), "G".repeat(14), "A".repeat(35));
+        let rows = [
+            sifts_row("P30542", (1, 115), (1, 115), 230.0, 255, None),
+            sifts_row(
+                "P30542",
+                (131, 255),
+                (216, 340),
+                200.0,
+                255,
+                Some((&"A".repeat(125), &right)),
+            ),
+            sifts_row(
+                "P0ABE7",
+                (96, 150),
+                (1, 55),
+                80.0,
+                255,
+                Some((&"A".repeat(55), &between)),
+            ),
+        ];
+        let (got, _) = parts(&rows, 255);
+        let spans: Vec<_> = got.iter().map(|p| (p.0.as_str(), p.1)).collect();
+        assert_eq!(
+            spans,
+            [
+                ("P30542", (1, 115)),
+                ("P0ABE7", (116, 150)),
+                ("P30542", (151, 255)),
+            ]
+        );
     }
 
     /// A small seeded generator, so the layouts below are the same on
