@@ -942,7 +942,8 @@ pub fn check_atom_set(
             if xyz.len() != fx.len() {
                 continue;
             }
-            if let Some(f) = coord_finding(&compare_coords(xyz, fx), &s.name, &tr.name) {
+            if let Some(f) = coord_finding(&compare_coords(xyz, fx), &s.name, &tr.name)
+            {
                 out.push(f);
             }
         }
@@ -1027,19 +1028,43 @@ pub fn coord_finding(d: &CoordDiff, file: &str, traj: &str) -> Option<Finding> {
     );
     let big_shift = d.shift.iter().map(|s| s.abs()).fold(0.0, f64::max);
     if d.non_finite {
-        Some(finding("atoms", Level::Fail, file, format!(
-            "coordinates vs {traj} frame 0 are not finite (NaN or infinite)")))
+        Some(finding(
+            "atoms",
+            Level::Fail,
+            file,
+            format!("coordinates vs {traj} frame 0 are not finite (NaN or infinite)"),
+        ))
     } else if big_shift > SHIFT_TOL_A {
-        Some(finding("atoms", Level::Fail, file, format!(
-            "shifted as a whole from {traj} frame 0 by {shift_txt}, over {SHIFT_TOL_A} A")))
+        Some(finding(
+            "atoms",
+            Level::Fail,
+            file,
+            format!(
+                "shifted as a whole from {traj} frame 0 by {shift_txt}, over {SHIFT_TOL_A} A"
+            ),
+        ))
     } else if d.max > COORD_TOL_A {
-        Some(finding("atoms", Level::Fail, file, format!(
-            "coordinates differ from {traj} frame 0 by up to {:.3} A (atom {}) after a whole-structure shift of {shift_txt}; {} atoms beyond {COORD_TOL_A} A",
-            d.max, d.worst + 1, d.beyond)))
+        Some(finding(
+            "atoms",
+            Level::Fail,
+            file,
+            format!(
+                "coordinates differ from {traj} frame 0 by up to {:.3} A (atom {}) after a whole-structure shift of {shift_txt}; {} atoms beyond {COORD_TOL_A} A",
+                d.max,
+                d.worst + 1,
+                d.beyond
+            ),
+        ))
     } else if d.raw_max > COORD_TOL_A {
-        Some(finding("atoms", Level::Info, file, format!(
-            "shifted as a whole from {traj} frame 0 by {shift_txt} (raw difference up to {:.3} A); every atom within {COORD_TOL_A} A after the shift",
-            d.raw_max)))
+        Some(finding(
+            "atoms",
+            Level::Info,
+            file,
+            format!(
+                "shifted as a whole from {traj} frame 0 by {shift_txt} (raw difference up to {:.3} A); every atom within {COORD_TOL_A} A after the shift",
+                d.raw_max
+            ),
+        ))
     } else {
         None
     }
@@ -1972,7 +1997,9 @@ mod tests {
 
     // --- whole-structure shift (DDD 3tpu/4gm3, 2026-11-12) -------------------
     fn shifted(xyz: &[Xyz], t: Xyz) -> Vec<Xyz> {
-        xyz.iter().map(|a| [a[0] + t[0], a[1] + t[1], a[2] + t[2]]).collect()
+        xyz.iter()
+            .map(|a| [a[0] + t[0], a[1] + t[1], a[2] + t[2]])
+            .collect()
     }
 
     /// A deterministic +-0.004 A pattern, like XTC/PDB rounding
@@ -1990,7 +2017,11 @@ mod tests {
         (0..n)
             .map(|i| {
                 let f = i as f64;
-                [20.0 + (f * 0.37) % 80.0, 21.0 + (f * 0.53) % 117.0, 22.0 + (f * 0.71) % 143.0]
+                [
+                    20.0 + (f * 0.37) % 80.0,
+                    21.0 + (f * 0.53) % 117.0,
+                    22.0 + (f * 0.71) % 143.0,
+                ]
             })
             .collect()
     }
@@ -1998,7 +2029,10 @@ mod tests {
     #[test]
     fn compare_identical_is_all_zero() {
         let d = compare_coords(&XYZ, &XYZ);
-        assert_eq!((d.shift, d.raw_max, d.max, d.beyond), ([0.0; 3], 0.0, 0.0, 0));
+        assert_eq!(
+            (d.shift, d.raw_max, d.max, d.beyond),
+            ([0.0; 3], 0.0, 0.0, 0)
+        );
         assert!(!d.non_finite);
         assert_eq!(coord_finding(&d, "minimal.pdb", "minimal.xtc"), None);
     }
@@ -2023,7 +2057,11 @@ mod tests {
         assert!(d.max < 0.006, "{d:?}");
         let f = coord_finding(&d, "minimal.pdb", "minimal.xtc").unwrap();
         assert_eq!(f.level, Level::Info, "{f:?}");
-        assert!(f.message.contains("shifted as a whole") && f.message.contains("0.028"), "{}", f.message);
+        assert!(
+            f.message.contains("shifted as a whole") && f.message.contains("0.028"),
+            "{}",
+            f.message
+        );
     }
 
     #[test]
@@ -2065,7 +2103,11 @@ mod tests {
         assert_eq!((d.worst, d.beyond), (1234, 1), "{d:?}");
         let f = coord_finding(&d, "minimal.pdb", "minimal.xtc").unwrap();
         assert_eq!(f.level, Level::Fail);
-        assert!(f.message.contains("atom 1235") && f.message.contains("1 atoms beyond"), "{}", f.message);
+        assert!(
+            f.message.contains("atom 1235") && f.message.contains("1 atoms beyond"),
+            "{}",
+            f.message
+        );
     }
 
     #[test]
@@ -2076,7 +2118,11 @@ mod tests {
         let d = compare_coords(&pdb, &frame);
         let f = coord_finding(&d, "a", "b").unwrap();
         assert_eq!(f.level, Level::Fail, "{f:?}");
-        assert!(f.message.contains("after a whole-structure shift"), "{}", f.message);
+        assert!(
+            f.message.contains("after a whole-structure shift"),
+            "{}",
+            f.message
+        );
     }
 
     #[test]
@@ -2127,7 +2173,10 @@ mod tests {
         let d = compare_coords(&pdb, &XYZ);
         assert!(d.non_finite);
         let f = coord_finding(&d, "minimal.pdb", "minimal.xtc").unwrap();
-        assert!(f.level == Level::Fail && f.message.contains("not finite"), "{f:?}");
+        assert!(
+            f.level == Level::Fail && f.message.contains("not finite"),
+            "{f:?}"
+        );
     }
 
     #[test]
@@ -2141,7 +2190,10 @@ mod tests {
     #[test]
     fn empty_lists_compare_clean() {
         let d = compare_coords(&[], &[]);
-        assert_eq!((d.shift, d.max, d.beyond, d.non_finite), ([0.0; 3], 0.0, 0, false));
+        assert_eq!(
+            (d.shift, d.max, d.beyond, d.non_finite),
+            ([0.0; 3], 0.0, 0, false)
+        );
         assert_eq!(coord_finding(&d, "a", "b"), None);
     }
 
@@ -2187,7 +2239,11 @@ mod tests {
     fn shifted_mmcif_set_passes_with_info() {
         let d = tempfile::tempdir().unwrap();
         let s = full_set(&d.path().join("s"), CUBE, C50);
-        write_mmcif(&s.join("full.mmcif"), &ATOMS, &shifted(&XYZ, [0.025, 0.0, 0.0]));
+        write_mmcif(
+            &s.join("full.mmcif"),
+            &ATOMS,
+            &shifted(&XYZ, [0.025, 0.0, 0.0]),
+        );
         assert_eq!(levels(&run(&s, None), Some("atoms")), vec![]);
     }
 
@@ -2202,10 +2258,12 @@ mod tests {
             .expect("MDR_CHECK_OUTPUTS_SHIFTED");
         for d in dirs.split(':') {
             let all = run(Path::new(d), None);
-            let fails: Vec<&Finding> = all.iter().filter(|x| x.level == Level::Fail).collect();
+            let fails: Vec<&Finding> =
+                all.iter().filter(|x| x.level == Level::Fail).collect();
             assert!(fails.is_empty(), "{d}: {fails:?}");
             assert!(
-                all.iter().any(|x| x.file == "minimal.pdb" && x.message.contains("shifted as a whole")),
+                all.iter().any(|x| x.file == "minimal.pdb"
+                    && x.message.contains("shifted as a whole")),
                 "{d}: {all:?}"
             );
         }
