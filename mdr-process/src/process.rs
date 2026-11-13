@@ -2685,6 +2685,16 @@ pub fn make_import_json(
 /// declared nothing. That is what simulations 98331 and 98332 recorded on
 /// 2026-09-09, on the first six rows the column ever held.
 ///
+/// A DECLARED STRUCTURE IS VERIFIED ON ITS HEAVY ATOMS AND THEIR BONDS
+/// (Travis, 2026-11-12: "we should be bending over backwards to accept the
+/// supplied formula"). `same_connectivity` is the InChI /c layer and the
+/// same heavy-atom formula: /c alone names no element, so benzene verified
+/// against pyridine and a fluoro- against a chloro-analogue (review F4). A
+/// different element anywhere is "Unable to verify". Hydrogens are not part
+/// of it: protonation is expected to differ, and is passed in silence. A
+/// hydrogen difference protonation does not explain (a redox or saturation
+/// state) still verifies, with a warning (`hydrogen_warning`).
+///
 /// AN INFERRED PEPTIDE is a ligand by sequence: it points at the chain the
 /// splitter made of its residues (`peptide_chain`), as a peptide declared by
 /// sequence does. It is recorded only when nothing was declared, like every
@@ -2712,23 +2722,35 @@ fn resolve_ligands(
                 if given_ligand.is_sequence() {
                     continue;
                 }
-                let mut found_match = false;
+                // The match, and what there is to say about its hydrogens.
+                // One with nothing to say is preferred to one with a warning
+                let mut matched: Option<Option<String>> = None;
                 for inferred in &inferred_ligands {
                     let check = check_ligand(given_ligand, inferred, script_dir, uv)?;
-                    if check.exact_match
+                    if !(check.exact_match
                         || check.same_connectivity
                         || check.same_connectivity_and_stereo
-                        || check.same_inchi
+                        || check.same_inchi)
                     {
-                        found_match = true;
-                        break;
+                        continue;
+                    }
+                    match hydrogen_warning(ligand_num, given_ligand, &check) {
+                        None => {
+                            matched = Some(None);
+                            break;
+                        }
+                        warning => {
+                            matched.get_or_insert(warning);
+                        }
                     }
                 }
-                if !found_match {
-                    warnings.push(format!(
+                match matched {
+                    Some(None) => {}
+                    Some(Some(warning)) => warnings.push(warning),
+                    None => warnings.push(format!(
                         "Unable to verify ligand [{ligand_num}] ({})",
                         given_ligand.identity()
-                    ));
+                    )),
                 }
             }
         } else {
@@ -3009,6 +3031,33 @@ fn collect_processed_files(
 }
 
 // --------------------------------------------------
+/// A warning for a declared ligand verified on its heavy atoms whose
+/// hydrogens differ from the structure's by more than protonation, or `None`
+/// when there is nothing to say: an exact or InChI match, a difference of
+/// protons alone, or a compare_smiles.py that does not report hydrogens.
+fn hydrogen_warning(
+    ligand_num: usize,
+    ligand: &metadata::Ligand,
+    check: &CheckedLigand,
+) -> Option<String> {
+    if check.exact_match
+        || check.same_inchi
+        || check.same_hydrogens_less_charge != Some(false)
+    {
+        return None;
+    }
+    Some(format!(
+        "Ligand [{ligand_num}] ({}) has the heavy atoms and bonds of the \
+         ligand in the structure but not its hydrogens, and protonation does \
+         not account for the difference: {} declared, {} read from the \
+         structure. It was accepted as declared",
+        ligand.identity(),
+        check.formula1,
+        check.formula2
+    ))
+}
+
+// --------------------------------------------------
 /// The `chain_order` of the structure chain an inferred peptide ligand is:
 /// the first protein chain the splitter cut with the peptide's residues,
 /// caps aside. `None` when the splitter made no such chain.
@@ -3109,9 +3158,10 @@ pub fn compare_smiles(
 }
 
 // --------------------------------------------------
-/// Whether two SMILES have the same InChI connectivity (the /c layer: the
-/// same heavy atoms joined by the same bonds, hydrogens and charge aside),
-/// by `compare_smiles.py`, the same test `resolve_ligands` uses
+/// Whether two SMILES have the same InChI connectivity (the /c layer and the
+/// heavy-atom formula: the same heavy atoms joined by the same bonds,
+/// hydrogens and charge aside), by `compare_smiles.py`, the same test
+/// `resolve_ligands` uses
 pub fn same_connectivity(
     smiles1: &str,
     smiles2: &str,
@@ -6183,6 +6233,109 @@ mol_id: No ligand-like residue found in minimal.pdb
         .unwrap();
         assert_eq!(ligands.len(), 1);
         assert_eq!(ligands[0].name, "benzamidine");
+    }
+
+    fn checked(
+        exact: bool,
+        same_connectivity: bool,
+        same_hydrogens_less_charge: Option<bool>,
+    ) -> CheckedLigand {
+        CheckedLigand {
+            smi1_canonical: String::new(),
+            smi2_canonical: String::new(),
+            formula1: "C6H12".into(),
+            formula2: "C6H6".into(),
+            charge1: 0,
+            charge2: 0,
+            exact_match: exact,
+            same_connectivity,
+            same_connectivity_and_stereo: false,
+            same_inchi: false,
+            differences: vec![],
+            inchi1: String::new(),
+            inchi2: String::new(),
+            connectivity_layer: None,
+            same_hydrogens_less_charge,
+        }
+    }
+
+    #[test]
+    fn a_hydrogen_difference_past_protonation_is_a_warning() {
+        let ligand = declared_smiles("cyclohexane", "C1CCCCC1");
+
+        let warning = hydrogen_warning(0, &ligand, &checked(false, true, Some(false)))
+            .expect("a warning");
+        assert!(warning.starts_with("Ligand [0] (C1CCCCC1) has the heavy atoms"));
+        assert!(warning.contains("C6H12 declared, C6H6 read from the structure"));
+        assert!(warning.ends_with("It was accepted as declared"));
+
+        // Protonation alone, an exact match, and a compare_smiles.py from
+        // before it reported hydrogens: nothing to say
+        assert_eq!(
+            hydrogen_warning(0, &ligand, &checked(false, true, Some(true))),
+            None
+        );
+        assert_eq!(
+            hydrogen_warning(0, &ligand, &checked(true, true, Some(false))),
+            None
+        );
+        assert_eq!(
+            hydrogen_warning(0, &ligand, &checked(false, true, None)),
+            None
+        );
+    }
+
+    /// Travis's rule of 2026-11-12, end to end through compare_smiles.py: a
+    /// heavy-atom mismatch is not verified; a hydrogen mismatch verifies with
+    /// a warning; protonation verifies in silence.
+    #[test]
+    fn a_declared_ligand_is_verified_on_heavy_atoms_and_warned_on_hydrogens() {
+        let Some((uv, script_dir)) = resolver_available() else {
+            eprintln!("skipping: no uv, resolver script or Python environment");
+            return;
+        };
+        let run = |declared: &str, inferred: &[&str]| {
+            let given = vec![declared_smiles("ligand", declared)];
+            let inferred = inferred
+                .iter()
+                .map(|s| inferred_molecule(s, "LIG"))
+                .collect();
+            resolve_ligands(
+                Some(&given),
+                inferred,
+                &[],
+                &[],
+                &HashMap::new(),
+                script_dir,
+                &uv,
+            )
+            .unwrap()
+            .1
+        };
+
+        // Benzene and pyridine, a fluoro- and a chloro-analogue: one InChI
+        // /c layer each, and "verified" until the formula was compared too
+        for (declared, inferred) in [
+            ("c1ccccc1", "c1ccncc1"),
+            ("OC(=O)c1ccccc1F", "OC(=O)c1ccccc1Cl"),
+        ] {
+            let warnings = run(declared, &[inferred]);
+            assert_eq!(warnings.len(), 1, "{warnings:?}");
+            assert!(warnings[0].starts_with("Unable to verify ligand [0]"));
+        }
+
+        // The acid declared, the carboxylate simulated
+        assert!(run("CC(=O)O", &["CC(=O)[O-]"]).is_empty());
+
+        // Octanoic acid declared, octenoic simulated
+        let warnings = run("CCCCCCCC(=O)O", &["CCCCCC=CC(=O)O"]);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("not its hydrogens"), "{warnings:?}");
+
+        // A match with nothing to say is taken over one with a warning
+        assert!(
+            run("CCCCCCCC(=O)O", &["CCCCCC=CC(=O)O", "CCCCCCCC(=O)[O-]"]).is_empty()
+        );
     }
 
     /// An INFERRED ligand was declared by nobody, so the column must be NULL.

@@ -1498,6 +1498,13 @@ pub struct CheckedLigand {
     pub inchi1: String,
     pub inchi2: String,
     pub connectivity_layer: Option<String>,
+
+    /// Whether the two differ in hydrogens by more than protonation: false
+    /// for benzene against cyclohexane or NAD+ against NADH, true for an
+    /// acid against its anion (hydrogens less charge agree). `None` from a
+    /// compare_smiles.py that does not report it.
+    #[serde(default)]
+    pub same_hydrogens_less_charge: Option<bool>,
 }
 
 // --------------------------------------------------
