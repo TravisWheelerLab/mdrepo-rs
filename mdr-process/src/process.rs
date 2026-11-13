@@ -4,11 +4,11 @@ use crate::{
     ticket::dsn_for,
     types::{
         CheckedLigand, DoiAuthor, DoiPaper, Duration, Export, ExportSimulation,
-        ImportChain, ImportJsonArgs, ImportResult, InferredLigand,
-        InferredLigandStructure, MdFile, PdbEntry, PdbResponse, ProcessArgs,
-        ProcessResult, ProcessTrajectoryArgs, ProcessedTarball, ProcessedTrajectory,
-        ProcessedTrajectoryType, PushOutcome, ResolvedLigand, RmsdRmsf, RunImportArgs,
-        Server, UniprotDb, UniprotEntry, UniprotResponse,
+        ImportChain, ImportJsonArgs, ImportResult, InferredEntry, InferredLigand,
+        InferredLigandStructure, InferredPeptide, MdFile, PdbEntry, PdbResponse,
+        ProcessArgs, ProcessResult, ProcessTrajectoryArgs, ProcessedTarball,
+        ProcessedTrajectory, ProcessedTrajectoryType, PushOutcome, ResolvedLigand,
+        RmsdRmsf, RunImportArgs, Server, UniprotDb, UniprotEntry, UniprotResponse,
     },
     validate,
 };
@@ -2500,9 +2500,9 @@ pub fn make_import_json(
         args.meta.ligands.as_ref().is_some_and(|l| {
             !l.is_empty() && l.iter().all(metadata::Ligand::is_sequence)
         });
-    let (inferred_ligands, ligand_notes) = if all_sequences {
+    let (inferred_ligands, inferred_peptides, ligand_notes) = if all_sequences {
         debug!("Every declared ligand is a sequence; not inferring ligands");
-        (vec![], vec![])
+        (vec![], vec![], vec![])
     } else {
         get_inferred_ligands(
             &args.example_trajectory.min_pdb,
@@ -2541,6 +2541,8 @@ pub fn make_import_json(
     let (ligands, ligand_warnings) = resolve_ligands(
         args.meta.ligands.as_ref(),
         inferred_ligands,
+        &inferred_peptides,
+        &chains,
         &ligand_chains,
         args.script_dir,
         args.uv,
@@ -2682,9 +2684,26 @@ pub fn make_import_json(
 /// the resolved struct what was declared answers "smiles" when the submitter
 /// declared nothing. That is what simulations 98331 and 98332 recorded on
 /// 2026-09-09, on the first six rows the column ever held.
+///
+/// A DECLARED STRUCTURE IS VERIFIED ON ITS HEAVY ATOMS AND THEIR BONDS
+/// (Travis, 2026-11-12: "we should be bending over backwards to accept the
+/// supplied formula"). `same_connectivity` is the InChI /c layer and the
+/// same heavy-atom formula: /c alone names no element, so benzene verified
+/// against pyridine and a fluoro- against a chloro-analogue (review F4). A
+/// different element anywhere is "Unable to verify". Hydrogens are not part
+/// of it: protonation is expected to differ, and is passed in silence. A
+/// hydrogen difference protonation does not explain (a redox or saturation
+/// state) still verifies, with a warning (`hydrogen_warning`).
+///
+/// AN INFERRED PEPTIDE is a ligand by sequence: it points at the chain the
+/// splitter made of its residues (`peptide_chain`), as a peptide declared by
+/// sequence does. It is recorded only when nothing was declared, like every
+/// inferred ligand.
 fn resolve_ligands(
     given_ligands: Option<&Vec<metadata::Ligand>>,
     inferred_ligands: Vec<InferredLigand>,
+    inferred_peptides: &[InferredPeptide],
+    chains: &[ImportChain],
     ligand_chains: &HashMap<usize, u32>,
     script_dir: &Path,
     uv: &Path,
@@ -2692,6 +2711,7 @@ fn resolve_ligands(
     let mut ligands: Vec<metadata::Ligand> = vec![];
     let mut warnings = vec![];
     let declared = given_ligands.is_some();
+    let mut ligand_chains = ligand_chains.clone();
 
     if let Some(given_ligands) = given_ligands {
         ligands = given_ligands.clone();
@@ -2702,23 +2722,35 @@ fn resolve_ligands(
                 if given_ligand.is_sequence() {
                     continue;
                 }
-                let mut found_match = false;
+                // The match, and what there is to say about its hydrogens.
+                // One with nothing to say is preferred to one with a warning
+                let mut matched: Option<Option<String>> = None;
                 for inferred in &inferred_ligands {
                     let check = check_ligand(given_ligand, inferred, script_dir, uv)?;
-                    if check.exact_match
+                    if !(check.exact_match
                         || check.same_connectivity
                         || check.same_connectivity_and_stereo
-                        || check.same_inchi
+                        || check.same_inchi)
                     {
-                        found_match = true;
-                        break;
+                        continue;
+                    }
+                    match hydrogen_warning(ligand_num, given_ligand, &check) {
+                        None => {
+                            matched = Some(None);
+                            break;
+                        }
+                        warning => {
+                            matched.get_or_insert(warning);
+                        }
                     }
                 }
-                if !found_match {
-                    warnings.push(format!(
+                match matched {
+                    Some(None) => {}
+                    Some(Some(warning)) => warnings.push(warning),
+                    None => warnings.push(format!(
                         "Unable to verify ligand [{ligand_num}] ({})",
                         given_ligand.identity()
-                    ));
+                    )),
                 }
             }
         } else {
@@ -2738,6 +2770,24 @@ fn resolve_ligands(
                 inchi: None,
                 sequence: None,
                 sequence_type: None,
+            });
+        }
+        for peptide in inferred_peptides {
+            let name = peptide_name(peptide);
+            let Some(chain_order) = peptide_chain(peptide, chains) else {
+                warnings.push(format!(
+                    "A peptide ligand ({name}) was found in the structure but \
+                     is none of its chains, so it was not recorded"
+                ));
+                continue;
+            };
+            ligand_chains.insert(ligands.len(), chain_order);
+            ligands.push(metadata::Ligand {
+                name,
+                smiles: None,
+                inchi: None,
+                sequence: Some(peptide.sequence.clone()),
+                sequence_type: Some(metadata::SequenceType::Protein),
             });
         }
     }
@@ -2981,6 +3031,78 @@ fn collect_processed_files(
 }
 
 // --------------------------------------------------
+/// A warning for a declared ligand verified on its heavy atoms whose
+/// hydrogens differ from the structure's by more than protonation, or `None`
+/// when there is nothing to say: an exact or InChI match, a difference of
+/// protons alone, or a compare_smiles.py that does not report hydrogens.
+fn hydrogen_warning(
+    ligand_num: usize,
+    ligand: &metadata::Ligand,
+    check: &CheckedLigand,
+) -> Option<String> {
+    if check.exact_match
+        || check.same_inchi
+        || check.same_hydrogens_less_charge != Some(false)
+    {
+        return None;
+    }
+    Some(format!(
+        "Ligand [{ligand_num}] ({}) has the heavy atoms and bonds of the \
+         ligand in the structure but not its hydrogens, and protonation does \
+         not account for the difference: {} declared, {} read from the \
+         structure. It was accepted as declared",
+        ligand.identity(),
+        check.formula1,
+        check.formula2
+    ))
+}
+
+// --------------------------------------------------
+/// The `chain_order` of the structure chain an inferred peptide ligand is:
+/// the first protein chain the splitter cut with the peptide's residues,
+/// caps aside. `None` when the splitter made no such chain.
+fn peptide_chain(peptide: &InferredPeptide, chains: &[ImportChain]) -> Option<u32> {
+    let names: Vec<String> = peptide
+        .resnames
+        .iter()
+        .map(|n| sequence::canonical(n))
+        .collect();
+    let n = names.len();
+    // The whole list, then less a cap at either end or both
+    let bodies = [
+        (0, n),
+        (1, n),
+        (0, n.saturating_sub(1)),
+        (1, n.saturating_sub(1)),
+    ];
+    chains
+        .iter()
+        .find(|c| {
+            c.source == "structure"
+                && c.polymer_type == sequence::PolymerType::Protein.to_string()
+                && bodies
+                    .iter()
+                    .any(|&(a, b)| a < b && c.residues[..] == names[a..b])
+        })
+        .map(|c| c.chain_order)
+}
+
+/// A name for an inferred peptide ligand: its residue names, `DAL-SAR-DAL-MLE`,
+/// the first eight and a count past that
+fn peptide_name(peptide: &InferredPeptide) -> String {
+    const SHOWN: usize = 8;
+    let names = &peptide.resnames;
+    if names.len() <= SHOWN {
+        return names.join("-");
+    }
+    format!(
+        "{}-... ({} residues)",
+        names[..SHOWN].join("-"),
+        names.len()
+    )
+}
+
+// --------------------------------------------------
 pub fn check_ligand(
     ligand: &metadata::Ligand,
     inferred_ligand: &InferredLigand,
@@ -3036,9 +3158,10 @@ pub fn compare_smiles(
 }
 
 // --------------------------------------------------
-/// Whether two SMILES have the same InChI connectivity (the /c layer: the
-/// same heavy atoms joined by the same bonds, hydrogens and charge aside),
-/// by `compare_smiles.py`, the same test `resolve_ligands` uses
+/// Whether two SMILES have the same InChI connectivity (the /c layer and the
+/// heavy-atom formula: the same heavy atoms joined by the same bonds,
+/// hydrogens and charge aside), by `compare_smiles.py`, the same test
+/// `resolve_ligands` uses
 pub fn same_connectivity(
     smiles1: &str,
     smiles2: &str,
@@ -3114,7 +3237,8 @@ impl InferredLigandInputs {
 }
 
 // --------------------------------------------------
-/// The ligands `mol_id.py` infers from `min_pdb`, and what it said about them
+/// The ligands `mol_id.py` infers from `min_pdb` (small molecules, then
+/// peptide ligands), and what it said about them
 /// for the submitter: a residue passed over as part of a polymer chain, a
 /// ligand recorded as released from one. Both are kept in `processed_dir`, so
 /// a rerun that finds them reports the same notes; they are reused only for
@@ -3124,7 +3248,7 @@ pub fn get_inferred_ligands(
     processed_dir: &Path,
     script_dir: &Path,
     uv: &Path,
-) -> Result<(Vec<InferredLigand>, Vec<String>)> {
+) -> Result<(Vec<InferredLigand>, Vec<InferredPeptide>, Vec<String>)> {
     let out_file = processed_dir.join("inferred_ligands.json");
     let notes_file = processed_dir.join("ligand_notes.json");
     let inputs_file = processed_dir.join(INFERRED_LIGAND_INPUTS_FILE);
@@ -3178,11 +3302,28 @@ pub fn get_inferred_ligands(
 
     if file_exists(&out_file) {
         let contents = fs::read_to_string(&out_file)?;
-        let ligands: Vec<InferredLigand> = serde_json::from_str(&contents)?;
-        Ok((ligands, notes))
+        let (ligands, peptides) = parse_inferred_ligands(&contents)?;
+        Ok((ligands, peptides, notes))
     } else {
-        Ok((vec![], notes))
+        Ok((vec![], vec![], notes))
     }
+}
+
+// --------------------------------------------------
+/// `inferred_ligands.json` as its small molecules and its peptide ligands
+fn parse_inferred_ligands(
+    contents: &str,
+) -> Result<(Vec<InferredLigand>, Vec<InferredPeptide>)> {
+    let entries: Vec<InferredEntry> = serde_json::from_str(contents)?;
+    let mut ligands = vec![];
+    let mut peptides = vec![];
+    for entry in entries {
+        match entry {
+            InferredEntry::Ligand(ligand) => ligands.push(*ligand),
+            InferredEntry::Peptide { peptide } => peptides.push(peptide),
+        }
+    }
+    Ok((ligands, peptides))
 }
 
 // --------------------------------------------------
@@ -5161,9 +5302,16 @@ mol_id: No ligand-like residue found in minimal.pdb
         };
 
         let given = vec![inchi_only_ligand()];
-        let (resolved, _) =
-            resolve_ligands(Some(&given), vec![], &HashMap::new(), script_dir, &uv)
-                .unwrap();
+        let (resolved, _) = resolve_ligands(
+            Some(&given),
+            vec![],
+            &[],
+            &[],
+            &HashMap::new(),
+            script_dir,
+            &uv,
+        )
+        .unwrap();
 
         assert_eq!(
             resolved[0].smiles.as_deref(),
@@ -5877,9 +6025,16 @@ mol_id: No ligand-like residue found in minimal.pdb
             },
         ];
 
-        let (ligands, _) =
-            resolve_ligands(Some(&given), vec![], &HashMap::new(), script_dir, &uv)
-                .unwrap();
+        let (ligands, _) = resolve_ligands(
+            Some(&given),
+            vec![],
+            &[],
+            &[],
+            &HashMap::new(),
+            script_dir,
+            &uv,
+        )
+        .unwrap();
 
         // Both now carry both notations...
         assert!(ligands.iter().all(|l| l.inchi.is_some()));
@@ -5892,6 +6047,295 @@ mol_id: No ligand-like residue found in minimal.pdb
         // ...and each still remembers which one it arrived with.
         assert_eq!(ligands[0].declared_identity.as_deref(), Some("smiles"));
         assert_eq!(ligands[1].declared_identity.as_deref(), Some("inchi"));
+    }
+
+    // --- ligand chemistry (review F4, F5; decided 2026-11-12) ---
+
+    fn inferred_molecule(smiles: &str, resname: &str) -> InferredLigand {
+        InferredLigand {
+            structure: crate::types::InferredLigandStructure {
+                smiles: smiles.into(),
+                formula: String::new(),
+                num_atoms: 0,
+                num_heavy_atoms: 0,
+                charge: 0,
+                inchikey: String::new(),
+                resname: resname.into(),
+            },
+            name: crate::types::InferredLigandName {
+                smiles_input: smiles.into(),
+                cid: None,
+                iupac_name: None,
+                inchikey: None,
+                wikidata_label: None,
+                pubchem_title: None,
+                best_name: Some(resname.into()),
+                name_source: None,
+                common_name: None,
+                formula: None,
+                charge: None,
+                synonyms: None,
+            },
+        }
+    }
+
+    fn declared_smiles(name: &str, smiles: &str) -> metadata::Ligand {
+        metadata::Ligand {
+            name: name.into(),
+            smiles: Some(smiles.into()),
+            inchi: None,
+            sequence: None,
+            sequence_type: None,
+        }
+    }
+
+    fn structure_chain(
+        order: u32,
+        polymer_type: &str,
+        residues: &[&str],
+    ) -> ImportChain {
+        ImportChain {
+            chain_order: order,
+            chain_label: "A".into(),
+            source: "structure".into(),
+            polymer_type: polymer_type.into(),
+            sequence: "X".repeat(residues.len()),
+            residues: residues.iter().map(|r| r.to_string()).collect(),
+            first_residue: Some(1),
+            last_residue: Some(residues.len() as i32),
+            n_terminal_cap: None,
+            c_terminal_cap: None,
+            breaks: vec![],
+            reference: None,
+        }
+    }
+
+    fn tetrapeptide() -> InferredPeptide {
+        InferredPeptide {
+            sequence: "XXXX".into(),
+            resnames: ["DAL", "SAR", "DAL", "MLE"].map(String::from).to_vec(),
+            cyclic: false,
+        }
+    }
+
+    /// `inferred_ligands.json` holds two shapes since mol_id.py reads a
+    /// peptide of nonstandard residues as one ligand (review F5); a file
+    /// from before has only the first.
+    #[test]
+    fn inferred_ligands_json_holds_small_molecules_and_peptides() {
+        let (ligands, peptides) = parse_inferred_ligands(
+            r#"[
+              {"structure": {"smiles": "NC(=N)c1ccccc1", "formula": "C7H8N2",
+                 "num_atoms": 17, "num_heavy_atoms": 9, "charge": 0,
+                 "inchikey": "PXXJHWLDUBFPOL-UHFFFAOYSA-N",
+                 "simulated_smiles": "NC(=[NH2+])c1ccccc1",
+                 "simulated_formula": "C7H9N2+", "simulated_charge": 1,
+                 "resname": "BEN"},
+               "name": {"smiles_input": "NC(=N)c1ccccc1"}},
+              {"peptide": {"sequence": "XXXX", "sequence_type": "protein",
+                 "resnames": ["DAL", "SAR", "DAL", "MLE"],
+                 "resids": [1, 2, 3, 4], "cyclic": false, "resname": "DAL"}}
+            ]"#,
+        )
+        .unwrap();
+
+        assert_eq!(ligands.len(), 1);
+        assert_eq!(ligands[0].structure.resname, "BEN");
+        assert_eq!(peptides, vec![tetrapeptide()]);
+        assert!(parse_inferred_ligands("[]").unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn an_inferred_peptide_is_the_chain_with_its_residues() {
+        let chains = vec![
+            structure_chain(1, "protein", &["MET", "ALA", "GLY"]),
+            structure_chain(2, "dna", &["DAL", "SAR", "DAL", "MLE"]),
+            structure_chain(3, "protein", &["DAL", "SAR", "DAL", "MLE"]),
+        ];
+        assert_eq!(peptide_chain(&tetrapeptide(), &chains), Some(3));
+
+        // The splitter leaves caps out of a chain's residues; mol_id.py
+        // names them
+        let mut capped = tetrapeptide();
+        capped.resnames.insert(0, "ACE".into());
+        capped.resnames.push("NME".into());
+        assert_eq!(peptide_chain(&capped, &chains), Some(3));
+
+        assert_eq!(peptide_chain(&tetrapeptide(), &chains[..2]), None);
+        assert_eq!(peptide_name(&tetrapeptide()), "DAL-SAR-DAL-MLE");
+        let long = InferredPeptide {
+            sequence: "X".repeat(11),
+            resnames: vec!["MLE".to_string(); 11],
+            cyclic: true,
+        };
+        assert_eq!(
+            peptide_name(&long),
+            "MLE-MLE-MLE-MLE-MLE-MLE-MLE-MLE-... (11 residues)"
+        );
+    }
+
+    /// With nothing declared, an inferred peptide is recorded as a ligand
+    /// pointing at its chain, the way a peptide declared by sequence is. One
+    /// the splitter made no chain of is said, not stored.
+    #[test]
+    fn an_inferred_peptide_is_a_ligand_by_chain() {
+        let Some((uv, script_dir)) = resolver_available() else {
+            eprintln!("skipping: no uv, resolver script or Python environment");
+            return;
+        };
+        let chains = vec![
+            structure_chain(1, "protein", &["MET", "ALA", "GLY"]),
+            structure_chain(2, "protein", &["DAL", "SAR", "DAL", "MLE"]),
+        ];
+
+        let (ligands, warnings) = resolve_ligands(
+            None,
+            vec![],
+            &[tetrapeptide()],
+            &chains,
+            &HashMap::new(),
+            script_dir,
+            &uv,
+        )
+        .unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(ligands.len(), 1);
+        assert_eq!(ligands[0].name, "DAL-SAR-DAL-MLE");
+        assert_eq!(ligands[0].chain_order, Some(2));
+        assert_eq!(ligands[0].smiles, None);
+        assert_eq!(ligands[0].declared_identity, None);
+
+        let (ligands, warnings) = resolve_ligands(
+            None,
+            vec![],
+            &[tetrapeptide()],
+            &chains[..1],
+            &HashMap::new(),
+            script_dir,
+            &uv,
+        )
+        .unwrap();
+        assert!(ligands.is_empty());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("DAL-SAR-DAL-MLE"), "{warnings:?}");
+
+        // A declared ligand list stands as declared: the peptide is not added
+        let given = vec![declared_smiles("benzamidine", "NC(=N)c1ccccc1")];
+        let (ligands, _) = resolve_ligands(
+            Some(&given),
+            vec![inferred_molecule("NC(=N)c1ccccc1", "BEN")],
+            &[tetrapeptide()],
+            &chains,
+            &HashMap::new(),
+            script_dir,
+            &uv,
+        )
+        .unwrap();
+        assert_eq!(ligands.len(), 1);
+        assert_eq!(ligands[0].name, "benzamidine");
+    }
+
+    fn checked(
+        exact: bool,
+        same_connectivity: bool,
+        same_hydrogens_less_charge: Option<bool>,
+    ) -> CheckedLigand {
+        CheckedLigand {
+            smi1_canonical: String::new(),
+            smi2_canonical: String::new(),
+            formula1: "C6H12".into(),
+            formula2: "C6H6".into(),
+            charge1: 0,
+            charge2: 0,
+            exact_match: exact,
+            same_connectivity,
+            same_connectivity_and_stereo: false,
+            same_inchi: false,
+            differences: vec![],
+            inchi1: String::new(),
+            inchi2: String::new(),
+            connectivity_layer: None,
+            same_hydrogens_less_charge,
+        }
+    }
+
+    #[test]
+    fn a_hydrogen_difference_past_protonation_is_a_warning() {
+        let ligand = declared_smiles("cyclohexane", "C1CCCCC1");
+
+        let warning = hydrogen_warning(0, &ligand, &checked(false, true, Some(false)))
+            .expect("a warning");
+        assert!(warning.starts_with("Ligand [0] (C1CCCCC1) has the heavy atoms"));
+        assert!(warning.contains("C6H12 declared, C6H6 read from the structure"));
+        assert!(warning.ends_with("It was accepted as declared"));
+
+        // Protonation alone, an exact match, and a compare_smiles.py from
+        // before it reported hydrogens: nothing to say
+        assert_eq!(
+            hydrogen_warning(0, &ligand, &checked(false, true, Some(true))),
+            None
+        );
+        assert_eq!(
+            hydrogen_warning(0, &ligand, &checked(true, true, Some(false))),
+            None
+        );
+        assert_eq!(
+            hydrogen_warning(0, &ligand, &checked(false, true, None)),
+            None
+        );
+    }
+
+    /// Travis's rule of 2026-11-12, end to end through compare_smiles.py: a
+    /// heavy-atom mismatch is not verified; a hydrogen mismatch verifies with
+    /// a warning; protonation verifies in silence.
+    #[test]
+    fn a_declared_ligand_is_verified_on_heavy_atoms_and_warned_on_hydrogens() {
+        let Some((uv, script_dir)) = resolver_available() else {
+            eprintln!("skipping: no uv, resolver script or Python environment");
+            return;
+        };
+        let run = |declared: &str, inferred: &[&str]| {
+            let given = vec![declared_smiles("ligand", declared)];
+            let inferred = inferred
+                .iter()
+                .map(|s| inferred_molecule(s, "LIG"))
+                .collect();
+            resolve_ligands(
+                Some(&given),
+                inferred,
+                &[],
+                &[],
+                &HashMap::new(),
+                script_dir,
+                &uv,
+            )
+            .unwrap()
+            .1
+        };
+
+        // Benzene and pyridine, a fluoro- and a chloro-analogue: one InChI
+        // /c layer each, and "verified" until the formula was compared too
+        for (declared, inferred) in [
+            ("c1ccccc1", "c1ccncc1"),
+            ("OC(=O)c1ccccc1F", "OC(=O)c1ccccc1Cl"),
+        ] {
+            let warnings = run(declared, &[inferred]);
+            assert_eq!(warnings.len(), 1, "{warnings:?}");
+            assert!(warnings[0].starts_with("Unable to verify ligand [0]"));
+        }
+
+        // The acid declared, the carboxylate simulated
+        assert!(run("CC(=O)O", &["CC(=O)[O-]"]).is_empty());
+
+        // Octanoic acid declared, octenoic simulated
+        let warnings = run("CCCCCCCC(=O)O", &["CCCCCC=CC(=O)O"]);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("not its hydrogens"), "{warnings:?}");
+
+        // A match with nothing to say is taken over one with a warning
+        assert!(
+            run("CCCCCCCC(=O)O", &["CCCCCC=CC(=O)O", "CCCCCCCC(=O)[O-]"]).is_empty()
+        );
     }
 
     /// An INFERRED ligand was declared by nobody, so the column must be NULL.
@@ -5935,7 +6379,8 @@ mol_id: No ligand-like residue found in minimal.pdb
         }];
 
         let (ligands, _) =
-            resolve_ligands(None, inferred, &HashMap::new(), script_dir, &uv).unwrap();
+            resolve_ligands(None, inferred, &[], &[], &HashMap::new(), script_dir, &uv)
+                .unwrap();
 
         assert_eq!(ligands.len(), 1);
         assert_eq!(ligands[0].name, "acetaldehyde");

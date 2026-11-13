@@ -1426,6 +1426,33 @@ pub struct InferredLigand {
 }
 
 // --------------------------------------------------
+/// A peptide ligand `mol_id.py` found: residues with no standard name,
+/// peptide-bonded to each other and to no chain (cyclosporin's). It has a
+/// sequence and no SMILES.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct InferredPeptide {
+    /// One letter per residue, `X` for one with no one-letter code; the caps
+    /// are left out
+    pub sequence: String,
+
+    /// The residue names in chain order, caps included
+    pub resnames: Vec<String>,
+
+    #[serde(default)]
+    pub cyclic: bool,
+}
+
+// --------------------------------------------------
+/// One entry of `inferred_ligands.json`: `{structure, name}` for a small
+/// molecule, `{peptide}` for a peptide ligand
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum InferredEntry {
+    Peptide { peptide: InferredPeptide },
+    Ligand(Box<InferredLigand>),
+}
+
+// --------------------------------------------------
 #[derive(Debug, Deserialize, Serialize)]
 pub struct InferredLigandName {
     pub smiles_input: String,
@@ -1471,6 +1498,13 @@ pub struct CheckedLigand {
     pub inchi1: String,
     pub inchi2: String,
     pub connectivity_layer: Option<String>,
+
+    /// Whether the two differ in hydrogens by more than protonation: false
+    /// for benzene against cyclohexane or NAD+ against NADH, true for an
+    /// acid against its anion (hydrogens less charge agree). `None` from a
+    /// compare_smiles.py that does not report it.
+    #[serde(default)]
+    pub same_hydrogens_less_charge: Option<bool>,
 }
 
 // --------------------------------------------------
