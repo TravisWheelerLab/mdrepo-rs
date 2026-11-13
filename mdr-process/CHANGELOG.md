@@ -11,6 +11,45 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.41.0 (unreleased)
+
+Ligand chemistry (review F2-F5), as decided 2026-11-12. Needs
+simulation-processing's `ligand-chemistry` change for all but the first
+bullet's refusal to regress: an older `compare_smiles.py` reports no
+hydrogens and an older `mol_id.py` no peptides, and both are read as before.
+
+- **A declared ligand is verified on its heavy atoms and their bonds, and a
+  different element is no longer verified.** `same_connectivity` was the
+  InChI /c layer alone, which numbers atoms in formula order and names no
+  element: benzene verified against pyridine, a fluoro- against a
+  chloro-analogue, a thiophene against a selenophene. `compare_smiles.py`
+  now requires the same heavy-atom formula as well, so those are "Unable to
+  verify ligand [n]". `place_ligands`' third step uses the same test.
+- **A hydrogen difference still verifies, with a warning when protonation
+  does not explain it.** The declared ligand is accepted wherever it can be:
+  an acid declared for a simulated carboxylate passes in silence, as before.
+  Where the hydrogens differ by more than protons (hydrogens less charge
+  disagree: a redox or saturation state, NAD+ for NADH, octanoic for
+  octenoic acid) the ligand is still accepted as declared and the record
+  gets "Ligand [n] (...) has the heavy atoms and bonds of the ligand in the
+  structure but not its hydrogens ...". When several inferred ligands match,
+  one with nothing to say is preferred.
+- **An inferred peptide ligand is recorded as a ligand by chain.**
+  `mol_id.py` now reads a peptide of nonstandard residues bonded to no
+  chain (cyclosporin's) as one ligand with a sequence, not one SMILES per
+  residue name, and writes it to `inferred_ligands.json` as `{"peptide":
+  ...}` beside the `{"structure", "name"}` entries. With no ligand declared
+  it is stored the way a peptide declared by sequence is: a ligand named by
+  its residues (`DAL-SAR-DAL-MLE`) pointing at the `chain_order` of the
+  structure chain with those residues. One that is none of the splitter's
+  chains is a warning and is not stored. A declared ligand list stands as
+  declared.
+- What an undeclared small-molecule ligand is stored as changes with
+  `mol_id.py`, not here: its neutral form, from a bond-order search over
+  charges 0 to +-6, and nothing for a glycan or a lipid written as several
+  residues. A rerun recomputes `inferred_ligands.json` because the script's
+  hash changed (0.19.0).
+
 ## 0.40.0 (unreleased)
 
 **Needs md-repo-app 0303 (`md_ligand.num_copies`) on the database first.**
