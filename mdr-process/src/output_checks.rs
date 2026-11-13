@@ -9,7 +9,7 @@
 //! an old-vs-new byte comparison could not tell that from noise. Found
 //! 2026-11-09 on MDR00105222 (simulation-processing #44).
 //!
-//! Three checks, each returning [`Finding`]s:
+//! Four checks, each returning [`Finding`]s:
 //!
 //! - **box**: every frame's box is finite and either zero in every frame or
 //!   a real cell in every frame (three vectors 0.1-10,000 nm enclosing a
@@ -33,6 +33,10 @@
 //!   structure of up to 0.1 A (gmx trjconv's fit, reported as info). .gro
 //!   files are not checked: they are to
 //!   be deprecated, and full.gro is the submitter's structure, not frame 0.
+//! - **solute**: minimal keeps every residue of full except water, the
+//!   stripped ions and lipids, as many of each (fail): a ligand stripped
+//!   from minimal (MISATO's MOL, 2025-10-14..2026-04-29) passed every other
+//!   check, since those compare files within the full or minimal set.
 //!
 //! Read-only. A missing file is skipped, so the same checks run on a fresh
 //! `process` output (no .psf/.mmcif yet), on an MDR-108 build (orig/ + new/,
@@ -1109,6 +1113,109 @@ pub fn check_atoms(files: &HashMap<String, PathBuf>, trajs: &[Frames]) -> Vec<Fi
     out
 }
 
+// --- check 4: solute ---------------------------------------------------------------
+/// Residue names `minimal.*` drops on purpose, compared without case: water,
+/// the stripped ions and the lipids (simulation-processing
+/// `cpptraj_gmx_traj_manipulation.py` KNOWN_WATER, KNOWN_IONS, KNOWN_LIPIDS;
+/// the GROMACS path also drops what `residuetypes.dat` calls Water, and
+/// [`crate::sequence::WATER`] names the rest). Every other residue -- a
+/// ligand, a cofactor, a bound Zn2+ or Ca2+ -- belongs in minimal.
+const MINIMAL_DROPS: &[&str] = &[
+    // water
+    "WAT", "HOH", "TIP3", "TIP3P", "TIP4", "TIP4P", "TIP5", "OPC", "SPC", "SOL", "OHH",
+    "T3H", // ions
+    "NA", "CL", "K", "SOD", "CLA", "NA+", "CL-", "K+", "MG2+", "MG",
+    // lipids
+    "DPPC", "POPC", "POPE", "DOPC", "DLPC", "DMPC", "DSPC", "CHOL",
+];
+
+/// True for a residue name minimal is meant to drop
+pub fn dropped_from_minimal(resname: &str) -> bool {
+    let r = resname.trim();
+    MINIMAL_DROPS
+        .iter()
+        .chain(crate::sequence::WATER)
+        .any(|d| d.eq_ignore_ascii_case(r))
+}
+
+/// {residue name: residues of that name}, residues split as
+/// [`residue_starts`] splits them
+pub fn residue_counts(atoms: &[Atom]) -> std::collections::BTreeMap<String, usize> {
+    let mut counts = std::collections::BTreeMap::new();
+    for start in residue_starts(atoms) {
+        *counts.entry(atoms[start - 1].resname.clone()).or_insert(0) += 1;
+    }
+    counts
+}
+
+/// Every residue of `full` that minimal is not meant to drop is in
+/// `minimal` as often. Found 2026-11-13: from 2025-10-14 to 2026-04-29 the
+/// GROMACS path stripped residue MOL from minimal, so 16,149 MISATO sims
+/// (MDR00015163: full 5,146 atoms with MOL, minimal 5,136) were released
+/// with no ligand in minimal.pdb/.xtc and sampled.xtc, and nothing noticed:
+/// the atom check compares the files within each set, not full with
+/// minimal. Extra residues in minimal are not this check's business.
+pub fn check_solute(full: &Structure, minimal: &Structure) -> Vec<Finding> {
+    let have = residue_counts(&minimal.atoms);
+    let mut missing = vec![];
+    let mut kept = 0;
+    for (name, n) in residue_counts(&full.atoms) {
+        if dropped_from_minimal(&name) {
+            continue;
+        }
+        let m = have.get(&name).copied().unwrap_or(0);
+        if m < n {
+            missing.push(format!("{name} ({m} of {n})"));
+        } else {
+            kept += 1;
+        }
+    }
+    if missing.is_empty() {
+        vec![finding(
+            "solute",
+            Level::Info,
+            &minimal.name,
+            format!(
+                "keeps every residue name of {} it should ({kept})",
+                full.name
+            ),
+        )]
+    } else {
+        vec![finding(
+            "solute",
+            Level::Fail,
+            &minimal.name,
+            format!(
+                "lacks residues {} has that are not water, a stripped ion or a \
+                lipid (a ligand or other solute was dropped): {}",
+                full.name,
+                missing.join(", ")
+            ),
+        )]
+    }
+}
+
+/// [`check_solute`] on the first full/minimal pair found, .pdb, then
+/// .mmcif, then .psf; nothing when there is no pair or one cannot be read
+/// (the atom check reports that)
+pub fn check_solute_files(files: &HashMap<String, PathBuf>) -> Vec<Finding> {
+    let readers: [(&str, fn(&Path) -> Result<Structure>); 3] =
+        [("pdb", read_pdb), ("mmcif", read_mmcif), ("psf", read_psf)];
+    for (ext, reader) in readers {
+        let (Some(f), Some(m)) = (
+            files.get(&format!("full.{ext}")),
+            files.get(&format!("minimal.{ext}")),
+        ) else {
+            continue;
+        };
+        return match (reader(f), reader(m)) {
+            (Ok(full), Ok(minimal)) => check_solute(&full, &minimal),
+            _ => vec![],
+        };
+    }
+    vec![]
+}
+
 // --------------------------------------------------
 /// {file name: path} for the names the checks know, in `dir` only
 pub fn find_files(dir: &Path) -> HashMap<String, PathBuf> {
@@ -1179,6 +1286,7 @@ pub fn run_checks(
     }
     out.extend(check_time(&trajs, source.as_deref(), &source_name));
     out.extend(check_atoms(&files, &trajs));
+    out.extend(check_solute_files(&files));
     Ok(out)
 }
 
@@ -2266,6 +2374,257 @@ mod tests {
                     && x.message.contains("shifted as a whole")),
                 "{d}: {all:?}"
             );
+        }
+    }
+
+    // --- solute ---------------------------------------------------------------
+
+    /// A structure from (atom, residue, resid) triples; coordinates unused
+    fn st(name: &str, atoms: &[(&str, &str, i64)]) -> Structure {
+        Structure {
+            name: name.into(),
+            atoms: atoms
+                .iter()
+                .map(|(a, r, i)| Atom {
+                    name: a.to_string(),
+                    resname: r.to_string(),
+                    resid: *i,
+                    element: String::new(),
+                })
+                .collect(),
+            xyz: None,
+            resid_wrap: None,
+            resname_width: None,
+            name_width: None,
+        }
+    }
+
+    /// Protein, then a ligand MOL (3 atoms), then the given extras
+    fn solvated(
+        extra: &[(&'static str, &'static str, i64)],
+    ) -> Vec<(&'static str, &'static str, i64)> {
+        let mut v = vec![
+            ("N", "ALA", 1),
+            ("CA", "ALA", 1),
+            ("N", "GLY", 2),
+            ("C1", "MOL", 3),
+            ("C2", "MOL", 3),
+            ("O1", "MOL", 3),
+        ];
+        v.extend_from_slice(extra);
+        v
+    }
+
+    fn fails(f: &[Finding]) -> Vec<&Finding> {
+        f.iter().filter(|x| x.level == Level::Fail).collect()
+    }
+
+    #[test]
+    fn solute_ligand_kept_passes() {
+        let full = st(
+            "full.pdb",
+            &solvated(&[("OW", "SOL", 4), ("NA", "NA", 5), ("CL", "CL", 6)]),
+        );
+        let min = st("minimal.pdb", &solvated(&[]));
+        let f = check_solute(&full, &min);
+        assert!(fails(&f).is_empty(), "{f:?}");
+        assert_eq!(f[0].level, Level::Info);
+        assert!(f[0].message.contains("(3)"), "{f:?}"); // ALA GLY MOL
+    }
+
+    #[test]
+    fn solute_ligand_dropped_fails() {
+        // MDR00015163's shape: minimal is full without MOL
+        let full = st("full.pdb", &solvated(&[]));
+        let min = st("minimal.pdb", &solvated(&[])[..3]);
+        let f = check_solute(&full, &min);
+        assert_eq!(fails(&f).len(), 1, "{f:?}");
+        assert_eq!(f[0].file, "minimal.pdb");
+        assert_eq!(f[0].check, "solute");
+        assert!(f[0].message.contains("MOL (0 of 1)"), "{f:?}");
+        assert!(!f[0].message.contains("ALA"), "{f:?}");
+    }
+
+    #[test]
+    fn solute_fewer_copies_fails() {
+        // three copies of a probe in full, two in minimal
+        let lig = |i| ("C1", "LIG", i);
+        let full = st("full.pdb", &[("N", "ALA", 1), lig(2), lig(3), lig(4)]);
+        let min = st("minimal.pdb", &[("N", "ALA", 1), lig(2), lig(3)]);
+        let f = check_solute(&full, &min);
+        assert!(fails(&f)[0].message.contains("LIG (2 of 3)"), "{f:?}");
+    }
+
+    #[test]
+    fn solute_every_dropped_name_passes() {
+        // each name minimal may drop, in the case the pipelines write it
+        let mut extra = vec![];
+        for (i, name) in [
+            "WAT", "HOH", "TIP3", "TIP3P", "TIP4", "TIP4P", "TIP5", "OPC", "SPC",
+            "SOL", "OHH", "T3H", "T3P", "TP3", "SPCE", "H2O", "NA", "CL", "K", "SOD",
+            "CLA", "Na+", "Cl-", "K+", "Mg2+", "MG", "NA+", "CL-", "DPPC", "POPC",
+            "POPE", "DOPC", "DLPC", "DMPC", "DSPC", "CHOL", "sol", "wat",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            extra.push(("X", name, 10 + i as i64));
+        }
+        let full = st("full.pdb", &solvated(&extra));
+        let min = st("minimal.pdb", &solvated(&[]));
+        let f = check_solute(&full, &min);
+        assert!(fails(&f).is_empty(), "{f:?}");
+    }
+
+    #[test]
+    fn solute_bound_metal_must_stay() {
+        // Zn2+ and Ca2+ are kept in minimal (FIT_EXCLUDED_IONS, review #8):
+        // dropping one is a failure
+        let full = st("full.pdb", &solvated(&[("ZN", "ZN", 4), ("CA", "CA", 5)]));
+        let min = st("minimal.pdb", &solvated(&[("CA", "CA", 5)]));
+        let f = check_solute(&full, &min);
+        let msg = &fails(&f)[0].message;
+        assert!(
+            msg.contains("ZN (0 of 1)") && !msg.contains("CA ("),
+            "{f:?}"
+        );
+    }
+
+    #[test]
+    fn solute_extra_in_minimal_is_not_a_failure() {
+        let full = st("full.pdb", &solvated(&[]));
+        let min = st("minimal.pdb", &solvated(&[("X", "EXT", 9)]));
+        assert!(fails(&check_solute(&full, &min)).is_empty());
+    }
+
+    #[test]
+    fn solute_empty_minimal_lists_everything() {
+        let full = st("full.pdb", &solvated(&[("OW", "SOL", 4)]));
+        let min = st("minimal.pdb", &[]);
+        let f = check_solute(&full, &min);
+        let msg = &fails(&f)[0].message;
+        for r in ["ALA (0 of 1)", "GLY (0 of 1)", "MOL (0 of 1)"] {
+            assert!(msg.contains(r), "{r}: {f:?}");
+        }
+        assert!(!msg.contains("SOL"), "{f:?}");
+    }
+
+    #[test]
+    fn solute_residues_split_by_number_and_name() {
+        // two MOL residues numbered alike but apart are still two
+        let full = st(
+            "full.pdb",
+            &[
+                ("C1", "MOL", 1),
+                ("C2", "MOL", 1),
+                ("N", "ALA", 2),
+                ("C1", "MOL", 1),
+            ],
+        );
+        assert_eq!(residue_counts(&full.atoms).get("MOL"), Some(&2));
+        let min = st(
+            "minimal.pdb",
+            &[("C1", "MOL", 1), ("C2", "MOL", 1), ("N", "ALA", 2)],
+        );
+        assert!(
+            fails(&check_solute(&full, &min))[0]
+                .message
+                .contains("MOL (1 of 2)")
+        );
+    }
+
+    #[test]
+    fn dropped_names_ignore_case_and_spaces() {
+        assert!(dropped_from_minimal("tip3"));
+        assert!(dropped_from_minimal(" SOL "));
+        assert!(dropped_from_minimal("cl-"));
+        assert!(!dropped_from_minimal("MOL"));
+        assert!(!dropped_from_minimal("ZN"));
+        assert!(!dropped_from_minimal("CA"));
+        assert!(!dropped_from_minimal(""));
+    }
+
+    #[test]
+    fn solute_in_run_checks_from_pdb_files() {
+        // ATOMS ends in a TIP3 water (4-letter name from column 17)
+        let d = tempfile::tempdir().unwrap();
+        write_pdb(&d.path().join("full.pdb"), &ATOMS, &XYZ, None, 1);
+        write_pdb(
+            &d.path().join("minimal.pdb"),
+            &ATOMS[..5],
+            &XYZ[..5],
+            None,
+            1,
+        );
+        assert_eq!(levels(&run(d.path(), None), Some("solute")), vec![]);
+        // now minimal also loses the GLY
+        write_pdb(
+            &d.path().join("minimal.pdb"),
+            &ATOMS[..3],
+            &XYZ[..3],
+            None,
+            1,
+        );
+        assert_eq!(
+            levels(&run(d.path(), None), Some("solute")),
+            vec![(Level::Fail, "minimal.pdb".to_string())]
+        );
+    }
+
+    #[test]
+    fn solute_falls_back_to_psf_pair() {
+        let d = tempfile::tempdir().unwrap();
+        write_psf(&d.path().join("full.psf"), &ATOMS);
+        write_psf(&d.path().join("minimal.psf"), &ATOMS[..3]);
+        let f = check_solute_files(&find_files(d.path()));
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].file, "minimal.psf");
+        assert!(f[0].message.contains("GLY (0 of 1)"), "{f:?}");
+    }
+
+    #[test]
+    fn solute_needs_a_pair() {
+        let d = tempfile::tempdir().unwrap();
+        write_pdb(&d.path().join("full.pdb"), &ATOMS, &XYZ, None, 1);
+        write_psf(&d.path().join("minimal.psf"), &ATOMS[..3]);
+        assert!(check_solute_files(&find_files(d.path())).is_empty());
+    }
+
+    #[test]
+    fn solute_unreadable_pair_is_left_to_the_atom_check() {
+        let d = tempfile::tempdir().unwrap();
+        write_pdb(&d.path().join("full.pdb"), &ATOMS, &XYZ, None, 1);
+        fs::write(
+            d.path().join("minimal.pdb"),
+            "ATOM      1  N   LYS A  15    xxxxxxxx   2.000   3.000\n",
+        )
+        .unwrap();
+        assert!(check_solute_files(&find_files(d.path())).is_empty());
+    }
+
+    /// Real MDR-108 folders (orig/ holds the released full.pdb and
+    /// minimal.pdb): MISATO lost MOL, others keep everything. On the ddd host:
+    /// MDR_SOLUTE_BAD=/mdrepotmp/work-chain-ids-psf-2026-11/prod/b03/sims/MDR00015163/orig
+    /// MDR_SOLUTE_GOOD=<dir>:<dir> cargo test -p mdr-process -- --ignored real_solute
+    #[test]
+    #[ignore = "needs MDR_SOLUTE_BAD and MDR_SOLUTE_GOOD folders"]
+    fn real_solute_folders() {
+        for d in std::env::var("MDR_SOLUTE_BAD")
+            .expect("MDR_SOLUTE_BAD")
+            .split(':')
+        {
+            let f = check_solute_files(&find_files(Path::new(d)));
+            assert!(
+                fails(&f).iter().any(|x| x.message.contains("MOL (0 of 1)")),
+                "{d}: {f:?}"
+            );
+        }
+        for d in std::env::var("MDR_SOLUTE_GOOD")
+            .expect("MDR_SOLUTE_GOOD")
+            .split(':')
+        {
+            let f = check_solute_files(&find_files(Path::new(d)));
+            assert!(!f.is_empty() && fails(&f).is_empty(), "{d}: {f:?}");
         }
     }
 }
