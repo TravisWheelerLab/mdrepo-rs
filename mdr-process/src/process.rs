@@ -1538,7 +1538,13 @@ pub fn standardize(
             match standardize_mmcif(
                 server, sim_id, out_dir, &full_pdb, &min_pdb, script_dir, uv,
             ) {
-                Ok((counts, unplaced, by_connectivity, refs)) => {
+                Ok((counts, unplaced, by_connectivity, refs, residues_from)) => {
+                    if residues_from == "full" {
+                        warnings.push(
+                            "mmCIF: minimal.pdb holds no ligand; ligand residue names taken from full.pdb"
+                                .to_string(),
+                        );
+                    }
                     for name in &unplaced {
                         warnings.push(format!(
                             "mmCIF: ligand {name:?} matches no residue by InChIKey or connectivity; written without its identity"
@@ -1550,6 +1556,7 @@ pub fn standardize(
                         "links": counts.num_links,
                         "references": refs,
                         "ligands_unplaced": unplaced.len(),
+                        "ligand_residues_from": residues_from,
                         "ligands_by_connectivity": by_connectivity
                             .iter()
                             .map(|(name, resname)| serde_json::json!({"ligand": name, "residue": resname}))
@@ -1634,7 +1641,8 @@ pub fn standardize(
 /// (`mmcif_input_from_db`), each ligand's residue name from mol_id.py's
 /// structure step, the links from `out_dir/bonds.tsv`. Returns the full
 /// file's counts, the ligands left unplaced, those placed by connectivity
-/// (name, residue), and the number of UniProt ranges.
+/// (name, residue), the number of UniProt ranges, and where the ligands'
+/// residue names came from ([`ligand_residues_min_or_full`]).
 fn standardize_mmcif(
     server: &Server,
     sim_id: i64,
@@ -1648,6 +1656,7 @@ fn standardize_mmcif(
     Vec<String>,
     PlacedByConnectivity,
     usize,
+    &'static str,
 )> {
     let env_key = dsn_for(server);
     let url = env::var(env_key).map_err(|e| anyhow!("{env_key}: {e}"))?;
@@ -1656,15 +1665,16 @@ fn standardize_mmcif(
     let title = mdr_db::ops::get_simulation(&mut conn, sim_id)?.short_description;
     let (_, stored) =
         mdr_db::ops::list_ligands(&mut conn, None, Some(sim_id), true, None, None)?;
-    // mol_id.py finding no ligand (MDR00020024's minimal.pdb lacks it,
-    // MDR-109) costs the ligands' identities, not the file
-    let residues = if stored.iter().any(|l| l.smiles.is_some()) {
-        ligand_resnames(min_pdb, script_dir, uv).unwrap_or_else(|e| {
-            warn!("mmCIF: no ligand residue names: {e}");
-            LigandResidues::default()
+    // mol_id.py finding no ligand in minimal.pdb (MISATO's MOL was stripped
+    // from minimal 2025-10-14..2026-04-29; MDR00020024, MDR-109) falls back
+    // to full.pdb; finding none in either costs the ligands' identities,
+    // not the file
+    let (residues, residues_from) = if stored.iter().any(|l| l.smiles.is_some()) {
+        ligand_residues_min_or_full(min_pdb, full_pdb, &mut |pdb| {
+            ligand_resnames(pdb, script_dir, uv)
         })
     } else {
-        LigandResidues::default()
+        (LigandResidues::default(), "not needed")
     };
     let (input, unplaced, by_connectivity, _) =
         mmcif_input_from_db(&mut conn, sim_id, &title, &residues, &mut |a, b| {
@@ -1680,7 +1690,39 @@ fn standardize_mmcif(
         &out_dir.join("minimal.mmcif"),
         &input,
     )?;
-    Ok((full, unplaced, by_connectivity, refs))
+    Ok((full, unplaced, by_connectivity, refs, residues_from))
+}
+
+// --------------------------------------------------
+/// The ligands' residue names from `min_pdb`, or from `full_pdb` when
+/// `min_pdb` yields none (or cannot be read), and which one: "minimal",
+/// "full", or "none" when neither has a ligand. minimal.pdb is tried
+/// first: it is smaller (no solvent) and is what imports have always used.
+/// `find` is [`ligand_resnames`] outside tests.
+pub fn ligand_residues_min_or_full(
+    min_pdb: &Path,
+    full_pdb: &Path,
+    find: &mut dyn FnMut(&Path) -> Result<LigandResidues>,
+) -> (LigandResidues, &'static str) {
+    let mut tried = |pdb: &Path, label: &str| match find(pdb) {
+        Ok(r) if !r.resname_of.is_empty() => Some(r),
+        Ok(_) => {
+            debug!("mmCIF: no ligand residue in {label}");
+            None
+        }
+        Err(e) => {
+            warn!("mmCIF: no ligand residue names from {label}: {e}");
+            None
+        }
+    };
+    if let Some(r) = tried(min_pdb, "minimal.pdb") {
+        return (r, "minimal");
+    }
+    if let Some(r) = tried(full_pdb, "full.pdb") {
+        warn!("mmCIF: minimal.pdb holds no ligand; residue names from full.pdb");
+        return (r, "full");
+    }
+    (LigandResidues::default(), "none")
 }
 
 // --------------------------------------------------
@@ -6709,6 +6751,106 @@ mod place_ligands_tests {
             checked += 1;
         }
         assert_eq!(checked, 21);
+    }
+
+    // --- ligand_residues_min_or_full -----------------------------------------
+
+    /// A finder answering per file name, recording what it was asked
+    fn finder<'a>(
+        answers: &'a [(&'a str, Result<LigandResidues, &'a str>)],
+        asked: &'a RefCell<Vec<String>>,
+    ) -> impl FnMut(&std::path::Path) -> Result<LigandResidues> + 'a {
+        move |p| {
+            let name = p.file_name().unwrap().to_string_lossy().to_string();
+            asked.borrow_mut().push(name.clone());
+            match answers.iter().find(|(n, _)| *n == name) {
+                Some((_, Ok(r))) => Ok(r.clone()),
+                Some((_, Err(e))) => bail!("{e}"),
+                None => bail!("no such file"),
+            }
+        }
+    }
+
+    fn mol() -> LigandResidues {
+        residues(&[(NAP_KEY, "MOL", "c1ccccc1")])
+    }
+
+    fn min_or_full(
+        answers: &[(&str, Result<LigandResidues, &str>)],
+    ) -> (LigandResidues, &'static str, Vec<String>) {
+        let asked = RefCell::new(vec![]);
+        let mut f = finder(answers, &asked);
+        let (r, from) = super::ligand_residues_min_or_full(
+            &PathBuf::from("minimal.pdb"),
+            &PathBuf::from("full.pdb"),
+            &mut f,
+        );
+        drop(f);
+        (r, from, asked.into_inner())
+    }
+
+    #[test]
+    fn residues_from_minimal_when_it_has_the_ligand() {
+        let (r, from, asked) =
+            min_or_full(&[("minimal.pdb", Ok(mol())), ("full.pdb", Ok(mol()))]);
+        assert_eq!((from, r), ("minimal", mol()));
+        assert_eq!(asked, vec!["minimal.pdb"]); // full.pdb not read
+    }
+
+    #[test]
+    fn residues_from_full_when_minimal_lost_the_ligand() {
+        // MISATO: MOL stripped from minimal.pdb, present in full.pdb
+        let (r, from, asked) = min_or_full(&[
+            ("minimal.pdb", Ok(LigandResidues::default())),
+            ("full.pdb", Ok(mol())),
+        ]);
+        assert_eq!((from, r), ("full", mol()));
+        assert_eq!(asked, vec!["minimal.pdb", "full.pdb"]);
+    }
+
+    #[test]
+    fn residues_from_full_when_minimal_fails() {
+        // mol_id.py exits non-zero on a structure with no ligand-like residue
+        let (r, from, _) = min_or_full(&[
+            ("minimal.pdb", Err("No ligand-like residue found")),
+            ("full.pdb", Ok(mol())),
+        ]);
+        assert_eq!((from, r), ("full", mol()));
+    }
+
+    #[test]
+    fn residues_none_when_neither_has_a_ligand() {
+        let (r, from, asked) = min_or_full(&[
+            ("minimal.pdb", Err("No ligand-like residue found")),
+            ("full.pdb", Ok(LigandResidues::default())),
+        ]);
+        assert_eq!((from, r), ("none", LigandResidues::default()));
+        assert_eq!(asked.len(), 2);
+    }
+
+    #[test]
+    fn residues_none_when_both_fail() {
+        let (r, from, _) =
+            min_or_full(&[("minimal.pdb", Err("boom")), ("full.pdb", Err("boom"))]);
+        assert_eq!((from, r), ("none", LigandResidues::default()));
+    }
+
+    #[test]
+    fn residues_from_full_place_the_ligand() {
+        // the fallback's names place a stored ligand by its InChIKey, as
+        // minimal's would have
+        let (r, from, _) = min_or_full(&[
+            ("minimal.pdb", Ok(LigandResidues::default())),
+            ("full.pdb", Ok(mol())),
+        ]);
+        assert_eq!(from, "full");
+        let out = place(
+            vec![stored("lig", Some("c1ccccc1"), Some(NAP_KEY))],
+            &r,
+            &Stub::new(&[]),
+        );
+        assert!(out.unplaced.is_empty(), "{:?}", out.unplaced);
+        assert_eq!(out.ligands.len(), 1);
     }
 }
 

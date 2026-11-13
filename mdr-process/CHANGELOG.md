@@ -11,6 +11,29 @@ Bump the version in `mdr-process/Cargo.toml` in the same PR as the change:
   database or iRODS, or in its command line;
 - **patch** (0.2.0 -> 0.2.1) for everything else.
 
+## 0.41.0 (unreleased)
+
+- **New output check, `solute`: minimal must keep every residue full has**
+  except water, the stripped ions (NA, CL, K, SOD, CLA, Na+, Cl-, K+, MG,
+  Mg2+) and lipids, and as many of each; otherwise FAIL, which stops an
+  import. Found 2026-11-13: from 2025-10-14 to 2026-04-29 the GROMACS path
+  stripped residue `MOL` from minimal (utils de9bc0f, undone in 0e0ae26),
+  so the 16,149 MISATO sims were released with no ligand in minimal.pdb,
+  minimal.xtc and sampled.xtc (MDR00015163: full 5,146 atoms, minimal
+  5,136). The atom check could not see it: it compares the files within
+  the full set and within the minimal set, not the two sets. Uses the
+  .pdb pair, else .mmcif, else .psf.
+- **`standardize` takes ligand residue names from full.pdb when minimal.pdb
+  has none.** It read only minimal.pdb, so with the ligand stripped every
+  MISATO ligand was left unplaced and its mmCIF written without its
+  identity (MDR-108 b01-b03: 0 of 12,640 ligand rows placed). report.json's
+  `mmcif` gains `ligand_residues_from` ("minimal", "full", "none" or "not
+  needed"), and a warning says when full.pdb was used. MDR00015163 and
+  MDR00012929 now place their ligand (6XA, 1D9).
+- Toolchain note: Rust 1.100.0 warns about three unused dependencies
+  (`chksum-md5`, `tempfile`, `urlencoding`) on main as well; not changed
+  here.
+
 ## 0.40.0 (unreleased)
 
 **Needs md-repo-app 0303 (`md_ligand.num_copies`) on the database first.**
